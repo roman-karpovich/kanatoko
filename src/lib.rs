@@ -14,10 +14,18 @@ mod runtime;
 
 #[cfg(feature = "capture")]
 mod capture;
+#[cfg(feature = "capture")]
+mod strict;
 
 #[cfg(feature = "capture")]
 pub use capture::{
     CaptureBuilder, CaptureError, CaptureProvenance, CaptureReport, CapturedFixture,
+};
+#[cfg(feature = "capture")]
+pub use strict::{
+    AppliedAuthMode, AuthMode, AuthorizationTree, CandidateInstallMode, CandidateRegistration,
+    DetachedEvent, ExecutionMode, InvokeErrorKind, InvokeOutcome, InvokeRequest, LedgerValue,
+    Receipt, ReceiptDisposition, StateChange, StrictCheckpoint, StrictFork, StrictForkError,
 };
 
 pub use fixture::{

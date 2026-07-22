@@ -44,7 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn capture(rpc_url: &str, root_contract: &str, bundle_path: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn capture(
+    rpc_url: &str,
+    root_contract: &str,
+    bundle_path: &Path,
+) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = bundle_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

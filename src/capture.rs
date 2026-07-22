@@ -29,7 +29,7 @@ use soroban_sdk::{
 };
 use thiserror::Error;
 
-use crate::{FixtureError, Fork, FrozenFixture, SUPPORTED_PROTOCOL_VERSION};
+use crate::{FixtureError, FrozenFixture, StrictFork, SUPPORTED_PROTOCOL_VERSION};
 
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
@@ -40,7 +40,7 @@ const INVENTORY_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-INVENTORY\0V1\0";
 const BUNDLE_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-BUNDLE\0V1\0";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-type KeyId = Vec<u8>;
+pub(crate) type KeyId = Vec<u8>;
 type PresentEntry = (Rc<LedgerEntry>, Option<u32>);
 
 /// Builds an address-first, RPC-backed capture.
@@ -504,13 +504,16 @@ impl CapturedFixture {
         outcome.map_err(|_| CaptureError::ScenarioPanicked)
     }
 
-    /// Creates the legacy M0 fork view.
-    ///
-    /// Unlike [`Self::replay`], M0 [`Fork`] semantics treat uncaptured keys as
-    /// missing and do not preserve strict Unknown versus confirmed-Absent.
+    /// Creates an offline mutable fork that retains strict Present/Absent
+    /// coverage. Keys outside that inventory fail closed after every preview,
+    /// applied invocation, mutation, and revert.
     #[must_use]
-    pub fn fork(&self) -> Fork {
-        Fork::from_fixture(&self.fixture)
+    pub fn fork(&self) -> StrictFork {
+        StrictFork::from_captured(
+            self.fixture.ledger_snapshot(),
+            self.root.clone(),
+            self.coverage.clone(),
+        )
     }
 
     fn to_bundle(&self) -> Result<CaptureBundleV1, CaptureError> {
@@ -896,7 +899,7 @@ pub enum CaptureError {
 }
 
 #[derive(Clone, Debug)]
-enum LookupState {
+pub(crate) enum LookupState {
     Present(Rc<LedgerEntry>, Option<u32>),
     Absent,
 }

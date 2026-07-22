@@ -88,15 +88,39 @@ those dependency IDs to the tool.
 Capture from `https://mainnet.sorobanrpc.com` with:
 
 ```sh
-cargo run --locked --features capture --bin capture-aquarius-xlm-usdc-cp
+cargo run --locked --features capture --bin kanatoko -- \
+  capture aquarius-cp
 ```
 
 Replay an existing bundle fully offline with:
 
 ```sh
-cargo run --locked --offline --features capture --bin capture-aquarius-xlm-usdc-cp -- \
-  --replay fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json
+cargo run --locked --offline --features capture --bin kanatoko -- \
+  run aquarius-cp --format text
 ```
+
+## M3 strict mutable candidate workflow
+
+M3 loads this schema-v1 capture into a mutable strict fork without collapsing
+Unknown into confirmed Absent. It locally injects the committed hash-pinned
+Aquarius wrapper candidate, whose production WASM calls the captured pool
+WASM. The acceptance estimates 1 USDC -> XLM, mints a synthetic user 10% of
+the captured USDC reserve, previews and exact-gates a wrapper swap, then proves
+the quote decreased from `53354881` to `44100959` in the mutated session.
+
+Checkpoint/revert restores the first quote (`53354881`), an uncaptured contract
+key fails closed after the mutations and after revert, and every receipt plus
+the fork reports zero upstream reads. JSON output exposes detached XDR for
+results, exact auth trees, events, diagnostics, and ledger diffs.
+
+The observed synthetic-user authorization tree is rooted at the local wrapper
+`swap`, continues through the captured pool `swap`, and ends at captured USDC
+SAC `transfer`. Record mode mock-satisfies discovery; mock-exact runs in an
+isolated recording child and commits only on byte-for-byte detached tree
+equality. This is not signature or transaction-faithful deployment evidence.
+Host-generated recording nonces are treated as mocked-auth scaffolding and are
+not committed. The nonce exception is not active in enforce mode, where an
+uncaptured anti-replay key remains Unknown and fails closed.
 
 Legacy M1 toolchain at capture:
 

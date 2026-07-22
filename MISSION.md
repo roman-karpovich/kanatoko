@@ -43,6 +43,20 @@ The first product is a Rust-first library and capture workflow for:
 - checkpointing and reverting local state;
 - turning exploratory network state into frozen, offline CI fixtures.
 
+M3 now supplies the first honest mutable workflow over an M2 capture. A strict
+fork preserves confirmed absence versus unknown state, locally injects
+hash-checked candidate production WASM with constructor execution, supports
+stateful preview/apply calls and checkpoint/revert, and returns detached XDR
+receipts containing result/error, auth evidence, events, diagnostics, state
+diff, and digests. The runnable Aquarius acceptance proves a candidate contract
+can call the captured pool/SAC graph across several calls with zero replay RPC
+reads.
+
+Candidate installation remains an explicitly labelled SDK test cheat. It is
+not upload/create transaction evidence. Likewise, record and mock-exact auth
+are mock-satisfied behavioral evidence; only enforce mode applies supplied Host
+authorization entries, and none of these modes invents a sender abstraction.
+
 A compatible local JSON-RPC server may follow, but it is not the foundation.
 
 ## Independence
