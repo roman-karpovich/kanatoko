@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "source_rpc": "https://mainnet.sorobanrpc.com",
+  "network_passphrase": "Public Global Stellar Network ; September 2015",
+  "network_id_sha256": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
+  "protocol_version": 27,
+  "ledger_sequence": 63599433,
+  "ledger_hash": "3bdfb799014cb4d0efe0b2b8e53ef2664a805f704046f485f903472b2a94c4ed",
+  "ledger_close_time": 1784747236,
+  "base_reserve": 5000000,
+  "state_archival": {
+    "min_persistent_entry_ttl": 2073600,
+    "min_temporary_entry_ttl": 17280,
+    "max_entry_ttl": 3110400
+  },
+  "scenario": {
+    "pool": "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE",
+    "xlm_sac": "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+    "usdc_sac": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+    "usdc_issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    "plane": "CCABO2IQYDWRGGQ4DYQ73CV3ZFDBRZTEQNDDJMFT7JZO54CLS4RYJROY",
+    "plane_wasm_sha256": "57e51099494c8c87313ddb86da34c855d642313877cf4222415e7f7844721878"
+  },
+  "files": {
+    "ledger_json_sha256": "e192e296547527922fc2203bcb6291c599ffb89c6dbc3584eac5e9ea1b5b57bd",
+    "pool_wasm_sha256": "ae0da5a84b15805c5c7931ac567a8d1b34be3f26b483993d9ff80cb2c3de9852",
+    "canonical_ledger_digest": "cf3ca3247927da7c7ade18a734acf416f87c9ad1509a8fa3a003a19d7c0d9b9d"
+  },
+  "entries": [
+    {
+      "label": "pool_instance",
+      "ledger_key_xdr": "AAAABgAAAAE8+iVhwrKqEUvKWKDlZFP06ZwNGR1pFLzhZywtUHoQIQAAABQAAAAB",
+      "last_modified_ledger": 63599413,
+      "live_until_ledger": 66350524,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "pool_code",
+      "ledger_key_xdr": "AAAAB64NpahLFYBcXHkxrFZ6jRs0vj8mtIOZPZ/4DLLD3phS",
+      "last_modified_ledger": 62234161,
+      "live_until_ledger": 66381512,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "plane_instance",
+      "ledger_key_xdr": "AAAABgAAAAGAF2kQwO0TGhweIf2Ku8lGGOZkg0Y0sLP6cu7wS5cjhAAAABQAAAAB",
+      "last_modified_ledger": 62338132,
+      "live_until_ledger": 65376328,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "plane_code",
+      "ledger_key_xdr": "AAAAB1flEJlJTIyHMT3bhto0yFXWQjE4d89CIkFef3hEchh4",
+      "last_modified_ledger": 62234124,
+      "live_until_ledger": 64307723,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "plane_pool_data",
+      "ledger_key_xdr": "AAAABgAAAAGAF2kQwO0TGhweIf2Ku8lGGOZkg0Y0sLP6cu7wS5cjhAAAABAAAAABAAAAAgAAAA8AAAAIUG9vbERhdGEAAAASAAAAATz6JWHCsqoRS8pYoOVkU/TpnA0ZHWkUvOFnLC1QehAhAAAAAQ==",
+      "last_modified_ledger": 63599413,
+      "live_until_ledger": 66354335,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "xlm_sac_instance",
+      "ledger_key_xdr": "AAAABgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAABQAAAAB",
+      "last_modified_ledger": 50463386,
+      "live_until_ledger": 63707893,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "usdc_sac_instance",
+      "ledger_key_xdr": "AAAABgAAAAGt785ZruUpaPdgYdSUwlJbdWWfpClqZfSZ7ynlZHfklgAAABQAAAAB",
+      "last_modified_ledger": 62313360,
+      "live_until_ledger": 65767920,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "xlm_balance_pool",
+      "ledger_key_xdr": "AAAABgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAABAAAAABAAAAAgAAAA8AAAAHQmFsYW5jZQAAAAASAAAAATz6JWHCsqoRS8pYoOVkU/TpnA0ZHWkUvOFnLC1QehAhAAAAAQ==",
+      "last_modified_ledger": 63599413,
+      "live_until_ledger": 64110268,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "usdc_balance_pool",
+      "ledger_key_xdr": "AAAABgAAAAGt785ZruUpaPdgYdSUwlJbdWWfpClqZfSZ7ynlZHfklgAAABAAAAABAAAAAgAAAA8AAAAHQmFsYW5jZQAAAAASAAAAATz6JWHCsqoRS8pYoOVkU/TpnA0ZHWkUvOFnLC1QehAhAAAAAQ==",
+      "last_modified_ledger": 63599413,
+      "live_until_ledger": 64113144,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "usdc_issuer_account",
+      "ledger_key_xdr": "AAAAAAAAAAA7mRE4Dv6Yi6CokA6xz+RPNm99vpRr7QdyQPf2JN8VxQ==",
+      "last_modified_ledger": 63423649,
+      "live_until_ledger": null,
+      "included_in_ledger_snapshot": true
+    },
+    {
+      "label": "state_archival_config",
+      "ledger_key_xdr": "AAAACAAAAAo=",
+      "last_modified_ledger": 59516381,
+      "live_until_ledger": null,
+      "included_in_ledger_snapshot": false
+    }
+  ]
+}

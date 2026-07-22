@@ -5,12 +5,25 @@ edition = "2021"
 rust-version = "1.91"
 publish = false
 
+[features]
+default = []
+capture = ["dep:base64", "dep:serde", "dep:serde_json", "dep:ureq"]
+
 [dependencies]
+base64 = { version = "=0.22.1", optional = true }
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "=1.0.151", optional = true }
 sha2 = "=0.10.9"
 soroban-env-host = "=27.0.0"
 soroban-ledger-snapshot = "=27.0.0"
 soroban-sdk = { version = "=27.0.0", features = ["testutils"] }
 thiserror = "2"
+ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
+
+[[bin]]
+name = "capture-aquarius-xlm-usdc-cp"
+path = "tools/capture_aquarius_xlm_usdc_cp.rs"
+required-features = ["capture"]
 
 [lints.rust]
 unsafe_code = "forbid"
