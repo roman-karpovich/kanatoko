@@ -2,7 +2,7 @@
 
 All notable changes to Kanatoko are documented in this file.
 
-## 27.0.1 - Unreleased
+## 27.0.1 - 2026-07-23
 
 - Retry throttled or transient read-only RPC responses with a short bounded
   backoff while honoring reasonable numeric `Retry-After` values.
