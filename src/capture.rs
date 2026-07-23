@@ -2381,6 +2381,7 @@ mod tests {
     fn mixed_auto_scenario_for_user(fork: &crate::auto::ScenarioFork<'_>, user_label: &str) {
         let env = fork.env();
         let user = fork.local_account(user_label);
+        fork.fund_local_account(&user, 100_000_000);
         let pool_id = fork.contract(POOL_ID);
         let usdc = fork.contract(USDC_ID);
         let pool = pool::Client::new(env, &pool_id);

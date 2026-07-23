@@ -78,6 +78,7 @@ fn full_scenario(fork: &ScenarioFork<'_>) {
 fn price_moves(fork: &ScenarioFork<'_>) {
     let env = fork.env();
     let user = fork.local_account("swap-user");
+    fork.fund_local_account(&user, 100_000_000);
     let pool_id = fork.contract(POOL);
     let usdc = fork.contract(USDC);
     let pool = pool_abi::Client::new(env, &pool_id);
@@ -118,6 +119,11 @@ fn real_account_and_muxed_destination(fork: &ScenarioFork<'_>) {
     assert!(usdc_balance >= 0);
 
     let sender = fork.local_account("muxed-sender");
+    fork.fund_local_account(&sender, 100_000_000);
+    assert_eq!(
+        fork.invoke::<i128>(&xlm, "balance", (sender.clone(),)),
+        100_000_000
+    );
     let muxed = MuxedAddress::new(real_account.clone(), MUXED_ID);
     let muxed = fork.muxed_account(&muxed.to_strkey().to_string());
     assert_eq!(muxed.address(), real_account);

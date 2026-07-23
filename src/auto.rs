@@ -23,8 +23,6 @@ use crate::{capture::MAINNET_PASSPHRASE, CaptureBuilder, CaptureError, CapturedF
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
 const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
-const LOCAL_ACCOUNT_MIN_BALANCE: i64 = 100_000_000;
-const LOCAL_ACCOUNT_BASE_RESERVES: i64 = 100;
 
 /// Creates an automatic mainnet runner.
 ///
@@ -261,35 +259,30 @@ impl<'a> ScenarioFork<'a> {
         address
     }
 
-    /// Creates a funded local Stellar account and returns its G-address.
+    /// Creates an unfunded local Stellar address.
     ///
     /// The address is pseudorandom but deterministic for the captured network
     /// and `label`. This keeps dependency discovery, strict replay, cache hits,
     /// and CI runs reproducible. Reusing a label in one scenario pass returns
     /// the same account without resetting its state.
     ///
-    /// This is explicit local ledger injection, not a mainnet account creation
-    /// or a transaction-faithful operation. The account has no signing key;
-    /// use an explicit authorization mode such as [`ScenarioFork::mock_all_auths`].
-    /// Classic assets still require calling the SAC's `trust` method, and may
-    /// require `set_authorized`, before minting or transferring the asset.
+    /// No `AccountEntry`, XLM, trustline, or signing key is created implicitly.
+    /// Fund it explicitly with [`ScenarioFork::fund_local_account`] when the
+    /// scenario needs an existing account. Use an explicit authorization mode
+    /// such as [`ScenarioFork::mock_all_auths`]. Classic assets still require
+    /// calling the SAC's `trust` method, and may require `set_authorized`,
+    /// before minting or transferring the asset.
     ///
     /// # Panics
     ///
     /// Panics if the generated address already exists in captured network
-    /// state or if the Host rejects the local account entry.
+    /// state.
     #[must_use]
     pub fn local_account(&self, label: &str) -> Address {
-        let (network_id, base_reserve, ledger_sequence) = self
+        let network_id = self
             .env
             .host()
-            .with_ledger_info(|ledger| {
-                Ok((
-                    ledger.network_id,
-                    ledger.base_reserve,
-                    ledger.sequence_number,
-                ))
-            })
+            .with_ledger_info(|ledger| Ok(ledger.network_id))
             .expect("the scenario environment must have ledger metadata");
         let mut digest = Sha256::new();
         digest.update(LOCAL_ACCOUNT_DOMAIN);
@@ -318,34 +311,97 @@ impl<'a> ScenarioFork<'a> {
             panic!("generated local account collides with captured network state");
         }
 
-        let balance = i64::from(base_reserve)
-            .saturating_mul(LOCAL_ACCOUNT_BASE_RESERVES)
-            .max(LOCAL_ACCOUNT_MIN_BALANCE);
-        let sequence = i64::from(ledger_sequence)
-            .checked_mul(1_i64 << 32)
-            .expect("the ledger sequence must fit a Stellar account sequence number");
-        let entry = Rc::new(LedgerEntry {
-            last_modified_ledger_seq: ledger_sequence,
-            data: LedgerEntryData::Account(AccountEntry {
-                account_id,
-                balance,
-                seq_num: SequenceNumber(sequence),
-                num_sub_entries: 0,
-                inflation_dest: None,
-                flags: 0,
-                home_domain: String32::default(),
-                thresholds: Thresholds([1, 0, 0, 0]),
-                signers: VecM::default(),
-                ext: AccountEntryExt::V0,
-            }),
-            ext: LedgerEntryExt::V0,
-        });
+        address
+    }
+
+    /// Adds `amount` stroops to an address created by [`Self::local_account`].
+    ///
+    /// The first funding creates a valid `AccountEntry` with no subentries; its
+    /// amount must cover the network's two-base-reserve minimum. Later calls
+    /// add to the existing balance. This is explicit local ledger injection,
+    /// not a Stellar payment or transaction-faithful funding operation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `amount` is not positive, first funding is below the minimum,
+    /// `account` was not created by this scenario pass, its existing entry is
+    /// malformed, the resulting balance overflows `i64`, or the Host rejects
+    /// the entry.
+    pub fn fund_local_account(&self, account: &Address, amount: i64) {
+        assert!(amount > 0, "local account funding must be positive");
+        let ScAddress::Account(account_id) = ScAddress::from(account) else {
+            panic!("expected a local G-account");
+        };
+        let AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(public_key))) = &account_id;
+        assert!(
+            self.local_accounts.borrow().contains(public_key),
+            "account was not created by this scenario pass"
+        );
+
+        let key = Rc::new(LedgerKey::Account(LedgerKeyAccount {
+            account_id: account_id.clone(),
+        }));
+        let existing = self
+            .env
+            .host()
+            .get_ledger_entry(&key)
+            .expect("the Host must be able to inspect the local account");
+        let (base_reserve, ledger_sequence) = self
+            .env
+            .host()
+            .with_ledger_info(|ledger| Ok((ledger.base_reserve, ledger.sequence_number)))
+            .expect("the scenario environment must have ledger metadata");
+        let entry = if let Some((entry, live_until)) = existing {
+            assert!(
+                live_until.is_none(),
+                "local AccountEntry must not have a live-until ledger"
+            );
+            let mut entry = (*entry).clone();
+            let LedgerEntryData::Account(local) = &mut entry.data else {
+                panic!("local account key must contain an AccountEntry");
+            };
+            assert_eq!(
+                local.account_id, account_id,
+                "local AccountEntry must match its ledger key"
+            );
+            local.balance = local
+                .balance
+                .checked_add(amount)
+                .expect("local account balance overflow");
+            entry.last_modified_ledger_seq = ledger_sequence;
+            entry
+        } else {
+            let minimum = i64::from(base_reserve)
+                .checked_mul(2)
+                .expect("local account minimum balance overflow");
+            assert!(
+                amount >= minimum,
+                "first local account funding must cover two base reserves"
+            );
+            let sequence = i64::from(ledger_sequence)
+                .checked_mul(1_i64 << 32)
+                .expect("the ledger sequence must fit a Stellar account sequence number");
+            LedgerEntry {
+                last_modified_ledger_seq: ledger_sequence,
+                data: LedgerEntryData::Account(AccountEntry {
+                    account_id,
+                    balance: amount,
+                    seq_num: SequenceNumber(sequence),
+                    num_sub_entries: 0,
+                    inflation_dest: None,
+                    flags: 0,
+                    home_domain: String32::default(),
+                    thresholds: Thresholds([1, 0, 0, 0]),
+                    signers: VecM::default(),
+                    ext: AccountEntryExt::V0,
+                }),
+                ext: LedgerEntryExt::V0,
+            }
+        };
         self.env
             .host()
-            .add_ledger_entry(&key, &entry, None)
-            .expect("the Host must accept a generated local account");
-
-        address
+            .add_ledger_entry(&key, &Rc::new(entry), None)
+            .expect("the Host must accept explicit local account funding");
     }
 
     /// Enables the SDK's explicit record-and-mock authorization mode.
@@ -424,16 +480,18 @@ pub enum AutoRunError {
 
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::testutils::EnvTestConfig;
+    use soroban_sdk::testutils::{EnvTestConfig, Ledger as _};
 
     use super::*;
 
     #[test]
-    fn local_account_is_derived_from_v2_domain_network_and_label_without_a_contract() {
+    fn local_account_is_unfunded_and_explicit_funding_is_scoped_and_additive() {
         let mut env = Env::default();
         env.set_config(EnvTestConfig {
             capture_snapshot_at_drop: false,
         });
+        env.ledger().set_base_reserve(5_000_000);
+        env.ledger().set_sequence_number(123);
         let network_id = env
             .host()
             .with_ledger_info(|ledger| Ok(ledger.network_id))
@@ -451,7 +509,47 @@ mod tests {
         ))));
 
         assert_eq!(ScAddress::from(&actual), expected);
+        assert_eq!(local_account_balance(&env, &actual), None);
         assert_eq!(fork.local_account("alice"), actual);
         assert_ne!(fork.local_account("bob"), actual);
+
+        let minimum = env
+            .host()
+            .with_ledger_info(|ledger| Ok(i64::from(ledger.base_reserve) * 2))
+            .unwrap();
+        fork.fund_local_account(&actual, minimum);
+        assert_eq!(local_account_balance(&env, &actual), Some(minimum));
+        fork.fund_local_account(&actual, 5);
+        assert_eq!(local_account_balance(&env, &actual), Some(minimum + 5));
+        assert_eq!(fork.local_account("alice"), actual);
+        assert_eq!(local_account_balance(&env, &actual), Some(minimum + 5));
+
+        let below_reserve = fork.local_account("below-reserve");
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fork.fund_local_account(&below_reserve, minimum - 1);
+        }))
+        .is_err());
+        assert_eq!(local_account_balance(&env, &below_reserve), None);
+
+        let nonlocal = Address::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fork.fund_local_account(&nonlocal, minimum);
+        }))
+        .is_err());
+    }
+
+    fn local_account_balance(env: &Env, account: &Address) -> Option<i64> {
+        let ScAddress::Account(account_id) = ScAddress::from(account) else {
+            panic!("local account must be a G-address");
+        };
+        let key = Rc::new(LedgerKey::Account(LedgerKeyAccount { account_id }));
+        let (entry, _) = env.host().get_ledger_entry(&key).unwrap()?;
+        let LedgerEntryData::Account(account) = &entry.data else {
+            panic!("local account key must contain an AccountEntry");
+        };
+        Some(account.balance)
     }
 }

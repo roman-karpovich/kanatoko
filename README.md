@@ -40,6 +40,7 @@ fn swap_moves_the_real_pool_price() {
         .cache(".kanatoko/aquarius-swap.json")
         .run(|fork| {
             let user = fork.local_account("swap-user");
+            fork.fund_local_account(&user, 100_000_000);
             let pool_id = fork.contract(POOL);
             let usdc = fork.contract(USDC);
 
@@ -132,16 +133,20 @@ scenario.
 | `fork.contract("C...")` | Parses a contract address; later Host access discovers its instance, WASM, and storage. |
 | `fork.account("G...")` | Parses an account address; later Host access discovers its network account and trustlines. |
 | `fork.muxed_account("M...")` | Parses muxed metadata; ledger state belongs to the underlying G-address. |
-| `fork.local_account("label")` | Injects a funded, deterministic local G-account with no private key or initial trustlines. |
+| `fork.local_account("label")` | Creates a deterministic local G-address without an account entry, XLM, trustlines, or private key. |
+| `fork.fund_local_account(&address, stroops)` | Explicitly creates or funds that local account through local ledger injection. |
 
 `local_account` depends only on the network and label, so it can be created
-before any contract address and remains stable across discovery and replay.
+before any contract address and remains stable across discovery and replay. It
+does not make the address exist on the ledger. The first explicit funding must
+cover Stellar's two-base-reserve minimum.
 
 For a real G-address, XLM SAC `balance` reads its complete `AccountEntry`, and
 a classic asset SAC reads its `TrustLineEntry`. Kanatoko captures those exact
-entries at the same ledger as the contracts. A local account starts with only
-an injected `AccountEntry`, so classic assets still require their real `trust`
-flow and, when applicable, `set_authorized`.
+entries at the same ledger as the contracts. After explicit funding, classic
+assets still require their real `trust` flow and, when applicable,
+`set_authorized`; the account must also have enough XLM reserve for that
+trustline.
 
 On protocol 27, `MuxedAddress` is supported as a SAC `transfer` destination.
 The balance change applies to the underlying G-account and the multiplexing ID

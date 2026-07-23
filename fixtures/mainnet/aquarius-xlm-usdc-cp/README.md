@@ -106,11 +106,12 @@ cargo run --locked --offline --features capture --bin kanatoko -- \
 
 `tests/auto_runner.rs` contains one Rust body for discovery and strict replay.
 It mixes a generated pool client with dynamic SAC and pool invocations in one
-`Env`, creates a deterministic local G-account, establishes its real SAC
-trustline, mints it 10% of the USDC reserve, swaps through the captured graph,
-and proves the 1 USDC -> XLM quote moved. The same scenario reads a real
-mainnet G-account through both XLM and USDC SACs, then transfers one stroop to
-its M-address and verifies the multiplexing ID in the emitted event.
+`Env`, creates a deterministic local G-address, explicitly funds it, establishes
+its real SAC trustline, mints it 10% of the USDC reserve, swaps through the
+captured graph, and proves the 1 USDC -> XLM quote moved. The same scenario
+reads a real mainnet G-account through both XLM and USDC SACs, explicitly funds
+a separate local sender, then transfers one stroop to the real account's
+M-address and verifies the multiplexing ID in the emitted event.
 
 The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
