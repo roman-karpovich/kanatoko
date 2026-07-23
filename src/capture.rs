@@ -31,7 +31,7 @@ use thiserror::Error;
 
 use crate::{FixtureError, FrozenFixture, StrictFork, SUPPORTED_PROTOCOL_VERSION};
 
-const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
+pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
@@ -1751,6 +1751,82 @@ mod tests {
     }
 
     #[test]
+    fn auto_runner_mixes_imported_abi_and_dynamic_invocations_then_reuses_cache_offline() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::m1();
+        let path = test_bundle_path("auto-runner");
+        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .run(mixed_auto_scenario)
+            .unwrap();
+        assert_eq!(first.cache_status(), CacheStatus::Created);
+        assert_eq!(first.fixture().root_contract(), POOL_ID);
+        assert_eq!(first.fixture().report().final_replay_rpc_reads(), 0);
+        let reads_after_capture = fake.ledger_entry_reads();
+
+        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .offline()
+            .run(mixed_auto_scenario)
+            .unwrap();
+        assert_eq!(second.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
+        assert_eq!(second.fixture().report().final_replay_rpc_reads(), 0);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_recaptures_unknown_scenario_keys_and_replaces_cache() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::m1();
+        let path = test_bundle_path("auto-runner-refresh");
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .run(|fork| mixed_auto_scenario_for_user(fork, 0x4b))
+            .unwrap();
+        let reads_before_refresh = fake.ledger_entry_reads();
+
+        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .run(|fork| mixed_auto_scenario_for_user(fork, 0x5c))
+            .unwrap();
+        assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
+        assert!(fake.ledger_entry_reads() > reads_before_refresh);
+
+        let reads_after_refresh = fake.ledger_entry_reads();
+        let replayed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .offline()
+            .run(|fork| mixed_auto_scenario_for_user(fork, 0x5c))
+            .unwrap();
+        assert_eq!(replayed.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_refresh);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_offline_missing_cache_fails_without_rpc_reads() {
+        use crate::auto::{AutoRunError, AutoRunner};
+
+        let fake = FakeTransport::m1();
+        let path = test_bundle_path("auto-runner-missing");
+        let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+            .cache(&path)
+            .offline()
+            .run(|_| {});
+
+        assert!(matches!(
+            result,
+            Err(AutoRunError::OfflineCacheMissing { path: missing }) if missing == path
+        ));
+        assert_eq!(fake.ledger_entry_reads(), 0);
+    }
+
+    #[test]
     fn versioned_bundle_roundtrips_and_replays_strictly_offline() {
         let fake = FakeTransport::m1();
         let captured = builder(&fake).capture(aquarius_scenario).unwrap();
@@ -2147,6 +2223,35 @@ mod tests {
         }])
         .swap(&user, &1, &0, &amount, &0);
         assert!(pool.estimate_swap(&1, &0, &ONE_USDC) < quote_before);
+    }
+
+    fn mixed_auto_scenario(fork: &crate::auto::ScenarioFork<'_>) {
+        mixed_auto_scenario_for_user(fork, 0x4b);
+    }
+
+    fn mixed_auto_scenario_for_user(fork: &crate::auto::ScenarioFork<'_>, user_byte: u8) {
+        let env = fork.env();
+        let pool_id = fork.contract(POOL_ID);
+        let usdc = fork.contract(USDC_ID);
+        let pool = pool::Client::new(env, &pool_id);
+        let user =
+            Address::try_from_val(env, &ScAddress::Contract(Hash([user_byte; 32]).into())).unwrap();
+
+        assert_eq!(pool.get_tokens().get(1).unwrap(), usdc);
+        let before = pool.estimate_swap(&1, &0, &ONE_USDC);
+        let reserves = pool.get_reserves();
+        let amount = reserves.get(1).unwrap() / 10;
+        let amount_i128 = i128::try_from(amount).unwrap();
+
+        fork.mock_all_auths();
+        let admin = fork.invoke::<Address>(&usdc, "admin", ());
+        fork.invoke::<()>(&usdc, "mint", (user.clone(), amount_i128));
+        assert_eq!(env.auths()[0].0, admin);
+        let received = fork.invoke::<u128>(&pool_id, "swap", (user, 1_u32, 0_u32, amount, 0_u128));
+        assert!(received > 0);
+
+        let after = pool.estimate_swap(&1, &0, &ONE_USDC);
+        assert!(after < before);
     }
 
     fn test_bundle_path(label: &str) -> PathBuf {

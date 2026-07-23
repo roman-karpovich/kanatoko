@@ -1,97 +1,122 @@
 # Kanatoko
 
-**Run Soroban contracts against captured Stellar mainnet state — locally,
-statefully, and offline.**
+**Test Soroban contracts against real Stellar state without deploying or
+spending funds.**
 
-Kanatoko turns a contract address and an exercised scenario into a strict,
-mutable Soroban Host fork. It captures production WASM and ledger state,
-installs your candidate WASM without a public deployment, and lets several
-cross-contract calls share local state.
+Write one stateful Rust test. Kanatoko runs it to discover every contract,
+network WASM, and ledger entry it touches, freezes one coherent ledger, then
+runs the same test again in strict mode with zero RPC fallback.
 
-No funds. No public-network writes. No fake implementation of the contracts
-under test.
+No manual capture script. No duplicated scenario. No fake implementation of
+the contracts under test.
+
+```toml
+[dev-dependencies]
+kanatoko = { git = "https://github.com/roman-karpovich/kanatoko", features = ["capture"] }
+soroban-sdk = { version = "=27.0.0", features = ["testutils"] }
+```
 
 ## Example: move a real Aquarius pool price
 
-The included scenario uses the Aquarius XLM/USDC constant-product pool:
+```rust,ignore
+use kanatoko::mainnet;
+use soroban_sdk::Address;
 
-`CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE`
+mod pool_abi {
+    // Any ABI-compatible build is enough; this file is never executed.
+    soroban_sdk::contractimport!(file = "tests/wasm/aquarius_pool_abi.wasm");
+}
 
-Run it with every network proxy deliberately disabled:
+const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+const USER: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 
-```sh
-HTTP_PROXY=http://127.0.0.1:9 \
-HTTPS_PROXY=http://127.0.0.1:9 \
-ALL_PROXY=http://127.0.0.1:9 \
-NO_PROXY= \
-cargo run --locked --offline --features capture --bin kanatoko -- \
-  run aquarius-cp
+#[test]
+fn swap_moves_the_real_pool_price() {
+    mainnet(POOL)
+        .cache(".kanatoko/aquarius-swap.json")
+        .run(|fork| {
+            let env = fork.env();
+            let pool_id = fork.contract(POOL);
+            let usdc = fork.contract(USDC);
+            let user = fork.contract(USER);
+
+            // Typed calls and dynamic calls share this Env and its mutations.
+            let pool = pool_abi::Client::new(env, &pool_id);
+            let before = pool.estimate_swap(&1, &0, &10_000_000);
+            let reserves = pool.get_reserves();
+            let amount = reserves.get(1).unwrap() / 10;
+
+            fork.mock_all_auths();
+            let admin = fork.invoke::<Address>(&usdc, "admin", ());
+
+            // SAC mint is (user, amount); admin belongs to the auth tree.
+            fork.invoke::<()>(
+                &usdc,
+                "mint",
+                (user.clone(), i128::try_from(amount).unwrap()),
+            );
+            assert_eq!(env.auths()[0].0, admin);
+
+            let received = fork.invoke::<u128>(
+                &pool_id,
+                "swap",
+                (user, 1_u32, 0_u32, amount, 0_u128),
+            );
+            assert!(received > 0);
+
+            let after = pool.estimate_swap(&1, &0, &10_000_000);
+            assert_ne!(after, before);
+        })
+        .unwrap();
+}
 ```
 
-```text
-strict Aquarius M3 run: ok
-ledger: 63600296
-candidate install: local injection (not transaction-faithful deploy)
-quote before: 53354881
-quote after: 44100959
-revert restored quote: 53354881
-unknown key fail-closed: true
-upstream reads: 0
-receipts: 8 (use --format json for detached XDR)
+On a cache miss, this single body drives dependency discovery and creates the
+fixture. Later runs use the frozen state directly. Use `.refresh()` to capture
+a newer mainnet ledger or `.offline()` to require a cache-only CI run. Keep one
+cache path per scenario.
+
+The body can run several times during discovery and strict replay, so it must
+be deterministic and free of external side effects. Create all generated
+clients and Soroban values inside the closure.
+
+## Network WASM always wins
+
+`contractimport!` uses the local WASM only to generate Rust types and method
+bindings. Kanatoko never registers that file at the captured contract address.
+
+Calls execute the contract instance and WASM captured from Stellar. The local
+ABI artifact may be older; if it is incompatible with the captured network
+contract, the call fails instead of silently running the local code.
+
+Contracts without a local ABI use the same environment through dynamic calls:
+
+```rust,ignore
+let quote = fork.invoke::<u128>(
+    &pool_id,
+    "estimate_swap",
+    (1_u32, 0_u32, 10_000_000_u128),
+);
 ```
 
-That single run:
-
-1. loads a coherent captured mainnet ledger;
-2. installs a hash-pinned candidate wrapper and runs its constructor;
-3. quotes 1 USDC to XLM, mints a test user 10% of the USDC reserve, and swaps
-   through the real captured pool and Stellar Asset Contract WASM;
-4. proves the price changed, restores it with `revert`, rejects uncaptured
-   state, and reports zero RPC reads.
-
-The full Rust test also inspects authorization trees, events, diagnostics,
-state diffs, balances, reserves, and before/after digests:
-[tests/m3_aquarius.rs](tests/m3_aquarius.rs).
-Add `--format json` to get the same evidence as detached XDR.
-
-## Use fresh mainnet state
-
-Capture starts from the pool address and discovers the ledger keys touched by
-the scenario:
-
-```sh
-cargo run --locked --features capture --bin kanatoko -- \
-  capture aquarius-cp \
-  --root CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE \
-  --bundle /tmp/aquarius.json
-
-cargo run --locked --offline --features capture --bin kanatoko -- \
-  run aquarius-cp --fixture /tmp/aquarius.json
-```
-
-Capture covers exercised execution paths, not branches that never ran.
-Confirmed absence remains distinct from unknown state. Explicitly registered
-local candidate contracts are the only intentional exception to unknown-key
-rejection.
+The caller supplies the return type; heterogeneous tuples use Soroban SDK value
+conversions.
 
 ## Evidence boundary
 
-Kanatoko currently proves contract-functional, state-reproducible Host
-behavior. Local candidate installation and recorded/mocked authorization are
-explicit test cheats.
-
-It does not claim transaction-faithful deployment, envelope or fee validation,
-Stellar Core/consensus behavior, SDEX execution, arbitrary historical replay,
-or JSON-RPC daemon compatibility.
-
-## Verify
+Kanatoko proves contract-functional, state-reproducible Soroban Host behavior.
+Local candidate installation and mocked authorization are explicit test
+cheats. It does not claim transaction, fee, signature, Stellar Core/consensus,
+SDEX, or arbitrary historical-ledger fidelity.
 
 ```sh
+cargo test --locked
 cargo test --locked --all-features
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
-See [MISSION.md](MISSION.md) for product principles and
-[the fixture notes](fixtures/mainnet/aquarius-xlm-usdc-cp/README.md) for
-capture provenance.
+See the runnable mixed-mode acceptance in
+[`tests/m4_auto.rs`](tests/m4_auto.rs) and the project principles in
+[`MISSION.md`](MISSION.md).

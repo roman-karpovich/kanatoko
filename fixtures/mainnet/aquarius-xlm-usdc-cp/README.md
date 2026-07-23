@@ -1,9 +1,9 @@
 # Aquarius XLM/USDC constant-product fixture
 
-This directory contains the frozen M1 `ledger.json`/`manifest.json` fixture and
-the local `pool.wasm` used to generate the typed pool client ABI. The M2 capture
-tool writes a separate versioned `capture.json`; the normal test suite never
-contacts a network.
+This directory contains the frozen M1 `ledger.json`/`manifest.json` fixture,
+the lower-level M2 `capture.json`, and the one-scenario M4
+`auto-capture.json`. Local WASM artifacts generate client ABIs only; the normal
+test suite never contacts a network.
 
 The root contract is Aquarius pool
 `CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE`. Executing its real
@@ -57,7 +57,7 @@ admin/mint tree is asserted exactly and recording is cleared. The subsequent
 user swap uses an explicit exact `MockAuth` tree rooted at `pool.swap`, with the
 nested `USDC.transfer` invocation. No production signature or secret is used.
 
-## M2 address-first capture and replay
+## M2 lower-level address-first capture and replay
 
 The current capture tool starts with the pool address and RPC URL. During
 scenario execution it automatically discovers every Host-read or Host-written
@@ -98,6 +98,39 @@ Replay an existing bundle fully offline with:
 cargo run --locked --offline --features capture --bin kanatoko -- \
   run aquarius-cp --format text
 ```
+
+## M4 one-scenario automatic capture
+
+`tests/m4_auto.rs` contains one Rust body for discovery and strict replay. It
+mixes a generated pool client with dynamic SAC and pool invocations in one
+`Env`, mints a synthetic user 10% of the USDC reserve, swaps through the real
+captured graph, and proves the 1 USDC -> XLM quote moved.
+
+The committed `auto-capture.json` was created by the runner itself on the
+first online execution; no separate capture scenario or manifest was written.
+
+- Mainnet ledger: `63608632`
+- Ledger hash:
+  `b1602d78266433255c154a6460ed223e64d3f766b2548065125150e58899e2ee`
+- Discovery: 2 rounds, 12 present, 5 confirmed absent
+- Final replay RPC reads: `0`
+- Canonical ledger digest:
+  `3362768e3989ae0905afc62813aabb76cf99e1bd3478ea121be4c8651fac70ed`
+- Inventory digest:
+  `71612d82409b8a26560a9a8b3e07563c38b5a7cce83a043247c1e3d26f9e0fcd`
+- Canonical bundle digest:
+  `33e9edc72cc6afe4e4b55a5b647936ce3367a33e79495f97d14d4dc3fa1f6b6b`
+- `auto-capture.json` SHA-256:
+  `56dcd3072469ddafa9e2dbd9c3490ab373b2967bb6932419a659e0ea22860afa`
+
+The typed client is deliberately generated from the different
+`kanatoko_aquarius_wrapper.wasm` artifact. The test asserts that its hash is
+not the captured root executable hash, proving the imported file is only an
+ABI source and the captured network pool WASM executes. A second negative test
+uses incompatible generated bindings and requires the typed `try_*` call to
+return an error rather than execute the local artifact. The acceptance passes
+with all HTTP proxies pointed at
+`127.0.0.1:9`.
 
 ## M3 strict mutable candidate workflow
 

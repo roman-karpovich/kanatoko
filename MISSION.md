@@ -3,10 +3,11 @@
 Kanatoko makes real Stellar network state usable as a local, deterministic
 Soroban test environment.
 
-It exists so contract developers can register candidate WASM locally, call
-real deployed contracts and captured state, explore multi-call behavior, and
-inspect the result without paying for a deployment or mutating a public
-network.
+It exists so contract developers can write one stateful Rust test, call real
+deployed contracts and captured state, mix generated clients with dynamic
+invocations, and inspect the result without paying for a deployment or
+mutating a public network. Candidate WASM can also be registered locally when
+the contract under development is not deployed.
 
 The name is a quiet joke: *soroban* is the Japanese abacus; *kanatoko* is the
 Japanese anvil. Kanatoko aims to give Soroban developers the productive weight
@@ -36,6 +37,8 @@ of an Anvil-like workflow while remaining native to Stellar's execution model.
 
 The first product is a Rust-first library and capture workflow for:
 
+- starting from a network contract address and one ordinary test scenario;
+- discovering all Host-touched contracts, network WASM, and ledger entries;
 - loading reproducible Stellar ledger fixtures;
 - registering candidate Soroban WASM locally;
 - executing stateful cross-contract calls in the real Soroban Host;
@@ -43,14 +46,22 @@ The first product is a Rust-first library and capture workflow for:
 - checkpointing and reverting local state;
 - turning exploratory network state into frozen, offline CI fixtures.
 
-M3 now supplies the first honest mutable workflow over an M2 capture. A strict
-fork preserves confirmed absence versus unknown state, locally injects
-hash-checked candidate production WASM with constructor execution, supports
-stateful preview/apply calls and checkpoint/revert, and returns detached XDR
-receipts containing result/error, auth evidence, events, diagnostics, state
-diff, and digests. The runnable Aquarius acceptance proves a candidate contract
-can call the captured pool/SAC graph across several calls with zero replay RPC
-reads.
+The common M4 path is one closure. Kanatoko reruns it to a coherent
+dependency fixed point, seals a cache, and executes the same body under strict
+offline replay. Generated clients and dynamic calls share one environment and
+the same local mutations.
+
+A WASM imported for a generated client is an ABI artifact only. Kanatoko never
+registers it at the captured address: the contract instance and executable
+WASM captured from Stellar remain authoritative. A stale incompatible ABI must
+fail instead of silently replacing upgraded network code.
+
+The advanced M3 API remains available beneath that facade. Its strict fork
+preserves confirmed absence versus unknown state, locally injects hash-checked
+candidate production WASM with constructor execution, supports stateful
+preview/apply calls and checkpoint/revert, and returns detached XDR receipts
+containing result/error, auth evidence, events, diagnostics, state diff, and
+digests.
 
 Candidate installation remains an explicitly labelled SDK test cheat. It is
 not upload/create transaction evidence. Likewise, record and mock-exact auth
