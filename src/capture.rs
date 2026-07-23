@@ -191,25 +191,42 @@ impl CaptureBuilder {
         self.capture_ref(&scenario)
     }
 
+    pub(crate) fn capture_with_inventory<F>(
+        &self,
+        fixture: &CapturedFixture,
+        scenario: F,
+    ) -> Result<CapturedFixture, CaptureError>
+    where
+        F: Fn(&Env, Rc<LocalLedger>, Rc<TrackingSource>),
+    {
+        self.capture_ref_from_keys(&scenario, fixture.inventory_keys()?)
+    }
+
+    pub(crate) fn cached_anchor_is_current(
+        &self,
+        fixture: &CapturedFixture,
+    ) -> Result<bool, CaptureError> {
+        self.validate_network()?;
+        Ok(self.current_anchor()? == fixture.anchor())
+    }
+
     fn capture_ref<F>(&self, scenario: &F) -> Result<CapturedFixture, CaptureError>
     where
         F: Fn(&Env, Rc<LocalLedger>, Rc<TrackingSource>),
     {
-        let network = self
-            .transport
-            .network()
-            .map_err(|failure| transport_error(failure.operation))?;
-        if network.passphrase != self.network_passphrase {
-            return Err(CaptureError::NetworkMismatch);
-        }
-        if network.protocol_version != SUPPORTED_PROTOCOL_VERSION {
-            return Err(CaptureError::UnsupportedProtocol {
-                found: network.protocol_version,
-                supported: SUPPORTED_PROTOCOL_VERSION,
-            });
-        }
+        self.capture_ref_from_keys(scenario, BTreeMap::new())
+    }
 
-        let mut keys = BTreeMap::new();
+    fn capture_ref_from_keys<F>(
+        &self,
+        scenario: &F,
+        mut keys: BTreeMap<KeyId, LedgerKey>,
+    ) -> Result<CapturedFixture, CaptureError>
+    where
+        F: Fn(&Env, Rc<LocalLedger>, Rc<TrackingSource>),
+    {
+        self.validate_network()?;
+
         let mut materialized = self.materialize(&keys)?;
         materialized = self.expand_code_closure(&mut keys, materialized)?;
 
@@ -300,6 +317,37 @@ impl CaptureBuilder {
         Err(CaptureError::FixedPointLimit {
             rounds: self.max_discovery_rounds,
         })
+    }
+
+    fn validate_network(&self) -> Result<(), CaptureError> {
+        let network = self
+            .transport
+            .network()
+            .map_err(|failure| transport_error(failure.operation))?;
+        if network.passphrase != self.network_passphrase {
+            return Err(CaptureError::NetworkMismatch);
+        }
+        if network.protocol_version != SUPPORTED_PROTOCOL_VERSION {
+            return Err(CaptureError::UnsupportedProtocol {
+                found: network.protocol_version,
+                supported: SUPPORTED_PROTOCOL_VERSION,
+            });
+        }
+        Ok(())
+    }
+
+    fn current_anchor(&self) -> Result<Anchor, CaptureError> {
+        let anchor = self
+            .transport
+            .latest_ledger()
+            .map_err(|failure| transport_error(failure.operation))?;
+        if anchor.protocol_version != SUPPORTED_PROTOCOL_VERSION {
+            return Err(CaptureError::UnsupportedProtocol {
+                found: anchor.protocol_version,
+                supported: SUPPORTED_PROTOCOL_VERSION,
+            });
+        }
+        Ok(anchor)
     }
 
     fn materialize(&self, keys: &BTreeMap<KeyId, LedgerKey>) -> Result<Materialized, CaptureError> {
@@ -574,6 +622,30 @@ impl CapturedFixture {
             });
         }
         outcome.map_err(|_| CaptureError::ScenarioPanicked)
+    }
+
+    fn inventory_keys(&self) -> Result<BTreeMap<KeyId, LedgerKey>, CaptureError> {
+        self.coverage
+            .keys()
+            .map(|id| {
+                let key = LedgerKey::from_xdr(id.clone(), Limits::none())
+                    .map_err(|_| CaptureError::MalformedCaptureBundle)?;
+                if key_id(&key)? != *id || is_state_archival_key(&key) {
+                    return Err(CaptureError::MalformedCaptureBundle);
+                }
+                Ok((id.clone(), key))
+            })
+            .collect()
+    }
+
+    fn anchor(&self) -> Anchor {
+        Anchor {
+            sequence: self.fixture.ledger_snapshot().sequence_number,
+            hash: self.provenance.ledger_hash.clone(),
+            protocol_version: self.fixture.ledger_snapshot().protocol_version,
+            timestamp: self.fixture.ledger_snapshot().timestamp,
+            base_reserve: self.fixture.ledger_snapshot().base_reserve,
+        }
     }
 
     /// Creates an offline mutable fork that retains strict Present/Absent
@@ -2132,7 +2204,7 @@ mod tests {
 
     #[test]
     fn auto_runner_cache_hit_ignores_invalid_rpc_override() {
-        use crate::auto::{mainnet, AutoRunner, CacheStatus};
+        use crate::auto::{mainnet, AutoRunError, AutoRunner, CacheStatus};
 
         let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner-invalid-rpc-cache-hit");
@@ -2142,6 +2214,13 @@ mod tests {
             .unwrap();
         let reads_after_capture = fake.ledger_entry_reads();
 
+        assert!(matches!(
+            mainnet()
+                .rpc_url("this-is-not-a-url")
+                .cache(&path)
+                .run(|_| {}),
+            Err(AutoRunError::Capture(CaptureError::InvalidRpcUrl))
+        ));
         let replayed = mainnet()
             .rpc_url("this-is-not-a-url")
             .cache(&path)
@@ -2325,6 +2404,213 @@ mod tests {
         assert_eq!(replayed.cache_status(), CacheStatus::Hit);
         assert_eq!(fake.ledger_entry_reads(), reads_after_refresh);
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_online_cache_hit_probes_anchor_without_entry_reads() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-anchor-hit");
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|_| {})
+            .unwrap();
+        let network_reads = fake.network_reads.get();
+        let latest_reads = fake.latest_reads.get();
+        let entry_reads = fake.ledger_entry_reads();
+
+        let hit = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|_| {})
+            .unwrap();
+
+        assert_eq!(hit.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.network_reads.get(), network_reads + 1);
+        assert_eq!(fake.latest_reads.get(), latest_reads + 1);
+        assert_eq!(fake.ledger_entry_reads(), entry_reads);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_warm_refreshes_known_keys_at_a_newer_ledger() {
+        assert_warm_refreshes_known_key(false);
+    }
+
+    #[test]
+    fn auto_runner_warm_refreshes_known_keys_for_same_sequence_different_hash() {
+        assert_warm_refreshes_known_key(true);
+    }
+
+    #[test]
+    fn auto_runner_warm_refreshes_large_inventory_in_bounded_batches() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-warm-refresh-large-inventory");
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let keys: Vec<LedgerKey> = (0..MAX_KEYS_PER_BATCH)
+            .map(|value| data_key(contract.clone(), u32::try_from(value).unwrap() + 1_000))
+            .collect();
+        let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
+            for key in &keys {
+                assert!(fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(key.clone()))
+                    .unwrap()
+                    .is_none());
+            }
+        };
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+
+        {
+            let fake_mut = Rc::get_mut(&mut fake).unwrap();
+            fake_mut.anchor.sequence += 1;
+            fake_mut.anchor.hash = "large-inventory-new-ledger".to_string();
+        }
+        fake.batch_calls.borrow_mut().clear();
+
+        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        let batch_sizes: Vec<usize> = fake.batch_calls.borrow().iter().map(Vec::len).collect();
+
+        assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
+        assert_eq!(batch_sizes, vec![MAX_KEYS_PER_BATCH, 1]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_same_ledger_unknown_seeds_recapture_from_cached_inventory() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-same-anchor-unknown");
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let first_key = data_key(contract.clone(), 880);
+        let second_key = data_key(contract, 881);
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                assert!(fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(first_key.clone()))
+                    .unwrap()
+                    .is_none());
+            })
+            .unwrap();
+        fake.batch_calls.borrow_mut().clear();
+
+        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                assert!(fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(first_key.clone()))
+                    .unwrap()
+                    .is_none());
+                assert!(fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(second_key.clone()))
+                    .unwrap()
+                    .is_none());
+            })
+            .unwrap();
+
+        let first_id = key_id(&first_key).unwrap();
+        assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
+        assert!(fake
+            .batch_calls
+            .borrow()
+            .iter()
+            .any(|batch| batch.len() > 1 && batch.contains(&first_id)));
+        assert!(!fake
+            .batch_calls
+            .borrow()
+            .iter()
+            .any(|batch| batch == std::slice::from_ref(&first_id)));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_offline_replay_is_pinned_and_makes_no_transport_calls() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-offline-pinned");
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|_| {})
+            .unwrap();
+        let before = (
+            fake.network_reads.get(),
+            fake.latest_reads.get(),
+            fake.ledger_entry_reads(),
+        );
+
+        let hit = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(|_| {})
+            .unwrap();
+
+        assert_eq!(hit.cache_status(), CacheStatus::Hit);
+        assert_eq!(
+            (
+                fake.network_reads.get(),
+                fake.latest_reads.get(),
+                fake.ledger_entry_reads()
+            ),
+            before
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_warm_refresh_preserves_previous_cache_file() {
+        use crate::auto::AutoRunner;
+
+        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-failed-warm-refresh");
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let known = data_key(contract, 882);
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                let _ = fork.env().host().get_ledger_entry(&Rc::new(known.clone()));
+            })
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        let known_id = key_id(&known).unwrap();
+        let fake_mut = Rc::get_mut(&mut fake).unwrap();
+        fake_mut.anchor.sequence += 1;
+        fake_mut.anchor.hash = "new-ledger-that-fails".to_string();
+        fake_mut.fail_keys.get_mut().insert(known_id);
+
+        let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                let _ = fork.env().host().get_ledger_entry(&Rc::new(known.clone()));
+            });
+
+        assert!(matches!(
+            result,
+            Err(crate::auto::AutoRunError::Capture(
+                CaptureError::Transport {
+                    operation: "getLedgerEntries"
+                }
+            ))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
         fs::remove_file(path).unwrap();
     }
 
@@ -3061,12 +3347,86 @@ mod tests {
         }
     }
 
+    fn assert_warm_refreshes_known_key(same_sequence: bool) {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path(if same_sequence {
+            "auto-runner-warm-refresh-hash"
+        } else {
+            "auto-runner-warm-refresh-sequence"
+        });
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let known = data_key(contract.clone(), 879);
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                assert!(fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(known.clone()))
+                    .unwrap()
+                    .is_none());
+            })
+            .unwrap();
+
+        let known_id = key_id(&known).unwrap();
+        let fake_mut = Rc::get_mut(&mut fake).unwrap();
+        if !same_sequence {
+            fake_mut.anchor.sequence += 1;
+        }
+        fake_mut.anchor.hash = if same_sequence {
+            "same-sequence-new-hash".to_string()
+        } else {
+            "newer-ledger".to_string()
+        };
+        fake_mut.entries.insert(
+            known_id.clone(),
+            FetchedEntry {
+                entry: Rc::new(contract_data_entry(contract, 879, 42)),
+                live_until: Some(fake_mut.anchor.sequence + 100),
+            },
+        );
+        fake.batch_calls.borrow_mut().clear();
+
+        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|fork| {
+                let entry = fork
+                    .env()
+                    .host()
+                    .get_ledger_entry(&Rc::new(known.clone()))
+                    .unwrap()
+                    .unwrap();
+                let LedgerEntryData::ContractData(data) = &entry.0.data else {
+                    panic!("known entry must remain contract data");
+                };
+                assert_eq!(data.val, ScVal::U32(42));
+            })
+            .unwrap();
+
+        assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
+        assert!(fake
+            .batch_calls
+            .borrow()
+            .iter()
+            .any(|batch| batch.len() > 1 && batch.contains(&known_id)));
+        assert!(!fake
+            .batch_calls
+            .borrow()
+            .iter()
+            .any(|batch| batch == std::slice::from_ref(&known_id)));
+        fs::remove_file(path).unwrap();
+    }
+
     struct FakeTransport {
         network: Network,
         anchor: Anchor,
         entries: BTreeMap<KeyId, FetchedEntry>,
         batch_calls: RefCell<Vec<Vec<KeyId>>>,
         reads: Cell<u64>,
+        network_reads: Cell<u64>,
+        latest_reads: Cell<u64>,
         fail_keys: RefCell<BTreeSet<KeyId>>,
         mix_second_large_batch_once: Cell<bool>,
         large_batches_seen: Cell<usize>,
@@ -3127,6 +3487,8 @@ mod tests {
                 entries,
                 batch_calls: RefCell::new(Vec::new()),
                 reads: Cell::new(0),
+                network_reads: Cell::new(0),
+                latest_reads: Cell::new(0),
                 fail_keys: RefCell::new(BTreeSet::new()),
                 mix_second_large_batch_once: Cell::new(false),
                 large_batches_seen: Cell::new(0),
@@ -3141,10 +3503,12 @@ mod tests {
 
     impl Transport for FakeTransport {
         fn network(&self) -> Result<Network, TransportFailure> {
+            self.network_reads.set(self.network_reads.get() + 1);
             Ok(self.network.clone())
         }
 
         fn latest_ledger(&self) -> Result<Anchor, TransportFailure> {
+            self.latest_reads.set(self.latest_reads.get() + 1);
             Ok(self.anchor.clone())
         }
 

@@ -203,9 +203,9 @@ impl AutoRunner {
     /// Uses another RPC provider for the runner's selected network.
     ///
     /// This changes only the capture provider. The network passphrase, strict
-    /// cache validation, and automatic cache identity remain unchanged. URL
-    /// validation is deferred until capture is required, so a cache hit or
-    /// offline replay never validates or contacts this provider.
+    /// cache validation, and automatic cache identity remain unchanged.
+    /// Online runs validate and contact the provider even when the cached
+    /// ledger is still current. Offline replay neither parses nor contacts it.
     #[must_use]
     pub fn rpc_url(mut self, url: impl Into<String>) -> Self {
         self.source = CaptureSource::Http {
@@ -225,11 +225,13 @@ impl AutoRunner {
 
     /// Uses a scenario-specific capture bundle as a cache.
     ///
-    /// A missing cache is created after a successful strict replay. A cache
-    /// hit performs no RPC reads. If the cached scenario reaches an Unknown
-    /// key while online, the entire scenario is recaptured from a coherent
-    /// ledger and the cache is replaced atomically only after strict replay
-    /// succeeds.
+    /// A missing cache is created after a successful strict replay. Online
+    /// runs first compare the complete current ledger anchor with the cached
+    /// anchor. An exact match replays without ledger-entry reads. A changed
+    /// anchor refreshes every cached key in coherent batches, then discovers
+    /// additions. Cached values are never reused across ledgers. If an exact
+    /// anchor replay reaches an Unknown key, the same seeded recapture runs.
+    /// Cache replacement remains atomic and follows successful strict replay.
     #[must_use]
     pub fn cache(mut self, path: impl Into<PathBuf>) -> Self {
         self.cache = Some(path.into());
@@ -243,7 +245,8 @@ impl AutoRunner {
         self
     }
 
-    /// Ignores an existing cache and captures a fresh coherent ledger.
+    /// Ignores both cached values and its key inventory, then performs a cold
+    /// capture from a fresh coherent ledger.
     #[must_use]
     pub const fn refresh(mut self) -> Self {
         self.refresh = true;
@@ -254,12 +257,13 @@ impl AutoRunner {
     ///
     /// Generated Soroban clients may use [`ScenarioFork::env`] while other
     /// contracts are called through [`ScenarioFork::invoke`] in the same
-    /// closure and environment. A cache hit executes the closure once. A cold
-    /// capture can execute it several times, each in a fresh environment, so
-    /// contract mutations never accumulate between discovery passes. External
-    /// effects such as randomness, file or network I/O, counters, and output
-    /// would be repeated; produce one-time ordinary Rust inputs before calling
-    /// this method. Environment-bound values and clients must still be created
+    /// closure and environment. An exact online cache hit or offline replay
+    /// executes the closure once. A cold or inventory-seeded capture can
+    /// execute it several times, each in a fresh environment, so contract
+    /// mutations never accumulate between discovery passes. External effects
+    /// such as randomness, file or network I/O, counters, and output would be
+    /// repeated; produce one-time ordinary Rust inputs before calling this
+    /// method. Environment-bound values and clients must still be created
     /// inside the closure.
     ///
     /// Imported WASM used by `contractimport!` supplies only the generated
@@ -274,50 +278,71 @@ impl AutoRunner {
     where
         F: for<'a> Fn(&ScenarioFork<'a>),
     {
-        let cache_existed = self.cache.as_deref().is_some_and(Path::exists);
-        if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
-            if path.exists() {
-                let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
-                match replay(&cached, &scenario) {
-                    Ok(()) => {
-                        return Ok(AutoRun {
-                            fixture: cached,
-                            cache_status: CacheStatus::Hit,
-                        });
-                    }
-                    Err(CaptureError::UnknownLedgerKeys { .. }) if !self.offline => {}
-                    Err(error) => return Err(error.into()),
+        if self.offline {
+            if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
+                if path.exists() {
+                    let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
+                    replay(&cached, &scenario)?;
+                    return Ok(AutoRun {
+                        fixture: cached,
+                        cache_status: CacheStatus::Hit,
+                    });
                 }
-            } else if self.offline {
                 return Err(AutoRunError::OfflineCacheMissing {
                     path: path.to_path_buf(),
                 });
             }
-        }
-
-        if self.offline {
             return Err(AutoRunError::OfflineCacheMissing {
                 path: self.cache.clone().unwrap_or_default(),
             });
         }
 
-        let captured = match &self.source {
+        match &self.source {
             CaptureSource::Http { rpc_url } => {
                 let builder =
                     CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?
                         .rpc_rate_limit(self.rpc_rate_limit);
-                builder.capture_with_local(|env, local, source| {
-                    scenario(&ScenarioFork::new(env, local, Some(source)));
-                })?
+                self.run_online(&builder, &scenario)
             }
             #[cfg(test)]
-            CaptureSource::Builder(builder) => {
+            CaptureSource::Builder(builder) => self.run_online(builder, &scenario),
+        }
+    }
+
+    fn run_online<F>(&self, builder: &CaptureBuilder, scenario: &F) -> Result<AutoRun, AutoRunError>
+    where
+        F: for<'a> Fn(&ScenarioFork<'a>),
+    {
+        let cache_existed = self.cache.as_deref().is_some_and(Path::exists);
+        let captured = if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
+            if path.exists() {
+                let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
+                if builder.cached_anchor_is_current(&cached)? {
+                    match replay(&cached, scenario) {
+                        Ok(()) => {
+                            return Ok(AutoRun {
+                                fixture: cached,
+                                cache_status: CacheStatus::Hit,
+                            });
+                        }
+                        Err(CaptureError::UnknownLedgerKeys { .. }) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                builder.capture_with_inventory(&cached, |env, local, source| {
+                    scenario(&ScenarioFork::new(env, local, Some(source)));
+                })?
+            } else {
                 builder.capture_with_local(|env, local, source| {
                     scenario(&ScenarioFork::new(env, local, Some(source)));
                 })?
             }
+        } else {
+            builder.capture_with_local(|env, local, source| {
+                scenario(&ScenarioFork::new(env, local, Some(source)));
+            })?
         };
-        replay(&captured, &scenario)?;
+        replay(&captured, scenario)?;
 
         let cache_status = match self.cache.as_deref() {
             Some(path) => {

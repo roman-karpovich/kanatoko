@@ -2,6 +2,15 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 27.0.2 - Unreleased
+
+- Bind cached state values to the complete captured ledger anchor and probe the
+  current anchor before every online cache hit.
+- Reuse only the cached ledger-key inventory across ledgers, refreshing all
+  known values in coherent batches before fixed-point dependency discovery.
+- Keep `.offline()` as a zero-transport pinned replay and `.refresh()` as an
+  explicit cold capture that discards the cached inventory.
+
 ## 27.0.1 - 2026-07-23
 
 - Retry throttled or transient read-only RPC responses with a short bounded

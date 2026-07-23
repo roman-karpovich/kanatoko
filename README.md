@@ -106,9 +106,13 @@ an online run recaptures them; offline mode fails closed until then.
 
 The cache file is generated automatically under `.kanatoko/` from the selected
 network, test thread name, and runner callsite. The first run discovers the
-scenario's network dependencies; later runs replay the frozen ledger entirely
-offline. Use `.cache(path)` to override the path, `.refresh()` to capture a
-newer ledger, or `.offline()` in CI to require an existing cache.
+scenario's network dependencies. Each later online run probes the current
+ledger: an exact anchor match replays the cache without ledger-entry reads,
+while a changed anchor reloads every known key in coherent batches and then
+discovers additions. State values from different ledgers are never mixed.
+Use `.cache(path)` to override the path, `.refresh()` to force a cold capture
+with an empty key inventory, or `.offline()` in CI to replay the cached ledger
+as an explicitly pinned snapshot with zero transport calls.
 
 ## Network and RPC
 
@@ -138,11 +142,13 @@ An RPC override changes only the provider, never the selected network
 passphrase. Capture fails if that provider reports another network. Automatic
 cache paths include the network identity but not the RPC URL, so mainnet and
 testnet cannot share a default cache while two providers for the same network
-can. A cache hit does not parse or contact the configured RPC; `.refresh()`
-forces capture and therefore validates the URL and network. RPC pacing is
-disabled by default; `.rpc_rate_limit(5)` opts into a five-request-per-second
-limit within each capture run that also covers retry attempts. Separate
-capture runs do not share a quota.
+can. Every online run validates the configured RPC and probes its complete
+latest-ledger anchor. An exact cache hit therefore performs `getNetwork` and
+`getLatestLedger`, but no `getLedgerEntries`. Only `.offline()` ignores an
+invalid RPC URL and makes no network calls. RPC pacing is disabled by default;
+`.rpc_rate_limit(5)` opts into a five-request-per-second limit within each
+capture run that also covers retry attempts. Separate capture runs do not
+share a quota.
 
 Cold capture retries throttled or transient read-only responses (`429`, `500`,
 `502`, `503`, and `504`) up to four total attempts with `200/400/800 ms`
@@ -156,9 +162,10 @@ state. Capture discovery suppresses the inner Host panic output so the
 transport error remains the actionable diagnostic.
 
 Once ledger keys are known, Kanatoko fetches their coherent state in batches
-of up to 200. The first encounter with a dynamically discovered key remains a
-single read because the returned value may determine which key the contract
-touches next.
+of up to 200. This includes the complete inventory reused from an older ledger;
+only the keys are reused, never their old Present/Absent values. The first
+encounter with a newly discovered dynamic key remains a single read because
+the returned value may determine which key the contract touches next.
 
 For lower-level capture, use `CaptureBuilder::mainnet(url)` or
 `CaptureBuilder::testnet(url)` and apply the same `.rpc_rate_limit(...)`
@@ -166,8 +173,9 @@ setting when needed.
 
 Candidate code and its own storage remain local to each pass. Rebuilding it
 does not invalidate the cache unless it starts touching new external ledger
-keys. Online mode then recaptures the complete scenario atomically; offline
-mode fails closed until the cache is refreshed.
+keys. Online mode seeds recapture from the cached key inventory even when the
+ledger anchor has not changed; offline mode fails closed until the cache is
+refreshed.
 
 ## One environment, both kinds of contract
 
@@ -227,8 +235,8 @@ mutable state and can be mixed freely.
 | `.rpc_url(url)` | Overrides the capture provider without changing network identity or automatic cache identity. |
 | `.rpc_rate_limit(rps)` | Opts into per-capture read-RPC pacing; `0` keeps the default unlimited behavior. |
 | `.cache(path)` | Overrides the automatically derived cache path. |
-| `.offline()` | Requires a cache hit and performs no discovery. |
-| `.refresh()` | Captures a fresh coherent ledger. |
+| `.offline()` | Replays the cached ledger as a pinned snapshot with zero RPC calls. |
+| `.refresh()` | Discards cached key inventory and performs a cold coherent capture. |
 | `fork.contract("C...")` | Parses a network contract address. |
 | `fork.account("G...")` | Parses a network account; Host access discovers its real account and trustlines. |
 | `fork.muxed_account("M...")` | Parses a muxed address; ledger state belongs to its underlying G-address. |
@@ -245,12 +253,12 @@ Addresses belong in the scenario rather than `mainnet(...)` or `testnet(...)`.
 Host execution discovers actual dependencies, including contracts reached only
 through cross-contract calls.
 
-On a cache hit, the closure runs once. During a cold capture it may run several
-times while Kanatoko discovers the dependency graph and verifies strict
-replay. Every pass starts from a fresh environment, so contract mutations do
-not accumulate between passes. Only effects outside the Soroban environment,
-such as random generation, file writes, HTTP requests, counters, or output,
-would be repeated.
+On an exact online cache hit or offline pinned replay, the closure runs once.
+During a cold or inventory-seeded refresh it may run several times while
+Kanatoko discovers the dependency graph and verifies strict replay. Every pass
+starts from a fresh environment, so contract mutations do not accumulate
+between passes. Only effects outside the Soroban environment, such as random
+generation, file writes, HTTP requests, counters, or output, would be repeated.
 
 Generate one-time inputs before `.run(...)` and capture ordinary Rust values in
 the closure. Create environment-bound values, addresses, and generated clients
