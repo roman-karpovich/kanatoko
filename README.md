@@ -144,6 +144,22 @@ disabled by default; `.rpc_rate_limit(5)` opts into a five-request-per-second
 limit within each capture run that also covers retry attempts. Separate
 capture runs do not share a quota.
 
+Cold capture retries throttled or transient read-only responses (`429`, `500`,
+`502`, `503`, and `504`) up to four total attempts with `200/400/800 ms`
+backoff. A reasonable numeric `Retry-After` is honored up to five seconds.
+Other HTTP failures, transport failures, malformed responses, and JSON-RPC
+errors fail immediately.
+
+After retries are exhausted, Kanatoko stops issuing reads and returns a typed
+`CaptureError::Transport`; a failed read is never mistaken for absent ledger
+state. Capture discovery suppresses the inner Host panic output so the
+transport error remains the actionable diagnostic.
+
+Once ledger keys are known, Kanatoko fetches their coherent state in batches
+of up to 200. The first encounter with a dynamically discovered key remains a
+single read because the returned value may determine which key the contract
+touches next.
+
 For lower-level capture, use `CaptureBuilder::mainnet(url)` or
 `CaptureBuilder::testnet(url)` and apply the same `.rpc_rate_limit(...)`
 setting when needed.
