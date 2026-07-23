@@ -247,3 +247,4 @@ jobs:
               --verify-tag \
               --title "${GITHUB_REF_NAME}" \
               --generate-notes
+          fi
