@@ -1,6 +1,6 @@
 # Aquarius wrapper fixture contract
 
-This small contract is source backing for Kanatoko's M3 candidate-contract
+This small contract is source backing for Kanatoko's candidate-contract
 acceptance workflow. It stores the captured Aquarius pool address in its
 constructor and calls the real captured pool through a minimal generated
 Soroban client. No pool behavior is replaced by a native mock.

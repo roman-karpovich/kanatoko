@@ -46,17 +46,17 @@ The first product is a Rust-first library and capture workflow for:
 - checkpointing and reverting local state;
 - turning exploratory network state into frozen, offline CI fixtures.
 
-The common M4 path is one closure. Kanatoko reruns it to a coherent
-dependency fixed point, seals a cache, and executes the same body under strict
-offline replay. Generated clients and dynamic calls share one environment and
-the same local mutations.
+The common path is one closure. Kanatoko reruns it to a coherent dependency
+fixed point, seals a cache, and executes the same body under strict offline
+replay. Generated clients and dynamic calls share one environment and the same
+local mutations.
 
 A WASM imported for a generated client is an ABI artifact only. Kanatoko never
 registers it at the captured address: the contract instance and executable
 WASM captured from Stellar remain authoritative. A stale incompatible ABI must
 fail instead of silently replacing upgraded network code.
 
-The advanced M3 API remains available beneath that facade. Its strict fork
+The advanced API remains available beneath that facade. Its strict fork
 preserves confirmed absence versus unknown state, locally injects hash-checked
 candidate production WASM with constructor execution, supports stateful
 preview/apply calls and checkpoint/revert, and returns detached XDR receipts

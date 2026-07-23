@@ -118,5 +118,5 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
 See the runnable mixed-mode acceptance in
-[`tests/m4_auto.rs`](tests/m4_auto.rs) and the project principles in
+[`tests/auto_runner.rs`](tests/auto_runner.rs) and the project principles in
 [`MISSION.md`](MISSION.md).

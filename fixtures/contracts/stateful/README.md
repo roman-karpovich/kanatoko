@@ -1,7 +1,8 @@
 # Stateful fixture contract
 
-This tiny contract is source backing for Kanatoko's M0 production-WASM tests.
-Normal `cargo test` runs consume the committed artifact and never rebuild it.
+This tiny contract is source backing for Kanatoko's production-WASM fixture
+runtime tests. Normal `cargo test` runs consume the committed artifact and
+never rebuild it.
 
 From the repository root, build and copy the optimized artifact with:
 

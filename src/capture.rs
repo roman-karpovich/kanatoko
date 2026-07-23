@@ -420,8 +420,8 @@ impl CapturedFixture {
     /// Atomically writes a versioned, self-validating capture bundle.
     ///
     /// The temporary file is created and synced in the destination directory,
-    /// then renamed over `path`. The legacy M0/M1 ledger snapshot format is not
-    /// changed by this API.
+    /// then renamed over `path`. The separate frozen ledger snapshot format is
+    /// not changed by this API.
     ///
     /// # Errors
     ///
@@ -1679,7 +1679,7 @@ mod tests {
 
     #[test]
     fn root_instance_and_matching_wasm_are_seeded_without_dependency_inputs() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let captured = builder(&fake).capture(|_, _| {}).unwrap();
         let root = parse_contract_address(POOL_ID).unwrap();
         let root_id = key_id(&contract_instance_key(root)).unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
 
     #[test]
     fn root_validation_requires_a_contract_instance_value() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let captured = builder(&fake).capture(|_, _| {}).unwrap();
         let root = parse_contract_address(POOL_ID).unwrap();
         let root_id = key_id(&contract_instance_key(root.clone())).unwrap();
@@ -1740,8 +1740,8 @@ mod tests {
     }
 
     #[test]
-    fn actual_m1_state_auto_discovers_quote_mint_swap_dependencies_and_replays_offline() {
-        let fake = FakeTransport::m1();
+    fn aquarius_snapshot_auto_discovers_quote_mint_swap_dependencies_and_replays_offline() {
+        let fake = FakeTransport::from_aquarius_snapshot();
         let captured = builder(&fake).capture(aquarius_scenario).unwrap();
         assert!(captured.report().present_entries() >= 9);
         assert!(captured.report().absent_entries() >= 1);
@@ -1754,7 +1754,7 @@ mod tests {
     fn auto_runner_mixes_imported_abi_and_dynamic_invocations_then_reuses_cache_offline() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner");
         let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
@@ -1781,7 +1781,7 @@ mod tests {
     fn auto_runner_recaptures_unknown_scenario_keys_and_replaces_cache() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner-refresh");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
@@ -1812,7 +1812,7 @@ mod tests {
     fn auto_runner_offline_missing_cache_fails_without_rpc_reads() {
         use crate::auto::{AutoRunError, AutoRunner};
 
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner-missing");
         let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
@@ -1828,7 +1828,7 @@ mod tests {
 
     #[test]
     fn versioned_bundle_roundtrips_and_replays_strictly_offline() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let captured = builder(&fake).capture(aquarius_scenario).unwrap();
         let path = test_bundle_path("roundtrip");
         captured.write_file(&path).unwrap();
@@ -1854,7 +1854,7 @@ mod tests {
 
     #[test]
     fn versioned_bundle_rejects_digest_tampering() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let captured = builder(&fake).capture(aquarius_scenario).unwrap();
         let path = test_bundle_path("tamper");
         captured.write_file(&path).unwrap();
@@ -1873,7 +1873,7 @@ mod tests {
 
     #[test]
     fn capture_and_bundle_loading_reject_invalid_ledger_metadata() {
-        let mut fake = FakeTransport::m1();
+        let mut fake = FakeTransport::from_aquarius_snapshot();
         let root = parse_contract_address(POOL_ID).unwrap();
         let root_id = key_id(&contract_instance_key(root)).unwrap();
         Rc::get_mut(&mut fake)
@@ -1887,7 +1887,9 @@ mod tests {
             Err(CaptureError::MalformedRpc { .. })
         ));
 
-        let captured = builder(&FakeTransport::m1()).capture(|_, _| {}).unwrap();
+        let captured = builder(&FakeTransport::from_aquarius_snapshot())
+            .capture(|_, _| {})
+            .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
         let (_, (_, live_until)) = bundle
             .ledger_snapshot
@@ -1905,7 +1907,7 @@ mod tests {
 
     #[test]
     fn versioned_bundle_roundtrip_preserves_v1_ledger_entry_extension() {
-        let captured = builder(&FakeTransport::m1())
+        let captured = builder(&FakeTransport::from_aquarius_snapshot())
             .capture(aquarius_scenario)
             .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
@@ -1942,7 +1944,7 @@ mod tests {
 
     #[test]
     fn write_only_and_confirmed_missing_keys_are_sealed_but_other_unknowns_fail_replay() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let root = parse_contract_address(POOL_ID).unwrap();
         let missing = data_key(root.clone(), 777);
         let write_only = data_key(root.clone(), 778);
@@ -1981,7 +1983,7 @@ mod tests {
 
     #[test]
     fn coherent_materialization_batches_at_200_and_retries_the_whole_attempt() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         fake.mix_second_large_batch_once.set(true);
         let root = parse_contract_address(POOL_ID).unwrap();
         let keys: Vec<LedgerKey> = (1_000..1_401)
@@ -2021,7 +2023,7 @@ mod tests {
 
     #[test]
     fn terminal_panic_returns_opaque_error_and_transport_failure_is_not_absence() {
-        let fake = FakeTransport::m1();
+        let fake = FakeTransport::from_aquarius_snapshot();
         let panic_error = builder(&fake)
             .capture(|_, _| panic!("scenario-payload-must-not-leak"))
             .unwrap_err();
@@ -2322,7 +2324,7 @@ mod tests {
     }
 
     impl FakeTransport {
-        fn m1() -> Rc<Self> {
+        fn from_aquarius_snapshot() -> Rc<Self> {
             let snapshot =
                 LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json")
                     .unwrap();

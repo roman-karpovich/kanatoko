@@ -1,4 +1,4 @@
-//! Narrow runnable CLI for the Aquarius M2 capture and M3 strict-fork workflow.
+//! Runnable CLI for Aquarius capture and strict-fork workflows.
 
 use std::{error::Error, fs, path::PathBuf};
 
@@ -15,7 +15,7 @@ use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
 #[allow(dead_code)]
 #[path = "capture_aquarius_xlm_usdc_cp.rs"]
-mod legacy_capture;
+mod aquarius_capture;
 
 const DEFAULT_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
 const DEFAULT_ROOT: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             rpc_url,
             root,
             bundle,
-        } => legacy_capture::capture(&rpc_url, &root, &bundle),
+        } => aquarius_capture::capture(&rpc_url, &root, &bundle),
         Options::Run {
             fixture,
             candidate,
@@ -179,7 +179,7 @@ fn run(
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Text => {
-            println!("strict Aquarius M3 run: ok");
+            println!("strict Aquarius run: ok");
             println!("ledger: {}", captured.provenance().ledger_sequence());
             println!("candidate install: local injection (not transaction-faithful deploy)");
             println!("quote before: {quote_before}");
@@ -534,7 +534,7 @@ fn print_help() {
         "Kanatoko strict Soroban fork workflow\n\n\
          Capture the Aquarius scenario:\n  \
          kanatoko capture aquarius-cp [--rpc-url URL] [--root C...] [--bundle PATH]\n\n\
-         Run M3 fully offline:\n  \
+         Run the strict workflow fully offline:\n  \
          kanatoko run aquarius-cp [--fixture PATH] [--format text|json]\n  \
          [--candidate-wasm PATH --candidate-sha256 HEX]\n"
     );

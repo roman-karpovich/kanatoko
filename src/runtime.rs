@@ -14,7 +14,7 @@ static NEXT_FORK_ID: AtomicU64 = AtomicU64::new(1);
 /// A checkpoint of ledger state and the SDK address/nonce generators.
 ///
 /// Reverting recreates the owned environment. Events, authorization history,
-/// budget, and Host PRNG continuity are intentionally not restored by M0.
+/// budget, and Host PRNG continuity are intentionally not restored.
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
     fork_id: u64,

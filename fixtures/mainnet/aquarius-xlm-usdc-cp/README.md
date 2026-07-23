@@ -1,18 +1,18 @@
 # Aquarius XLM/USDC constant-product fixture
 
-This directory contains the frozen M1 `ledger.json`/`manifest.json` fixture,
-the lower-level M2 `capture.json`, and the one-scenario M4
-`auto-capture.json`. Local WASM artifacts generate client ABIs only; the normal
-test suite never contacts a network.
+This directory contains the frozen `ledger.json`/`manifest.json` compatibility
+fixture, the lower-level `capture.json` bundle, and the one-scenario
+`auto-capture.json` cache. Local WASM artifacts generate client ABIs only; the
+normal test suite never contacts a network.
 
 The root contract is Aquarius pool
 `CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE`. Executing its real
 mainnet WASM exposed a write-time dependency on pool plane
 `CCABO2IQYDWRGGQ4DYQ73CV3ZFDBRZTEQNDDJMFT7JZO54CLS4RYJROY`; that dependency is
-therefore frozen too. The earlier M1 utility discovered the plane's current
-WASM hash from its instance before each capture, then verified the final
-instance still referenced the same code. Automatic Host-driven discovery was
-not an M1 claim; it is the M2 path documented below.
+therefore frozen too. The snapshot utility discovered the plane's current WASM
+hash from its instance before each capture, then verified the final instance
+still referenced the same code. Automatic Host-driven discovery belongs to the
+capture-bundle path documented below.
 
 ## Captured state
 
@@ -33,10 +33,10 @@ recorded in `manifest.json`, but is intentionally not inserted into
 ContractData, and ContractCode entries only. Its min/max TTL values instead
 populate the snapshot's ledger metadata.
 
-## Legacy M1 coherence and provenance
+## Frozen snapshot coherence and provenance
 
-The committed M1 snapshot was produced by the earlier scenario-specific
-capture path, which:
+The committed frozen snapshot was produced by the scenario-specific capture
+path, which:
 
 1. verifies the mainnet passphrase and exact protocol 27;
 2. discovers the plane code hash from its current instance;
@@ -57,7 +57,7 @@ admin/mint tree is asserted exactly and recording is cleared. The subsequent
 user swap uses an explicit exact `MockAuth` tree rooted at `pool.swap`, with the
 nested `USDC.transfer` invocation. No production signature or secret is used.
 
-## M2 lower-level address-first capture and replay
+## Address-first capture and replay
 
 The current capture tool starts with the pool address and RPC URL. During
 scenario execution it automatically discovers every Host-read or Host-written
@@ -72,7 +72,7 @@ quote -> mint -> swap -> requote without RPC access. `pool.wasm` supplies only
 the compile-time ABI; executable network WASM comes from captured
 `ContractCode` entries.
 
-The committed M2 bundle was captured at mainnet ledger `63600296` (hash
+The committed capture bundle was captured at mainnet ledger `63600296` (hash
 `63aa87f14ca20f1761fd5b055359eb864db3555a33bece46a68df8fb673ece94`).
 It reached a fixed point in two rounds with 12 present and six RPC-confirmed
 absent entries, and recorded zero RPC reads during final replay. Host-driven
@@ -99,10 +99,10 @@ cargo run --locked --offline --features capture --bin kanatoko -- \
   run aquarius-cp --format text
 ```
 
-## M4 one-scenario automatic capture
+## One-scenario automatic capture
 
-`tests/m4_auto.rs` contains one Rust body for discovery and strict replay. It
-mixes a generated pool client with dynamic SAC and pool invocations in one
+`tests/auto_runner.rs` contains one Rust body for discovery and strict replay.
+It mixes a generated pool client with dynamic SAC and pool invocations in one
 `Env`, mints a synthetic user 10% of the USDC reserve, swaps through the real
 captured graph, and proves the 1 USDC -> XLM quote moved.
 
@@ -132,14 +132,14 @@ return an error rather than execute the local artifact. The acceptance passes
 with all HTTP proxies pointed at
 `127.0.0.1:9`.
 
-## M3 strict mutable candidate workflow
+## Strict mutable candidate workflow
 
-M3 loads this schema-v1 capture into a mutable strict fork without collapsing
-Unknown into confirmed Absent. It locally injects the committed hash-pinned
-Aquarius wrapper candidate, whose production WASM calls the captured pool
-WASM. The acceptance estimates 1 USDC -> XLM, mints a synthetic user 10% of
-the captured USDC reserve, previews and exact-gates a wrapper swap, then proves
-the quote decreased from `53354881` to `44100959` in the mutated session.
+The strict fork loads this schema-v1 capture without collapsing Unknown into
+confirmed Absent. It locally injects the committed hash-pinned Aquarius wrapper
+candidate, whose production WASM calls the captured pool WASM. The acceptance
+estimates 1 USDC -> XLM, mints a synthetic user 10% of the captured USDC
+reserve, previews and exact-gates a wrapper swap, then proves the quote
+decreased from `53354881` to `44100959` in the mutated session.
 
 Checkpoint/revert restores the first quote (`53354881`), an uncaptured contract
 key fails closed after the mutations and after revert, and every receipt plus
@@ -155,12 +155,12 @@ Host-generated recording nonces are treated as mocked-auth scaffolding and are
 not committed. The nonce exception is not active in enforce mode, where an
 uncaptured anti-replay key remains Unknown and fails closed.
 
-Legacy M1 toolchain at capture:
+Frozen snapshot toolchain at capture:
 
 - `stellar 27.0.0` (`5a7c5fe76530bf4248477ac812fc757146b98cc4`)
 - `stellar-xdr 27.0.0` (`5262803470be965e42f80023d12fba12808c774a`)
 - `rustc 1.94.0-nightly (e29fcf45e 2026-01-04)`
 - `cargo 1.94.0-nightly (b54051b15 2025-12-30)`
 
-The legacy M1 files remain unchanged unless intentionally regenerated by a
-separate compatibility workflow.
+The frozen snapshot files remain unchanged unless intentionally regenerated by
+a separate compatibility workflow.
