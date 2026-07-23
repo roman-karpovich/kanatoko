@@ -103,25 +103,28 @@ cargo run --locked --offline --features capture --bin kanatoko -- \
 
 `tests/auto_runner.rs` contains one Rust body for discovery and strict replay.
 It mixes a generated pool client with dynamic SAC and pool invocations in one
-`Env`, mints a synthetic user 10% of the USDC reserve, swaps through the real
-captured graph, and proves the 1 USDC -> XLM quote moved.
+`Env`, creates a deterministic local G-account, establishes its real SAC
+trustline, mints it 10% of the USDC reserve, swaps through the captured graph,
+and proves the 1 USDC -> XLM quote moved. The same scenario reads a real
+mainnet G-account through both XLM and USDC SACs, then transfers one stroop to
+its M-address and verifies the multiplexing ID in the emitted event.
 
 The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
 
-- Mainnet ledger: `63608632`
+- Mainnet ledger: `63609273`
 - Ledger hash:
-  `b1602d78266433255c154a6460ed223e64d3f766b2548065125150e58899e2ee`
-- Discovery: 2 rounds, 12 present, 5 confirmed absent
+  `d8a73f9a2fe64732ce830ad3b66798d74b15f3cdf1b4f17032d70b19442db1c2`
+- Discovery: 2 rounds, 14 present, 8 confirmed absent
 - Final replay RPC reads: `0`
 - Canonical ledger digest:
-  `3362768e3989ae0905afc62813aabb76cf99e1bd3478ea121be4c8651fac70ed`
+  `c091bc49e2c4e5bb90649efa6beddea0dfa6ca69137fa561e09b8708a5e4bd2d`
 - Inventory digest:
-  `71612d82409b8a26560a9a8b3e07563c38b5a7cce83a043247c1e3d26f9e0fcd`
+  `69c27b7042aa202383b8ecb430fc57c016fd155c93ec6b6864a4f907b9034762`
 - Canonical bundle digest:
-  `33e9edc72cc6afe4e4b55a5b647936ce3367a33e79495f97d14d4dc3fa1f6b6b`
+  `f1d7f9bd3542cadf16fa665856a6e6d0364478045265cce563978eb8259bcecd`
 - `auto-capture.json` SHA-256:
-  `56dcd3072469ddafa9e2dbd9c3490ab373b2967bb6932419a659e0ea22860afa`
+  `57683036179620e02a5cc16ba6dc5466a7325b7cdc077af65f0e762e7a6e72be`
 
 The typed client is deliberately generated from the different
 `kanatoko_aquarius_wrapper.wasm` artifact. The test asserts that its hash is

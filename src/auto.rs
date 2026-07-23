@@ -1,16 +1,30 @@
 //! One-scenario automatic capture and strict replay.
 
 use std::{
+    cell::RefCell,
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
-use soroban_sdk::{Address, Env, IntoVal, Symbol, TryFromVal, Val, Vec as SorobanVec};
+use sha2::{Digest, Sha256};
+use soroban_env_host::xdr::{
+    AccountEntry, AccountEntryExt, AccountId, ContractId, LedgerEntry, LedgerEntryData,
+    LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScVal, SequenceNumber,
+    String32, Thresholds, Uint256, VecM,
+};
+use soroban_sdk::{
+    Address, Env, IntoVal, MuxedAddress, Symbol, TryFromVal, Val, Vec as SorobanVec,
+};
 use thiserror::Error;
 
 use crate::{capture::MAINNET_PASSPHRASE, CaptureBuilder, CaptureError, CapturedFixture};
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
+const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v1";
+const LOCAL_ACCOUNT_MIN_BALANCE: i64 = 100_000_000;
+const LOCAL_ACCOUNT_BASE_RESERVES: i64 = 100;
 
 /// Creates an automatic mainnet runner rooted at `root_contract`.
 ///
@@ -130,7 +144,7 @@ impl AutoRunner {
         }
 
         let captured = self.builder.capture(|env, root| {
-            scenario(&ScenarioFork { env, root });
+            scenario(&ScenarioFork::new(env, root));
         })?;
         self.validate_root(&captured)?;
         replay(&captured, &scenario)?;
@@ -178,7 +192,7 @@ where
     F: for<'a> Fn(&ScenarioFork<'a>),
 {
     fixture.replay(|env, root| {
-        scenario(&ScenarioFork { env, root });
+        scenario(&ScenarioFork::new(env, root));
     })
 }
 
@@ -191,9 +205,18 @@ where
 pub struct ScenarioFork<'a> {
     env: &'a Env,
     root: &'a Address,
+    local_accounts: RefCell<BTreeSet<[u8; 32]>>,
 }
 
 impl<'a> ScenarioFork<'a> {
+    fn new(env: &'a Env, root: &'a Address) -> Self {
+        Self {
+            env,
+            root,
+            local_accounts: RefCell::new(BTreeSet::new()),
+        }
+    }
+
     /// Current pass environment for generated Soroban clients.
     #[must_use]
     pub const fn env(&self) -> &'a Env {
@@ -206,10 +229,152 @@ impl<'a> ScenarioFork<'a> {
         self.root
     }
 
-    /// Parses a contract `StrKey` in the current pass environment.
+    /// Parses a contract C-address in the current pass environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `contract` is not a valid contract C-address.
     #[must_use]
     pub fn contract(&self, contract: &str) -> Address {
-        Address::from_str(self.env, contract)
+        let address = Address::from_str(self.env, contract);
+        assert!(
+            matches!(ScAddress::from(&address), ScAddress::Contract(_)),
+            "expected a contract C-address"
+        );
+        address
+    }
+
+    /// Parses an existing Stellar G-account in the current pass environment.
+    ///
+    /// Ledger state is not injected or altered. Contract calls that read this
+    /// address discover its real `AccountEntry`, trustlines, and other
+    /// Host-supported ledger entries on demand.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `account` is not a valid account G-address.
+    #[must_use]
+    pub fn account(&self, account: &str) -> Address {
+        let address = Address::from_str(self.env, account);
+        assert!(
+            matches!(ScAddress::from(&address), ScAddress::Account(_)),
+            "expected an account G-address"
+        );
+        address
+    }
+
+    /// Parses a multiplexed Stellar M-address in the current pass environment.
+    ///
+    /// The multiplexing ID is contract input/event metadata. When a contract
+    /// resolves [`MuxedAddress::address`], ledger access targets the underlying
+    /// G-account and is captured normally.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `account` is not a valid multiplexed M-address.
+    #[must_use]
+    pub fn muxed_account(&self, account: &str) -> MuxedAddress {
+        let address = MuxedAddress::from_str(self.env, account);
+        assert!(
+            matches!(
+                ScVal::from(&address),
+                ScVal::Address(ScAddress::MuxedAccount(_))
+            ),
+            "expected a multiplexed M-address"
+        );
+        address
+    }
+
+    /// Creates a funded local Stellar account and returns its G-address.
+    ///
+    /// The address is pseudorandom but deterministic for the captured network,
+    /// root contract, and `label`. This keeps dependency discovery, strict
+    /// replay, cache hits, and CI runs reproducible. Reusing a label in one
+    /// scenario pass returns the same account without resetting its state.
+    ///
+    /// This is explicit local ledger injection, not a mainnet account creation
+    /// or a transaction-faithful operation. The account has no signing key;
+    /// use an explicit authorization mode such as [`ScenarioFork::mock_all_auths`].
+    /// Classic assets still require calling the SAC's `trust` method, and may
+    /// require `set_authorized`, before minting or transferring the asset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated address already exists in captured network
+    /// state or if the Host rejects the local account entry.
+    #[must_use]
+    pub fn local_account(&self, label: &str) -> Address {
+        let (network_id, base_reserve, ledger_sequence) = self
+            .env
+            .host()
+            .with_ledger_info(|ledger| {
+                Ok((
+                    ledger.network_id,
+                    ledger.base_reserve,
+                    ledger.sequence_number,
+                ))
+            })
+            .expect("the scenario environment must have ledger metadata");
+        let ScAddress::Contract(ContractId(root_id)) = ScAddress::from(self.root) else {
+            unreachable!("an automatic capture root is always a contract");
+        };
+
+        let mut digest = Sha256::new();
+        digest.update(LOCAL_ACCOUNT_DOMAIN);
+        digest.update(network_id);
+        digest.update(root_id.0);
+        digest.update((label.len() as u64).to_be_bytes());
+        digest.update(label.as_bytes());
+        let public_key: [u8; 32] = digest.finalize().into();
+        let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(public_key)));
+        let address = Address::try_from_val(self.env, &ScAddress::Account(account_id.clone()))
+            .expect("a generated Ed25519 account must be a valid Soroban address");
+
+        if !self.local_accounts.borrow_mut().insert(public_key) {
+            return address;
+        }
+
+        let key = Rc::new(LedgerKey::Account(LedgerKeyAccount {
+            account_id: account_id.clone(),
+        }));
+        if self
+            .env
+            .host()
+            .get_ledger_entry(&key)
+            .expect("the Host must be able to inspect the generated account")
+            .is_some()
+        {
+            panic!("generated local account collides with captured network state");
+        }
+
+        let balance = i64::from(base_reserve)
+            .saturating_mul(LOCAL_ACCOUNT_BASE_RESERVES)
+            .max(LOCAL_ACCOUNT_MIN_BALANCE);
+        let sequence = i64::from(ledger_sequence)
+            .checked_mul(1_i64 << 32)
+            .expect("the ledger sequence must fit a Stellar account sequence number");
+        let entry = Rc::new(LedgerEntry {
+            last_modified_ledger_seq: ledger_sequence,
+            data: LedgerEntryData::Account(AccountEntry {
+                account_id,
+                balance,
+                seq_num: SequenceNumber(sequence),
+                num_sub_entries: 0,
+                inflation_dest: None,
+                flags: 0,
+                home_domain: String32::default(),
+                thresholds: Thresholds([1, 0, 0, 0]),
+                signers: VecM::default(),
+                ext: AccountEntryExt::V0,
+            }),
+            ext: LedgerEntryExt::V0,
+        });
+        self.env
+            .host()
+            .add_ledger_entry(&key, &entry, None)
+            .expect("the Host must accept a generated local account");
+
+        address
     }
 
     /// Enables the SDK's explicit record-and-mock authorization mode.

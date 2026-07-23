@@ -1785,13 +1785,13 @@ mod tests {
         let path = test_bundle_path("auto-runner-refresh");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
-            .run(|fork| mixed_auto_scenario_for_user(fork, 0x4b))
+            .run(|fork| mixed_auto_scenario_for_user(fork, "first-user"))
             .unwrap();
         let reads_before_refresh = fake.ledger_entry_reads();
 
         let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
-            .run(|fork| mixed_auto_scenario_for_user(fork, 0x5c))
+            .run(|fork| mixed_auto_scenario_for_user(fork, "second-user"))
             .unwrap();
         assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
         assert!(fake.ledger_entry_reads() > reads_before_refresh);
@@ -1800,7 +1800,7 @@ mod tests {
         let replayed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
             .cache(&path)
             .offline()
-            .run(|fork| mixed_auto_scenario_for_user(fork, 0x5c))
+            .run(|fork| mixed_auto_scenario_for_user(fork, "second-user"))
             .unwrap();
         assert_eq!(replayed.cache_status(), CacheStatus::Hit);
         assert_eq!(fake.ledger_entry_reads(), reads_after_refresh);
@@ -2228,16 +2228,16 @@ mod tests {
     }
 
     fn mixed_auto_scenario(fork: &crate::auto::ScenarioFork<'_>) {
-        mixed_auto_scenario_for_user(fork, 0x4b);
+        mixed_auto_scenario_for_user(fork, "swap-user");
     }
 
-    fn mixed_auto_scenario_for_user(fork: &crate::auto::ScenarioFork<'_>, user_byte: u8) {
+    fn mixed_auto_scenario_for_user(fork: &crate::auto::ScenarioFork<'_>, user_label: &str) {
         let env = fork.env();
         let pool_id = fork.contract(POOL_ID);
         let usdc = fork.contract(USDC_ID);
         let pool = pool::Client::new(env, &pool_id);
-        let user =
-            Address::try_from_val(env, &ScAddress::Contract(Hash([user_byte; 32]).into())).unwrap();
+        let user = fork.local_account(user_label);
+        assert!(matches!(ScAddress::from(&user), ScAddress::Account(_)));
 
         assert_eq!(pool.get_tokens().get(1).unwrap(), usdc);
         let before = pool.estimate_swap(&1, &0, &ONE_USDC);
@@ -2247,6 +2247,9 @@ mod tests {
 
         fork.mock_all_auths();
         let admin = fork.invoke::<Address>(&usdc, "admin", ());
+        fork.invoke::<()>(&usdc, "trust", (user.clone(),));
+        assert_eq!(fork.local_account(user_label), user);
+        fork.invoke::<()>(&usdc, "set_authorized", (user.clone(), true));
         fork.invoke::<()>(&usdc, "mint", (user.clone(), amount_i128));
         assert_eq!(env.auths()[0].0, admin);
         let received = fork.invoke::<u128>(&pool_id, "swap", (user, 1_u32, 0_u32, amount, 0_u128));

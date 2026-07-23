@@ -29,7 +29,6 @@ mod pool_abi {
 
 const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-const USER: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 
 #[test]
 fn swap_moves_the_real_pool_price() {
@@ -39,7 +38,7 @@ fn swap_moves_the_real_pool_price() {
             let env = fork.env();
             let pool_id = fork.contract(POOL);
             let usdc = fork.contract(USDC);
-            let user = fork.contract(USER);
+            let user = fork.local_account("swap-user");
 
             // Typed calls and dynamic calls share this Env and its mutations.
             let pool = pool_abi::Client::new(env, &pool_id);
@@ -50,7 +49,9 @@ fn swap_moves_the_real_pool_price() {
             fork.mock_all_auths();
             let admin = fork.invoke::<Address>(&usdc, "admin", ());
 
-            // SAC mint is (user, amount); admin belongs to the auth tree.
+            // This is a real G-address, so initialize its classic USDC state.
+            fork.invoke::<()>(&usdc, "trust", (user.clone(),));
+            fork.invoke::<()>(&usdc, "set_authorized", (user.clone(), true));
             fork.invoke::<()>(
                 &usdc,
                 "mint",
@@ -80,6 +81,37 @@ cache path per scenario.
 The body can run several times during discovery and strict replay, so it must
 be deterministic and free of external side effects. Create all generated
 clients and Soroban values inside the closure.
+
+`local_account("swap-user")` creates a funded G-account only in the local
+ledger. Its address is pseudorandom but stable for the network, root contract,
+and label, so capture and replay touch identical keys. It has no private key:
+authorization remains an explicit test mode. Classic assets still require
+their real SAC `trust` flow, and `set_authorized` when applicable.
+
+## Real accounts and M-addresses
+
+`fork.account("G...")` references an existing Stellar account without
+modifying it. State is fetched lazily when the scenario actually uses it:
+
+```rust,ignore
+let holder = fork.account("G...");
+let xlm_balance = fork.invoke::<i128>(&xlm, "balance", (holder.clone(),));
+let usdc_balance = fork.invoke::<i128>(&usdc, "balance", (holder,));
+```
+
+For a G-address, XLM SAC `balance` reads the complete network `AccountEntry`;
+a classic asset SAC reads its `TrustLineEntry`. Kanatoko captures those exact
+entries at the same ledger as the contracts and replays them offline. The same
+automatic rule covers every touched Host-supported Account, Trustline,
+ContractData, and ContractCode key. Unsupported classic-ledger families fail
+closed instead of being silently omitted. XLM `balance` is the account's total
+ledger balance, not its spendable balance after reserves and liabilities.
+
+`fork.muxed_account("M...")` parses an actual multiplexed account. Protocol 27
+SAC supports `MuxedAddress` as a `transfer` destination: balance changes apply
+to the underlying G-account while the multiplexing ID is emitted as event
+metadata. `balance`, `trust`, `mint`, authorization, and transfer sources still
+use the underlying `Address`, not an M-address.
 
 ## Network WASM always wins
 

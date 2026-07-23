@@ -3,8 +3,8 @@
   "root_contract": "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE",
   "ledger_snapshot": {
     "protocol_version": 27,
-    "sequence_number": 63608632,
-    "timestamp": 1784798913,
+    "sequence_number": 63609273,
+    "timestamp": 1784802521,
     "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
     "base_reserve": 5000000,
     "min_persistent_entry_ttl": 2073600,
@@ -77,7 +77,79 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63608606,
+          "last_modified_ledger_seq": 63393570,
+          "data": {
+            "account": {
+              "account_id": "GBJGQAC4PP3MFD3FOAODOZAWIRKZGZCHAU35EUPKJGJOLMNZM7HU4U5D",
+              "balance": "275143415",
+              "seq_num": "238310589745595189",
+              "num_sub_entries": 4,
+              "inflation_dest": null,
+              "flags": 0,
+              "home_domain": "",
+              "thresholds": "01000000",
+              "signers": [],
+              "ext": {
+                "v1": {
+                  "liabilities": {
+                    "buying": "0",
+                    "selling": "0"
+                  },
+                  "ext": {
+                    "v2": {
+                      "num_sponsored": 0,
+                      "num_sponsoring": 4,
+                      "signer_sponsoring_i_ds": [],
+                      "ext": {
+                        "v3": {
+                          "ext": "v0",
+                          "seq_ledger": 61566224,
+                          "seq_time": "1773022733"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": null
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 61548461,
+          "data": {
+            "trustline": {
+              "account_id": "GBJGQAC4PP3MFD3FOAODOZAWIRKZGZCHAU35EUPKJGJOLMNZM7HU4U5D",
+              "asset": {
+                "credit_alphanum4": {
+                  "asset_code": "USDC",
+                  "issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+                }
+              },
+              "balance": "0",
+              "limit": "9223372036854775807",
+              "flags": 1,
+              "ext": {
+                "v1": {
+                  "liabilities": {
+                    "buying": "0",
+                    "selling": "0"
+                  },
+                  "ext": "v0"
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": null
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 63609080,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -100,7 +172,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "92663830061172"
+                      "i128": "92731727172986"
                     }
                   },
                   {
@@ -200,7 +272,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63608606,
+          "last_modified_ledger_seq": 63609080,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -480,7 +552,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "3917089349"
+                        "u128": "3971706659"
                       }
                     },
                     {
@@ -492,7 +564,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "645701957"
+                        "u128": "649525052"
                       }
                     },
                     {
@@ -516,7 +588,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "92659912971823"
+                        "u128": "92727755466327"
                       }
                     },
                     {
@@ -528,7 +600,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "17153204604058"
+                        "u128": "17140668709065"
                       }
                     },
                     {
@@ -540,7 +612,7 @@
                         ]
                       },
                       "val": {
-                        "u32": 63608606
+                        "u32": 63609080
                       }
                     },
                     {
@@ -719,7 +791,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63608606,
+          "last_modified_ledger_seq": 63609080,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -764,10 +836,10 @@
                     "val": {
                       "vec": [
                         {
-                          "u128": "92659912971823"
+                          "u128": "92727755466327"
                         },
                         {
-                          "u128": "17153204604058"
+                          "u128": "17140668709065"
                         }
                       ]
                     }
@@ -1009,7 +1081,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63608606,
+          "last_modified_ledger_seq": 63609080,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -1032,7 +1104,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "17153850306015"
+                      "i128": "17141318234117"
                     }
                   },
                   {
@@ -1258,26 +1330,29 @@
     ]
   },
   "known_absent": [
-    "AAAABgAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAABAAAAABAAAAAgAAAA8AAAAHQmFsYW5jZQAAAAASAAAAAUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLAAAAAQ==",
-    "AAAABgAAAAFLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSwAAABQAAAAB",
-    "AAAABgAAAAFLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLSwAAABVM5l8NaFYv7wAAAAA=",
-    "AAAABgAAAAGetNfgUoqCcXctaWzcaNHasgv02KBwMqNeDwKZhqzFHgAAABULIQNvLpcwrgAAAAA=",
-    "AAAABgAAAAGt785ZruUpaPdgYdSUwlJbdWWfpClqZfSZ7ynlZHfklgAAABAAAAABAAAAAgAAAA8AAAAHQmFsYW5jZQAAAAASAAAAAUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLAAAAAQ=="
+    "AAAAAAAAAAAyVR31WWf04TQ6Qz3C8nbfCisqIcHShBPjNuIi2MsEEw==",
+    "AAAAAAAAAADGPT9gjDxAOX5rtabc5gaQFtSsRjyzjDrOKPIFo9ZlTg==",
+    "AAAAAQAAAADGPT9gjDxAOX5rtabc5gaQFtSsRjyzjDrOKPIFo9ZlTgAAAAFVU0RDAAAAADuZETgO/piLoKiQDrHP5E82b32+lGvtB3JA9/Yk3xXF",
+    "AAAABgAAAAAAAAAAMlUd9Vln9OE0OkM9wvJ23worKiHB0oQT4zbiItjLBBMAAAAVHDW2PHQHyd8AAAAA",
+    "AAAABgAAAAAAAAAAxj0/YIw8QDl+a7Wm3OYGkBbUrEY8s4w6zijyBaPWZU4AAAAVCyEDby6XMK4AAAAA",
+    "AAAABgAAAAAAAAAAxj0/YIw8QDl+a7Wm3OYGkBbUrEY8s4w6zijyBaPWZU4AAAAVQyQDsUmwIb8AAAAA",
+    "AAAABgAAAAGetNfgUoqCcXctaWzcaNHasgv02KBwMqNeDwKZhqzFHgAAABUOWEdQFwSDCAAAAAA=",
+    "AAAABgAAAAGetNfgUoqCcXctaWzcaNHasgv02KBwMqNeDwKZhqzFHgAAABVM5l8NaFYv7wAAAAA="
   ],
   "report": {
     "discovery_rounds": 2,
-    "present_entries": 12,
-    "absent_entries": 5,
+    "present_entries": 14,
+    "absent_entries": 8,
     "final_replay_rpc_reads": 0
   },
   "provenance": {
     "rpc_origin": "https://mainnet.sorobanrpc.com",
     "network_passphrase": "Public Global Stellar Network ; September 2015",
-    "ledger_sequence": 63608632,
-    "ledger_hash": "b1602d78266433255c154a6460ed223e64d3f766b2548065125150e58899e2ee",
+    "ledger_sequence": 63609273,
+    "ledger_hash": "d8a73f9a2fe64732ce830ad3b66798d74b15f3cdf1b4f17032d70b19442db1c2",
     "protocol_version": 27
   },
-  "ledger_digest": "3362768e3989ae0905afc62813aabb76cf99e1bd3478ea121be4c8651fac70ed",
-  "inventory_digest": "71612d82409b8a26560a9a8b3e07563c38b5a7cce83a043247c1e3d26f9e0fcd",
-  "canonical_digest": "33e9edc72cc6afe4e4b55a5b647936ce3367a33e79495f97d14d4dc3fa1f6b6b"
+  "ledger_digest": "c091bc49e2c4e5bb90649efa6beddea0dfa6ca69137fa561e09b8708a5e4bd2d",
+  "inventory_digest": "69c27b7042aa202383b8ecb430fc57c016fd155c93ec6b6864a4f907b9034762",
+  "canonical_digest": "f1d7f9bd3542cadf16fa665856a6e6d0364478045265cce563978eb8259bcecd"
 }
