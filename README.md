@@ -1,14 +1,16 @@
 # Kanatoko
 
-**Test Soroban contracts against real Stellar state without deploying or
-spending funds.**
+Run Soroban Rust tests against a coherent snapshot of real Stellar state —
+locally, deterministically, and without deploying or spending funds.
 
-Write one stateful Rust test. Kanatoko runs it to discover every contract,
-network WASM, and ledger entry it touches, freezes one coherent ledger, then
-runs the same test again in strict mode with zero RPC fallback.
+Point Kanatoko at one deployed contract and write the scenario once. On the
+first run it discovers the contracts, network WASM, accounts, trustlines, and
+contract storage that the scenario actually touches. It then freezes one
+ledger and runs the same scenario against that sealed state with zero RPC
+fallback.
 
-No manual capture script. No duplicated scenario. No fake implementation of
-the contracts under test.
+No capture script. No hand-written fixture. No local replacement for the
+contracts under test.
 
 ```toml
 [dev-dependencies]
@@ -18,12 +20,15 @@ soroban-sdk = { version = "=27.0.0", features = ["testutils"] }
 
 ## Example: move a real Aquarius pool price
 
+This test loads the mainnet XLM/USDC pool and USDC token contract, creates a
+local Stellar account, mints 10% of the pool's USDC reserve to it, swaps the
+USDC, and proves that the pool price changed.
+
 ```rust,ignore
 use kanatoko::mainnet;
-use soroban_sdk::Address;
 
 mod pool_abi {
-    // Any ABI-compatible build is enough; this file is never executed.
+    // Any ABI-compatible build is enough. This file is never executed.
     soroban_sdk::contractimport!(file = "tests/wasm/aquarius_pool_abi.wasm");
 }
 
@@ -35,21 +40,17 @@ fn swap_moves_the_real_pool_price() {
     mainnet(POOL)
         .cache(".kanatoko/aquarius-swap.json")
         .run(|fork| {
-            let env = fork.env();
-            let pool_id = fork.contract(POOL);
+            let pool_id = fork.root().clone();
             let usdc = fork.contract(USDC);
             let user = fork.local_account("swap-user");
 
-            // Typed calls and dynamic calls share this Env and its mutations.
-            let pool = pool_abi::Client::new(env, &pool_id);
+            // Generated clients and dynamic calls share one mutable Env.
+            let pool = pool_abi::Client::new(fork.env(), &pool_id);
             let before = pool.estimate_swap(&1, &0, &10_000_000);
             let reserves = pool.get_reserves();
             let amount = reserves.get(1).unwrap() / 10;
 
             fork.mock_all_auths();
-            let admin = fork.invoke::<Address>(&usdc, "admin", ());
-
-            // This is a real G-address, so initialize its classic USDC state.
             fork.invoke::<()>(&usdc, "trust", (user.clone(),));
             fork.invoke::<()>(&usdc, "set_authorized", (user.clone(), true));
             fork.invoke::<()>(
@@ -57,7 +58,6 @@ fn swap_moves_the_real_pool_price() {
                 "mint",
                 (user.clone(), i128::try_from(amount).unwrap()),
             );
-            assert_eq!(env.auths()[0].0, admin);
 
             let received = fork.invoke::<u128>(
                 &pool_id,
@@ -67,62 +67,43 @@ fn swap_moves_the_real_pool_price() {
             assert!(received > 0);
 
             let after = pool.estimate_swap(&1, &0, &10_000_000);
-            assert_ne!(after, before);
+            assert!(after < before);
         })
         .unwrap();
 }
 ```
 
-On a cache miss, this single body drives dependency discovery and creates the
-fixture. Later runs use the frozen state directly. Use `.refresh()` to capture
-a newer mainnet ledger or `.offline()` to require a cache-only CI run. Keep one
-cache path per scenario.
+The cache is created automatically after a successful strict replay; it is not
+something you prepare or edit by hand. A cache hit is fully offline. Use
+`.refresh()` to capture a newer mainnet ledger, or `.offline()` to require an
+existing cache and forbid discovery in CI. If an online run reaches a key that
+the cache does not cover, Kanatoko recaptures the complete scenario at one
+coherent ledger and replaces the cache atomically.
 
-The body can run several times during discovery and strict replay, so it must
-be deterministic and free of external side effects. Create all generated
-clients and Soroban values inside the closure.
+The scenario can run several times while Kanatoko finds the dependency fixed
+point, so keep it deterministic and free of external side effects. Create
+generated clients and Soroban values inside the closure.
 
-`local_account("swap-user")` creates a funded G-account only in the local
-ledger. Its address is pseudorandom but stable for the network, root contract,
-and label, so capture and replay touch identical keys. It has no private key:
-authorization remains an explicit test mode. Classic assets still require
-their real SAC `trust` flow, and `set_authorized` when applicable.
+## What `mainnet(POOL)` means
 
-## Real accounts and M-addresses
+`POOL` is the initial contract and cache identity, not a whitelist. Its
+instance and, when applicable, referenced WASM are loaded first. The USDC
+Stellar Asset Contract and every other Host key reached by the executed
+scenario are then captured from the same ledger. WASM-backed contracts execute
+their captured network WASM; Stellar Asset Contracts execute natively.
 
-`fork.account("G...")` references an existing Stellar account without
-modifying it. State is fetched lazily when the scenario actually uses it:
+Discovery is execution-driven: Kanatoko captures the keys used by this
+scenario path, including confirmed-absent keys, rather than every key a
+contract could possibly access.
 
-```rust,ignore
-let holder = fork.account("G...");
-let xlm_balance = fork.invoke::<i128>(&xlm, "balance", (holder.clone(),));
-let usdc_balance = fork.invoke::<i128>(&usdc, "balance", (holder,));
-```
+## Typed and dynamic calls
 
-For a G-address, XLM SAC `balance` reads the complete network `AccountEntry`;
-a classic asset SAC reads its `TrustLineEntry`. Kanatoko captures those exact
-entries at the same ledger as the contracts and replays them offline. The same
-automatic rule covers every touched Host-supported Account, Trustline,
-ContractData, and ContractCode key. Unsupported classic-ledger families fail
-closed instead of being silently omitted. XLM `balance` is the account's total
-ledger balance, not its spendable balance after reserves and liabilities.
+A local WASM passed to `contractimport!` is an ABI source only. Kanatoko never
+registers it at the captured address. Calls always execute the contract
+instance and WASM captured from Stellar; a stale incompatible ABI fails instead
+of silently replacing upgraded network code.
 
-`fork.muxed_account("M...")` parses an actual multiplexed account. Protocol 27
-SAC supports `MuxedAddress` as a `transfer` destination: balance changes apply
-to the underlying G-account while the multiplexing ID is emitted as event
-metadata. `balance`, `trust`, `mint`, authorization, and transfer sources still
-use the underlying `Address`, not an M-address.
-
-## Network WASM always wins
-
-`contractimport!` uses the local WASM only to generate Rust types and method
-bindings. Kanatoko never registers that file at the captured contract address.
-
-Calls execute the contract instance and WASM captured from Stellar. The local
-ABI artifact may be older; if it is incompatible with the captured network
-contract, the call fails instead of silently running the local code.
-
-Contracts without a local ABI use the same environment through dynamic calls:
+Contracts without a local ABI use dynamic invocation:
 
 ```rust,ignore
 let quote = fork.invoke::<u128>(
@@ -132,23 +113,56 @@ let quote = fork.invoke::<u128>(
 );
 ```
 
-The caller supplies the return type; heterogeneous tuples use Soroban SDK value
-conversions.
+Both styles use the same `Env`, so they can be mixed freely in one stateful
+scenario.
+
+## Stellar addresses
+
+| API | Meaning |
+| --- | --- |
+| `fork.contract("C...")` | Parses a contract address; later Host access discovers its instance, WASM, and storage. |
+| `fork.account("G...")` | Parses an account address; later Host access discovers its network account and trustlines. |
+| `fork.muxed_account("M...")` | Parses muxed metadata; ledger state belongs to the underlying G-address. |
+| `fork.local_account("label")` | Injects a funded, deterministic local G-account with no private key or initial trustlines. |
+
+For a real G-address, XLM SAC `balance` reads its complete `AccountEntry`, and
+a classic asset SAC reads its `TrustLineEntry`. Kanatoko captures those exact
+entries at the same ledger as the contracts. A local account starts with only
+an injected `AccountEntry`, so classic assets still require their real `trust`
+flow and, when applicable, `set_authorized`.
+
+On protocol 27, `MuxedAddress` is supported as a SAC `transfer` destination.
+The balance change applies to the underlying G-account and the multiplexing ID
+is emitted as event metadata. Balance queries, trust, mint, authorization, and
+transfer sources still use the underlying `Address`.
+
+## More control
+
+The lower-level `CapturedFixture` and `StrictFork` APIs add local candidate
+WASM registration, explicit authorization modes, receipts, state diffs, and
+checkpoint/revert. These operations are labelled local test mechanics; they
+are not disguised as network transactions.
 
 ## Evidence boundary
 
 Kanatoko proves contract-functional, state-reproducible Soroban Host behavior.
-Local candidate installation and mocked authorization are explicit test
-cheats. It does not claim transaction, fee, signature, Stellar Core/consensus,
-SDEX, or arbitrary historical-ledger fidelity.
+It does not prove transaction envelopes, signatures, fees, Stellar Core
+consensus, SDEX behavior, or arbitrary historical-ledger fidelity.
+
+The current release is pinned to protocol 27. Host-supported `Account`,
+`Trustline`, `ContractData`, and `ContractCode` entries are captured
+automatically; unsupported classic-ledger families fail closed. XLM SAC
+`balance` is the total ledger balance, not spendable balance after reserves and
+liabilities. Local accounts and mocked authorization are explicit test cheats.
 
 ```sh
-cargo test --locked
+cargo test --locked --features capture --test auto_runner
 cargo test --locked --all-features
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
-See the runnable mixed-mode acceptance in
-[`tests/auto_runner.rs`](tests/auto_runner.rs) and the project principles in
+See the runnable acceptance scenario in
+[`tests/auto_runner.rs`](tests/auto_runner.rs), strict mutation examples in
+[`tests/strict_fork.rs`](tests/strict_fork.rs), and the project principles in
 [`MISSION.md`](MISSION.md).
