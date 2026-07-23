@@ -15,11 +15,15 @@ use soroban_env_host::xdr::{
     Uint256, VecM,
 };
 use soroban_sdk::{
-    Address, Env, IntoVal, MuxedAddress, Symbol, TryFromVal, Val, Vec as SorobanVec,
+    testutils::Address as _, Address, ConstructorArgs, Env, IntoVal, MuxedAddress, Symbol,
+    TryFromVal, Val, Vec as SorobanVec,
 };
 use thiserror::Error;
 
-use crate::{capture::MAINNET_PASSPHRASE, CaptureBuilder, CaptureError, CapturedFixture};
+use crate::{
+    capture::{contract_instance_key, LocalLedger, MAINNET_PASSPHRASE},
+    CaptureBuilder, CaptureError, CapturedFixture,
+};
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
 const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
@@ -137,8 +141,8 @@ impl AutoRunner {
             });
         }
 
-        let captured = self.builder.capture(|env| {
-            scenario(&ScenarioFork::new(env));
+        let captured = self.builder.capture_with_local(|env, local| {
+            scenario(&ScenarioFork::new(env, local));
         })?;
         replay(&captured, &scenario)?;
 
@@ -173,8 +177,8 @@ fn replay<F>(fixture: &CapturedFixture, scenario: &F) -> Result<(), CaptureError
 where
     F: for<'a> Fn(&ScenarioFork<'a>),
 {
-    fixture.replay(|env| {
-        scenario(&ScenarioFork::new(env));
+    fixture.replay_with_local(|env, local| {
+        scenario(&ScenarioFork::new(env, local));
     })
 }
 
@@ -187,13 +191,15 @@ where
 pub struct ScenarioFork<'a> {
     env: &'a Env,
     local_accounts: RefCell<BTreeSet<[u8; 32]>>,
+    local_ledger: Rc<LocalLedger>,
 }
 
 impl<'a> ScenarioFork<'a> {
-    fn new(env: &'a Env) -> Self {
+    fn new(env: &'a Env, local_ledger: Rc<LocalLedger>) -> Self {
         Self {
             env,
             local_accounts: RefCell::new(BTreeSet::new()),
+            local_ledger,
         }
     }
 
@@ -291,10 +297,11 @@ impl<'a> ScenarioFork<'a> {
         digest.update(label.as_bytes());
         let public_key: [u8; 32] = digest.finalize().into();
         let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(public_key)));
-        let address = Address::try_from_val(self.env, &ScAddress::Account(account_id.clone()))
+        let address_xdr = ScAddress::Account(account_id.clone());
+        let address = Address::try_from_val(self.env, &address_xdr)
             .expect("a generated Ed25519 account must be a valid Soroban address");
 
-        if !self.local_accounts.borrow_mut().insert(public_key) {
+        if self.local_accounts.borrow().contains(&public_key) {
             return address;
         }
 
@@ -310,6 +317,9 @@ impl<'a> ScenarioFork<'a> {
         {
             panic!("generated local account collides with captured network state");
         }
+        let inserted = self.local_accounts.borrow_mut().insert(public_key);
+        assert!(inserted, "local account tracking must be deterministic");
+        self.local_ledger.mark_address(address_xdr);
 
         address
     }
@@ -404,6 +414,51 @@ impl<'a> ScenarioFork<'a> {
             .expect("the Host must accept explicit local account funding");
     }
 
+    /// Locally installs candidate WASM and runs its constructor, if defined.
+    ///
+    /// The returned contract shares this scenario's mutable environment, so it
+    /// can call captured network contracts and mutate their forked state.
+    /// Installation is deterministic when the scenario is deterministic. Its
+    /// code and contract-owned storage remain local rather than becoming
+    /// network-cache dependencies; the generated contract address is still
+    /// checked against captured network state before installation.
+    ///
+    /// This uses the SDK test registration path. It does not emulate Soroban
+    /// upload/create transactions, deployment authorization, fees, signatures,
+    /// or Stellar Core consensus.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated address collides with captured network state,
+    /// the WASM is invalid, its constructor fails, or the Host rejects local
+    /// installation.
+    #[must_use]
+    pub fn deploy<A>(&self, wasm: &[u8], constructor_args: A) -> Address
+    where
+        A: ConstructorArgs,
+    {
+        let address = Address::generate(self.env);
+        let address_xdr = ScAddress::from(&address);
+        assert!(
+            matches!(address_xdr, ScAddress::Contract(_)),
+            "generated candidate address must be a contract"
+        );
+        let key = Rc::new(contract_instance_key(address_xdr.clone()));
+        if self
+            .env
+            .host()
+            .get_ledger_entry(&key)
+            .expect("the Host must be able to inspect the candidate address")
+            .is_some()
+        {
+            panic!("generated candidate address collides with captured network state");
+        }
+
+        self.local_ledger.mark_address(address_xdr);
+        self.local_ledger.mark_code(Sha256::digest(wasm).into());
+        self.env.register_at(&address, wasm, constructor_args)
+    }
+
     /// Enables the SDK's explicit record-and-mock authorization mode.
     ///
     /// This is mocked behavioral evidence, not signature evidence.
@@ -484,6 +539,13 @@ mod tests {
 
     use super::*;
 
+    mod stateful {
+        soroban_sdk::contractimport!(
+            file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
+            sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+        );
+    }
+
     #[test]
     fn local_account_is_unfunded_and_explicit_funding_is_scoped_and_additive() {
         let mut env = Env::default();
@@ -496,7 +558,7 @@ mod tests {
             .host()
             .with_ledger_info(|ledger| Ok(ledger.network_id))
             .unwrap();
-        let fork = ScenarioFork::new(&env);
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()));
 
         let actual = fork.local_account("alice");
         let mut digest = Sha256::new();
@@ -551,5 +613,29 @@ mod tests {
             panic!("local account key must contain an AccountEntry");
         };
         Some(account.balance)
+    }
+
+    #[test]
+    fn deploy_rejects_generated_address_collision_without_replacing_contract() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let mut mirror = Env::default();
+        mirror.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let occupied_xdr = ScAddress::from(&Address::generate(&mirror));
+        let occupied = Address::try_from_val(&env, &occupied_xdr).unwrap();
+        env.register_at(&occupied, stateful::WASM, (41_i64,));
+        let existing = stateful::Client::new(&env, &occupied);
+        assert_eq!(existing.get(), 41);
+
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = fork.deploy(stateful::WASM, (99_i64,));
+        }))
+        .is_err());
+        assert_eq!(existing.get(), 41);
     }
 }

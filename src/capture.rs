@@ -45,6 +45,41 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) type KeyId = Vec<u8>;
 type PresentEntry = (Rc<LedgerEntry>, Option<u32>);
 
+/// Ledger keys explicitly owned by local test setup rather than the captured
+/// network. Each scenario pass gets a fresh registry shared by its facade and
+/// snapshot source.
+#[derive(Default)]
+pub(crate) struct LocalLedger {
+    addresses: RefCell<BTreeSet<ScAddress>>,
+    code_hashes: RefCell<BTreeSet<Hash>>,
+}
+
+impl LocalLedger {
+    pub(crate) fn mark_address(&self, address: ScAddress) {
+        self.addresses.borrow_mut().insert(address);
+    }
+
+    pub(crate) fn mark_code(&self, hash: [u8; 32]) {
+        self.code_hashes.borrow_mut().insert(Hash(hash));
+    }
+
+    fn owns(&self, key: &LedgerKey) -> bool {
+        match key {
+            LedgerKey::ContractCode(code) => self.code_hashes.borrow().contains(&code.hash),
+            LedgerKey::ContractData(data) => self.addresses.borrow().contains(&data.contract),
+            LedgerKey::Account(account) => self
+                .addresses
+                .borrow()
+                .contains(&ScAddress::Account(account.account_id.clone())),
+            LedgerKey::Trustline(trustline) => self
+                .addresses
+                .borrow()
+                .contains(&ScAddress::Account(trustline.account_id.clone())),
+            _ => false,
+        }
+    }
+}
+
 /// Builds an execution-driven, RPC-backed capture.
 ///
 /// The URL is held only by the HTTP transport. Debug output and capture
@@ -110,12 +145,19 @@ impl CaptureBuilder {
     where
         F: Fn(&Env),
     {
+        self.capture_ref(&|env, _| scenario(env))
+    }
+
+    pub(crate) fn capture_with_local<F>(&self, scenario: F) -> Result<CapturedFixture, CaptureError>
+    where
+        F: Fn(&Env, Rc<LocalLedger>),
+    {
         self.capture_ref(&scenario)
     }
 
     fn capture_ref<F>(&self, scenario: &F) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&Env),
+        F: Fn(&Env, Rc<LocalLedger>),
     {
         let network = self
             .transport
@@ -136,12 +178,14 @@ impl CaptureBuilder {
         materialized = self.expand_code_closure(&mut keys, materialized)?;
 
         for round in 1..=self.max_discovery_rounds {
-            let source = Rc::new(TrackingSource::rpc(
+            let local = Rc::new(LocalLedger::default());
+            let source = Rc::new(TrackingSource::rpc_with_local(
                 materialized.coverage.clone(),
                 self.transport.clone(),
+                local.clone(),
             ));
             let env = env_from_materialized(&materialized, source.clone());
-            let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, local.clone())));
 
             if let Some(operation) = source.take_failure() {
                 return Err(transport_error(operation));
@@ -154,6 +198,9 @@ impl CaptureBuilder {
                 .map_err(|_| CaptureError::HostInspection)?
             {
                 let key = (*key).clone();
+                if local.owns(&key) {
+                    continue;
+                }
                 requested.insert(key_id(&key)?, key);
             }
 
@@ -440,6 +487,13 @@ impl CapturedFixture {
     where
         F: FnOnce(&Env) -> R,
     {
+        self.replay_with_local(|env, _| scenario(env))
+    }
+
+    pub(crate) fn replay_with_local<F, R>(&self, scenario: F) -> Result<R, CaptureError>
+    where
+        F: FnOnce(&Env, Rc<LocalLedger>) -> R,
+    {
         let materialized = Materialized {
             anchor: Anchor {
                 sequence: self.fixture.ledger_snapshot().sequence_number,
@@ -451,9 +505,13 @@ impl CapturedFixture {
             ledger_info: self.fixture.ledger_snapshot().ledger_info(),
             coverage: self.coverage.clone(),
         };
-        let source = Rc::new(TrackingSource::strict(self.coverage.clone()));
+        let local = Rc::new(LocalLedger::default());
+        let source = Rc::new(TrackingSource::strict_with_local(
+            self.coverage.clone(),
+            local.clone(),
+        ));
         let env = env_from_materialized(&materialized, source.clone());
-        let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, local.clone())));
 
         let mut unknown = source.unknown_keys();
         for (key, _) in env
@@ -461,6 +519,9 @@ impl CapturedFixture {
             .get_stored_entries()
             .map_err(|_| CaptureError::HostInspection)?
         {
+            if local.owns(&key) {
+                continue;
+            }
             let id = key_id(&key)?;
             if !self.coverage.contains_key(&id) {
                 unknown.insert(id);
@@ -1043,28 +1104,35 @@ struct TrackingSource {
     requested: RefCell<BTreeMap<KeyId, LedgerKey>>,
     unknown: RefCell<BTreeSet<KeyId>>,
     transport: Option<Rc<dyn Transport>>,
+    local: Rc<LocalLedger>,
     rpc_reads: Cell<u64>,
     failure: Cell<Option<&'static str>>,
 }
 
 impl TrackingSource {
-    fn rpc(cache: BTreeMap<KeyId, LookupState>, transport: Rc<dyn Transport>) -> Self {
-        Self {
-            cache: RefCell::new(cache),
-            requested: RefCell::new(BTreeMap::new()),
-            unknown: RefCell::new(BTreeSet::new()),
-            transport: Some(transport),
-            rpc_reads: Cell::new(0),
-            failure: Cell::new(None),
-        }
+    fn rpc_with_local(
+        cache: BTreeMap<KeyId, LookupState>,
+        transport: Rc<dyn Transport>,
+        local: Rc<LocalLedger>,
+    ) -> Self {
+        Self::new(cache, Some(transport), local)
     }
 
-    fn strict(cache: BTreeMap<KeyId, LookupState>) -> Self {
+    fn strict_with_local(cache: BTreeMap<KeyId, LookupState>, local: Rc<LocalLedger>) -> Self {
+        Self::new(cache, None, local)
+    }
+
+    fn new(
+        cache: BTreeMap<KeyId, LookupState>,
+        transport: Option<Rc<dyn Transport>>,
+        local: Rc<LocalLedger>,
+    ) -> Self {
         Self {
             cache: RefCell::new(cache),
             requested: RefCell::new(BTreeMap::new()),
             unknown: RefCell::new(BTreeSet::new()),
-            transport: None,
+            transport,
+            local,
             rpc_reads: Cell::new(0),
             failure: Cell::new(None),
         }
@@ -1097,6 +1165,9 @@ impl SnapshotSource for TrackingSource {
             self.failure.set(Some("ledger-key-encode"));
             return Err(Self::host_error());
         };
+        if self.local.owns(key) {
+            return Ok(None);
+        }
         self.requested
             .borrow_mut()
             .insert(id.clone(), (**key).clone());
@@ -1713,7 +1784,7 @@ fn key_id(key: &LedgerKey) -> Result<KeyId, CaptureError> {
     key.to_xdr(Limits::none()).map_err(|_| CaptureError::Xdr)
 }
 
-fn contract_instance_key(contract: ScAddress) -> LedgerKey {
+pub(crate) fn contract_instance_key(contract: ScAddress) -> LedgerKey {
     LedgerKey::ContractData(LedgerKeyContractData {
         contract,
         key: ScVal::LedgerKeyContractInstance,
@@ -1796,6 +1867,22 @@ mod tests {
         soroban_sdk::contractimport!(
             file = "fixtures/mainnet/aquarius-xlm-usdc-cp/pool.wasm",
             sha256 = "ae0da5a84b15805c5c7931ac567a8d1b34be3f26b483993d9ff80cb2c3de9852",
+        );
+    }
+
+    mod local_wrapper {
+        #![allow(clippy::too_many_arguments)]
+
+        soroban_sdk::contractimport!(
+            file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
+            sha256 = "798c959e1e22093c49b4ec6636aafed14e889614fb243426abe5023b30c17520",
+        );
+    }
+
+    mod local_stateful {
+        soroban_sdk::contractimport!(
+            file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
+            sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
         );
     }
 
@@ -1892,6 +1979,64 @@ mod tests {
         assert_eq!(second.cache_status(), CacheStatus::Hit);
         assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
         assert_eq!(second.fixture().report().final_replay_rpc_reads(), 0);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_deploys_local_wasm_that_calls_captured_contract_offline() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-local-wasm");
+        let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
+            let pool = fork.contract(POOL_ID);
+            let candidate = fork.deploy(local_wrapper::WASM, (pool.clone(),));
+            let direct = fork.invoke::<u128>(&pool, "estimate_swap", (1_u32, 0_u32, ONE_USDC));
+            let through_candidate =
+                local_wrapper::Client::new(fork.env(), &candidate).estimate_swap(&1, &0, &ONE_USDC);
+            assert_eq!(through_candidate, direct);
+        };
+
+        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        assert_eq!(first.cache_status(), CacheStatus::Created);
+        let local_code_hash = Hash(Sha256::digest(local_wrapper::WASM).into());
+        assert!(first
+            .fixture()
+            .frozen_fixture()
+            .ledger_snapshot()
+            .ledger_entries
+            .iter()
+            .all(|(_, (entry, _))| !matches!(
+                &entry.data,
+                LedgerEntryData::ContractCode(code) if code.hash == local_code_hash
+            )));
+        let reads_after_capture = fake.ledger_entry_reads();
+
+        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(scenario)
+            .unwrap();
+        assert_eq!(second.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
+
+        let changed_candidate = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(|fork| {
+                let candidate = fork.deploy(local_stateful::WASM, (41_i64,));
+                assert_eq!(
+                    local_stateful::Client::new(fork.env(), &candidate).get(),
+                    41
+                );
+            })
+            .unwrap();
+        assert_eq!(changed_candidate.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
 
         fs::remove_file(path).unwrap();
     }
