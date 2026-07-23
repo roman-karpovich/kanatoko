@@ -80,6 +80,18 @@ pub enum InvokeErrorKind {
     ResultConversion,
 }
 
+/// Stable, structured invocation failure.
+///
+/// Kanatoko never derives this value by parsing panic messages or diagnostic
+/// text. `error` preserves the Host's typed [`ScError`] when one is available;
+/// `kind` is the deliberately small fallback taxonomy.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("contract invocation failed")]
+pub struct InvocationFailure {
+    pub error: Option<ScError>,
+    pub kind: InvokeErrorKind,
+}
+
 /// Detached success or failure returned by the generic invoke API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InvokeOutcome {
@@ -481,7 +493,7 @@ impl StrictFork {
     }
 }
 
-fn invocation_values(
+pub(crate) fn invocation_values(
     env: &Env,
     request: &InvokeRequest,
 ) -> Result<(AddressValue, Symbol, SorobanVec<Val>), StrictForkError> {
@@ -497,41 +509,58 @@ fn invocation_values(
     Ok((contract, function, SorobanVec::from_iter(env, args)))
 }
 
-fn invoke_outcome(
+pub(crate) fn invoke_outcome(
     env: &Env,
     contract: &AddressValue,
     function: &Symbol,
     args: SorobanVec<Val>,
 ) -> InvokeOutcome {
+    match invoke_once::<ScVal>(env, &contract.0, function, args) {
+        Ok(value) => InvokeOutcome::Success(value),
+        Err(InvocationFailure { error, kind }) => InvokeOutcome::Failure { error, kind },
+    }
+}
+
+pub(crate) fn invoke_once<R>(
+    env: &Env,
+    contract: &soroban_sdk::Address,
+    function: &Symbol,
+    args: SorobanVec<Val>,
+) -> Result<R, InvocationFailure>
+where
+    R: TryFromVal<Env, Val>,
+{
     let call = catch_unwind(AssertUnwindSafe(|| {
-        env.try_invoke_contract::<ScVal, Error>(&contract.0, function, args)
+        env.try_invoke_contract::<R, Error>(contract, function, args)
     }));
     match call {
-        Err(_) | Ok(Err(Err(InvokeError::Abort))) => InvokeOutcome::Failure {
+        Err(_) | Ok(Err(Err(InvokeError::Abort))) => Err(InvocationFailure {
             error: None,
             kind: InvokeErrorKind::Abort,
-        },
-        Ok(Ok(Ok(value))) => InvokeOutcome::Success(value),
-        Ok(Ok(Err(_))) => InvokeOutcome::Failure {
+        }),
+        Ok(Ok(Ok(value))) => Ok(value),
+        Ok(Ok(Err(_))) => Err(InvocationFailure {
             error: None,
             kind: InvokeErrorKind::ResultConversion,
-        },
-        Ok(Err(Ok(error))) => InvokeOutcome::Failure {
+        }),
+        Ok(Err(Ok(error))) => Err(InvocationFailure {
             error: ScError::try_from(error).ok(),
             kind: if error.is_type(soroban_env_host::xdr::ScErrorType::Contract) {
                 InvokeErrorKind::Contract(error.get_code())
             } else {
                 InvokeErrorKind::Abort
             },
-        },
-        Ok(Err(Err(InvokeError::Contract(code)))) => InvokeOutcome::Failure {
+        }),
+        Ok(Err(Err(InvokeError::Contract(code)))) => Err(InvocationFailure {
             error: Some(ScError::Contract(code)),
             kind: InvokeErrorKind::Contract(code),
-        },
+        }),
     }
 }
 
-fn detached_snapshot_evidence(env: &Env) -> (Vec<AuthorizationTree>, Vec<DetachedEvent>) {
+pub(crate) fn detached_snapshot_evidence(
+    env: &Env,
+) -> (Vec<AuthorizationTree>, Vec<DetachedEvent>) {
     let snapshot = env.to_snapshot();
     let authorization = snapshot
         .auth
@@ -557,7 +586,7 @@ fn detached_snapshot_evidence(env: &Env) -> (Vec<AuthorizationTree>, Vec<Detache
     (authorization, events)
 }
 
-fn detached_diagnostics(env: &Env) -> Result<Vec<DetachedEvent>, StrictForkError> {
+pub(crate) fn detached_diagnostics(env: &Env) -> Result<Vec<DetachedEvent>, StrictForkError> {
     Ok(env
         .host()
         .get_diagnostic_events()
@@ -572,7 +601,7 @@ fn detached_diagnostics(env: &Env) -> Result<Vec<DetachedEvent>, StrictForkError
         .collect())
 }
 
-struct AddressValue(soroban_sdk::Address);
+pub(crate) struct AddressValue(pub(crate) soroban_sdk::Address);
 
 impl AddressValue {
     fn from_xdr(env: &Env, address: &ScAddress) -> Result<Self, StrictForkError> {
@@ -683,12 +712,12 @@ fn is_local_key(
     }
 }
 
-fn is_nonce_data(data: &LedgerKeyContractData) -> bool {
+pub(crate) fn is_nonce_data(data: &LedgerKeyContractData) -> bool {
     data.durability == ContractDataDurability::Temporary
         && matches!(data.key, ScVal::LedgerKeyNonce(_))
 }
 
-fn strip_new_mock_nonces(
+pub(crate) fn strip_new_mock_nonces(
     before: &LedgerSnapshot,
     after: &mut LedgerSnapshot,
 ) -> Result<(), StrictForkError> {
@@ -758,7 +787,7 @@ fn snapshot_map(
         .collect()
 }
 
-fn state_diff(
+pub(crate) fn state_diff(
     before: &LedgerSnapshot,
     after: &LedgerSnapshot,
 ) -> Result<Vec<StateChange>, StrictForkError> {

@@ -145,19 +145,19 @@ impl CaptureBuilder {
     where
         F: Fn(&Env),
     {
-        self.capture_ref(&|env, _| scenario(env))
+        self.capture_ref(&|env, _, _| scenario(env))
     }
 
     pub(crate) fn capture_with_local<F>(&self, scenario: F) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&Env, Rc<LocalLedger>),
+        F: Fn(&Env, Rc<LocalLedger>, Rc<TrackingSource>),
     {
         self.capture_ref(&scenario)
     }
 
     fn capture_ref<F>(&self, scenario: &F) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&Env, Rc<LocalLedger>),
+        F: Fn(&Env, Rc<LocalLedger>, Rc<TrackingSource>),
     {
         let network = self
             .transport
@@ -185,7 +185,9 @@ impl CaptureBuilder {
                 local.clone(),
             ));
             let env = env_from_materialized(&materialized, source.clone());
-            let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, local.clone())));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                scenario(&env, local.clone(), source.clone());
+            }));
 
             if let Some(operation) = source.take_failure() {
                 return Err(transport_error(operation));
@@ -487,12 +489,12 @@ impl CapturedFixture {
     where
         F: FnOnce(&Env) -> R,
     {
-        self.replay_with_local(|env, _| scenario(env))
+        self.replay_with_local(|env, _, _| scenario(env))
     }
 
     pub(crate) fn replay_with_local<F, R>(&self, scenario: F) -> Result<R, CaptureError>
     where
-        F: FnOnce(&Env, Rc<LocalLedger>) -> R,
+        F: FnOnce(&Env, Rc<LocalLedger>, Rc<TrackingSource>) -> R,
     {
         let materialized = Materialized {
             anchor: Anchor {
@@ -511,7 +513,9 @@ impl CapturedFixture {
             local.clone(),
         ));
         let env = env_from_materialized(&materialized, source.clone());
-        let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, local.clone())));
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            scenario(&env, local.clone(), source.clone())
+        }));
 
         let mut unknown = source.unknown_keys();
         for (key, _) in env
@@ -1099,7 +1103,7 @@ trait Transport {
     fn ledger_entries(&self, keys: &[LedgerKey]) -> Result<EntryBatch, TransportFailure>;
 }
 
-struct TrackingSource {
+pub(crate) struct TrackingSource {
     cache: RefCell<BTreeMap<KeyId, LookupState>>,
     requested: RefCell<BTreeMap<KeyId, LedgerKey>>,
     unknown: RefCell<BTreeSet<KeyId>>,
@@ -1142,12 +1146,16 @@ impl TrackingSource {
         self.requested.borrow().clone()
     }
 
-    fn unknown_keys(&self) -> BTreeSet<KeyId> {
+    pub(crate) fn unknown_keys(&self) -> BTreeSet<KeyId> {
         self.unknown.borrow().clone()
     }
 
-    fn rpc_reads(&self) -> u64 {
+    pub(crate) fn rpc_reads(&self) -> u64 {
         self.rpc_reads.get()
+    }
+
+    pub(crate) fn observe(&self, key: &Rc<LedgerKey>) -> Result<(), HostError> {
+        self.get(key).map(|_| ())
     }
 
     fn take_failure(&self) -> Option<&'static str> {
@@ -2036,6 +2044,48 @@ mod tests {
             })
             .unwrap();
         assert_eq!(changed_candidate.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preview_only_dependencies_reach_fixed_point_and_replay_offline() {
+        use crate::{
+            auto::{AutoRunner, CacheStatus},
+            PreviewAuth,
+        };
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-preview-only");
+        let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
+            let pool = fork.contract(POOL_ID);
+            let candidate = fork.deploy(local_wrapper::WASM, (pool,));
+            let report = fork
+                .preview(
+                    &candidate,
+                    "estimate_swap",
+                    (1_u32, 0_u32, ONE_USDC),
+                    PreviewAuth::Record,
+                )
+                .unwrap();
+            assert!(report.result::<u128>(fork.env()).unwrap() > 0);
+        };
+
+        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        assert_eq!(first.cache_status(), CacheStatus::Created);
+        assert!(first.fixture().report().present_entries() > 0);
+        let reads_after_capture = fake.ledger_entry_reads();
+
+        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(scenario)
+            .unwrap();
+        assert_eq!(second.cache_status(), CacheStatus::Hit);
         assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
 
         fs::remove_file(path).unwrap();

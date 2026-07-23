@@ -38,7 +38,6 @@ const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 #[test]
 fn local_contract_uses_mainnet_state() {
     mainnet()
-        .cache(".kanatoko/xlm-vault.json")
         .run(|fork| {
             let xlm = fork.contract(XLM);
 
@@ -53,10 +52,11 @@ fn local_contract_uses_mainnet_state() {
 }
 ```
 
-The cache file is generated automatically. The first run discovers the
+The cache file is generated automatically under `.kanatoko/` from the test
+thread name and the `mainnet()` callsite. The first run discovers the
 scenario's network dependencies; later runs replay the frozen ledger entirely
-offline. Use `.refresh()` to capture a newer ledger or `.offline()` in CI to
-require an existing cache.
+offline. Use `.cache(path)` to override the path, `.refresh()` to capture a
+newer ledger, or `.offline()` in CI to require an existing cache.
 
 Candidate code and its own storage remain local to each pass. Rebuilding it
 does not invalidate the cache unless it starts touching new external ledger
@@ -85,6 +85,30 @@ let dependency = fork.contract(DEPENDENCY);
 let value = fork.invoke::<u32>(&dependency, "decimals", ());
 ```
 
+Use `try_invoke` when a failure is part of the test rather than a panic:
+
+```rust,ignore
+let result = fork.try_invoke::<u32>(&dependency, "decimals", ());
+assert!(result.is_ok());
+```
+
+Preview executes a mutating call in an isolated child and returns detached
+evidence without changing the scenario state:
+
+```rust,ignore
+use kanatoko::PreviewAuth;
+
+let report = fork
+    .preview(&vault, "deposit", (user, amount), PreviewAuth::Record)
+    .unwrap();
+let shares = report.result::<i128>(fork.env()).unwrap();
+assert!(!report.state_changes().is_empty());
+```
+
+`PreviewAuth::Record` exposes the requested authorization tree.
+`PreviewAuth::Exact(recorded.authorization().to_vec())` reruns the preview and
+requires that exact tree. Exact validation is preview-only.
+
 Typed clients, dynamic calls, local WASM, and captured contracts share the same
 mutable state and can be mixed freely.
 
@@ -92,8 +116,8 @@ mutable state and can be mixed freely.
 
 | API | Meaning |
 | --- | --- |
-| `mainnet()` | Selects Stellar mainnet; it does not privilege one root contract. |
-| `.cache(path)` | Creates or reuses an automatic capture cache. |
+| `mainnet()` | Selects Stellar mainnet and derives a scenario cache path; it does not privilege one root contract. |
+| `.cache(path)` | Overrides the automatically derived cache path. |
 | `.offline()` | Requires a cache hit and performs no discovery. |
 | `.refresh()` | Captures a fresh coherent ledger. |
 | `fork.contract("C...")` | Parses a network contract address. |
@@ -101,6 +125,8 @@ mutable state and can be mixed freely.
 | `fork.muxed_account("M...")` | Parses a muxed address; ledger state belongs to its underlying G-address. |
 | `fork.deploy(wasm, args)` | Locally installs candidate WASM and runs its constructor, if defined. |
 | `fork.invoke(contract, fn, args)` | Invokes any contract without generated bindings. |
+| `fork.try_invoke(contract, fn, args)` | Applies one call and returns a small typed failure instead of unwinding. |
+| `fork.preview(contract, fn, args, auth)` | Simulates one call in an isolated child and returns detached result/auth/events/diff/resources. |
 | `fork.local_account("label")` | Creates a deterministic local G-address with no ledger entry or funds. |
 | `fork.fund_local_account(account, stroops)` | Explicitly creates or funds that local account through ledger injection. |
 | `fork.mock_all_auths()` | Explicitly enables SDK record-and-mock authorization. |
@@ -124,7 +150,6 @@ inside it:
 let amount = generate_amount_once();
 
 mainnet()
-    .cache(".kanatoko/scenario.json")
     .run(|fork| {
         let pool = fork.contract(POOL);
         fork.invoke::<()>(&pool, "deposit", (amount,));
@@ -143,6 +168,10 @@ contract mutations, keep them inside the same `.run(...)` closure.
 test mechanics. They prove contract behavior in the Soroban Host; they do not
 emulate transaction envelopes, deployment authorization, signatures, fees,
 Stellar Core consensus, or SDEX execution.
+
+Preview resources are the raw local Host estimate, not fee parity. Kanatoko
+keeps typed `ScError` and raw XDR evidence and does not derive stable behavior
+by parsing diagnostic or panic text.
 
 The current release is pinned to protocol 27. Unsupported ledger-entry families
 and uncaptured keys fail closed.

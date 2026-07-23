@@ -24,7 +24,10 @@ mod capture;
 mod strict;
 
 #[cfg(feature = "capture")]
-pub use auto::{mainnet, AutoRun, AutoRunError, AutoRunner, CacheStatus, ScenarioFork};
+pub use auto::{
+    mainnet, AutoRun, AutoRunError, AutoRunner, CacheStatus, InvocationReport, PreviewAuth,
+    ScenarioFork,
+};
 #[cfg(feature = "capture")]
 pub use capture::{
     CaptureBuilder, CaptureError, CaptureProvenance, CaptureReport, CapturedFixture,
@@ -32,8 +35,9 @@ pub use capture::{
 #[cfg(feature = "capture")]
 pub use strict::{
     AppliedAuthMode, AuthMode, AuthorizationTree, CandidateInstallMode, CandidateRegistration,
-    DetachedEvent, ExecutionMode, InvokeErrorKind, InvokeOutcome, InvokeRequest, LedgerValue,
-    Receipt, ReceiptDisposition, StateChange, StrictCheckpoint, StrictFork, StrictForkError,
+    DetachedEvent, ExecutionMode, InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest,
+    LedgerValue, Receipt, ReceiptDisposition, StateChange, StrictCheckpoint, StrictFork,
+    StrictForkError,
 };
 
 pub use fixture::{

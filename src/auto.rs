@@ -3,46 +3,125 @@
 use std::{
     cell::RefCell,
     collections::BTreeSet,
+    fmt::Write as _,
     fs,
+    panic::{catch_unwind, AssertUnwindSafe, Location},
     path::{Path, PathBuf},
     rc::Rc,
 };
 
 use sha2::{Digest, Sha256};
-use soroban_env_host::xdr::{
-    AccountEntry, AccountEntryExt, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt,
-    LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScVal, SequenceNumber, String32, Thresholds,
-    Uint256, VecM,
+use soroban_env_host::{
+    xdr::{
+        AccountEntry, AccountEntryExt, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt,
+        LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScSymbol, ScVal, SequenceNumber,
+        String32, Thresholds, Uint256, VecM,
+    },
+    InvocationResources,
 };
 use soroban_sdk::{
-    testutils::Address as _, Address, ConstructorArgs, Env, IntoVal, MuxedAddress, Symbol,
-    TryFromVal, Val, Vec as SorobanVec,
+    testutils::{Address as _, EnvTestConfig},
+    Address, ConstructorArgs, Env, IntoVal, MuxedAddress, Symbol, TryFromVal, Val,
+    Vec as SorobanVec,
 };
 use thiserror::Error;
 
 use crate::{
-    capture::{contract_instance_key, LocalLedger, MAINNET_PASSPHRASE},
-    CaptureBuilder, CaptureError, CapturedFixture,
+    capture::{contract_instance_key, LocalLedger, TrackingSource, MAINNET_PASSPHRASE},
+    strict::{
+        detached_diagnostics, detached_snapshot_evidence, invocation_values, invoke_once,
+        invoke_outcome, is_nonce_data, state_diff, strip_new_mock_nonces,
+    },
+    AppliedAuthMode, AuthorizationTree, CaptureBuilder, CaptureError, CapturedFixture,
+    InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest, Receipt, ReceiptDisposition,
+    StateChange, StrictForkError,
 };
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
 const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
+const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v1";
+const DEFAULT_CACHE_NAME_MAX: usize = 80;
+const DEFAULT_CACHE_HASH_HEX: usize = 12;
 
 /// Creates an automatic mainnet runner.
 ///
 /// The same scenario closure performs dependency discovery and the final
 /// strict replay. Every contract and account enters the scenario explicitly
 /// through [`ScenarioFork`]; no address is privileged as a capture root.
+/// A default cache path under `.kanatoko/` is derived from the current thread
+/// name and this callsite. [`AutoRunner::cache`] remains an explicit override.
 ///
 /// # Panics
 ///
 /// Panics only if Kanatoko's built-in mainnet RPC URL is not a valid HTTPS
 /// origin, which would be an internal library invariant violation.
 #[must_use]
+#[track_caller]
 pub fn mainnet() -> AutoRunner {
     let builder = CaptureBuilder::mainnet(DEFAULT_MAINNET_RPC_URL)
         .expect("the built-in mainnet RPC URL must have a valid HTTPS origin");
-    AutoRunner::with_builder(builder, MAINNET_PASSPHRASE)
+    let caller = Location::caller();
+    let thread = std::thread::current();
+    let cache = default_cache_path(
+        thread.name().unwrap_or("scenario"),
+        caller.file(),
+        caller.line(),
+        caller.column(),
+    );
+    AutoRunner::with_builder(builder, MAINNET_PASSPHRASE).cache(cache)
+}
+
+fn default_cache_path(
+    thread_name: &str,
+    caller_file: &str,
+    caller_line: u32,
+    caller_column: u32,
+) -> PathBuf {
+    let human = sanitize_cache_name(thread_name);
+    let mut digest = Sha256::new();
+    digest.update(DEFAULT_CACHE_DOMAIN);
+    digest.update((thread_name.len() as u64).to_be_bytes());
+    digest.update(thread_name.as_bytes());
+    digest.update((caller_file.len() as u64).to_be_bytes());
+    digest.update(caller_file.as_bytes());
+    digest.update(caller_line.to_be_bytes());
+    digest.update(caller_column.to_be_bytes());
+    let digest: [u8; 32] = digest.finalize().into();
+    let mut short_hash = String::with_capacity(DEFAULT_CACHE_HASH_HEX);
+    for byte in &digest[..DEFAULT_CACHE_HASH_HEX / 2] {
+        write!(&mut short_hash, "{byte:02x}").expect("String writes are infallible");
+    }
+    PathBuf::from(".kanatoko").join(format!("{human}-{short_hash}.json"))
+}
+
+fn sanitize_cache_name(raw: &str) -> String {
+    let mut sanitized = String::with_capacity(raw.len().min(DEFAULT_CACHE_NAME_MAX));
+    let mut separator_pending = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            if separator_pending
+                && !sanitized.is_empty()
+                && sanitized.len() < DEFAULT_CACHE_NAME_MAX
+            {
+                sanitized.push('-');
+            }
+            separator_pending = false;
+            if sanitized.len() == DEFAULT_CACHE_NAME_MAX {
+                break;
+            }
+            sanitized.push(ch);
+        } else {
+            separator_pending = true;
+        }
+    }
+    while sanitized.ends_with('-') {
+        sanitized.pop();
+    }
+    if sanitized.is_empty() {
+        "scenario".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Runs one repeatable scenario through automatic discovery and strict replay.
@@ -146,8 +225,8 @@ impl AutoRunner {
             });
         }
 
-        let captured = self.builder.capture_with_local(|env, local| {
-            scenario(&ScenarioFork::new(env, local));
+        let captured = self.builder.capture_with_local(|env, local, source| {
+            scenario(&ScenarioFork::new(env, local, Some(source)));
         })?;
         replay(&captured, &scenario)?;
 
@@ -182,9 +261,96 @@ fn replay<F>(fixture: &CapturedFixture, scenario: &F) -> Result<(), CaptureError
 where
     F: for<'a> Fn(&ScenarioFork<'a>),
 {
-    fixture.replay_with_local(|env, local| {
-        scenario(&ScenarioFork::new(env, local));
+    fixture.replay_with_local(|env, local, source| {
+        scenario(&ScenarioFork::new(env, local, Some(source)));
     })
+}
+
+/// Authorization policy for an isolated [`ScenarioFork::preview`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreviewAuth {
+    /// Record and mock-satisfy the authorization tree requested by the call.
+    Record,
+    /// Record and require an exact detached authorization tree.
+    ///
+    /// Exact validation is intentionally preview-only. It does not apply state
+    /// to the outer scenario environment.
+    Exact(Vec<AuthorizationTree>),
+}
+
+/// Detached evidence from one isolated high-level preview.
+///
+/// Resources are the local Host estimate for this invocation. They do not
+/// model transaction-envelope work and are not a network fee quote.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvocationReport {
+    receipt: Receipt,
+    resources: Option<InvocationResources>,
+}
+
+impl InvocationReport {
+    #[must_use]
+    pub const fn receipt(&self) -> &Receipt {
+        &self.receipt
+    }
+
+    #[must_use]
+    pub const fn resources(&self) -> Option<&InvocationResources> {
+        self.resources.as_ref()
+    }
+
+    #[must_use]
+    pub fn authorization(&self) -> &[AuthorizationTree] {
+        &self.receipt.authorization
+    }
+
+    #[must_use]
+    pub fn events(&self) -> &[crate::DetachedEvent] {
+        &self.receipt.events
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> &[crate::DetachedEvent] {
+        &self.receipt.diagnostics
+    }
+
+    #[must_use]
+    pub fn state_changes(&self) -> &[StateChange] {
+        &self.receipt.state_changes
+    }
+
+    /// Converts the detached return value into an SDK value in `env`.
+    ///
+    /// A conversion failure is reported as
+    /// [`InvokeErrorKind::ResultConversion`]; this method never executes the
+    /// contract again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the invocation's detached failure, or a result-conversion
+    /// failure when `R` is incompatible with the returned [`ScVal`].
+    pub fn result<R>(&self, env: &Env) -> Result<R, InvocationFailure>
+    where
+        R: TryFromVal<Env, Val>,
+    {
+        let value = match &self.receipt.outcome {
+            InvokeOutcome::Success(value) => value,
+            InvokeOutcome::Failure { error, kind } => {
+                return Err(InvocationFailure {
+                    error: error.clone(),
+                    kind: *kind,
+                });
+            }
+        };
+        let value = Val::try_from_val(env, value).map_err(|_| InvocationFailure {
+            error: None,
+            kind: InvokeErrorKind::ResultConversion,
+        })?;
+        R::try_from_val(env, &value).map_err(|_| InvocationFailure {
+            error: None,
+            kind: InvokeErrorKind::ResultConversion,
+        })
+    }
 }
 
 /// One stateful scenario pass.
@@ -197,14 +363,20 @@ pub struct ScenarioFork<'a> {
     env: &'a Env,
     local_accounts: RefCell<BTreeSet<[u8; 32]>>,
     local_ledger: Rc<LocalLedger>,
+    tracking_source: Option<Rc<TrackingSource>>,
 }
 
 impl<'a> ScenarioFork<'a> {
-    fn new(env: &'a Env, local_ledger: Rc<LocalLedger>) -> Self {
+    fn new(
+        env: &'a Env,
+        local_ledger: Rc<LocalLedger>,
+        tracking_source: Option<Rc<TrackingSource>>,
+    ) -> Self {
         Self {
             env,
             local_accounts: RefCell::new(BTreeSet::new()),
             local_ledger,
+            tracking_source,
         }
     }
 
@@ -499,6 +671,181 @@ impl<'a> ScenarioFork<'a> {
             args.into_val(self.env),
         )
     }
+
+    /// Dynamically invokes a contract once in the current mutable environment.
+    ///
+    /// Contract and Host failures are returned as structured values without
+    /// parsing panic or diagnostic strings. Failed Host invocations roll back
+    /// their contract state atomically. As with [`Env::try_invoke_contract`], a
+    /// [`InvokeErrorKind::ResultConversion`] is detected only after a successful
+    /// Host call, so the call's state may already have been applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured contract, Host, panic, or return-conversion
+    /// failure. No diagnostic or panic strings are parsed.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn try_invoke<R>(
+        &self,
+        contract: &Address,
+        function: &str,
+        args: impl IntoVal<Env, SorobanVec<Val>>,
+    ) -> Result<R, InvocationFailure>
+    where
+        R: TryFromVal<Env, Val>,
+    {
+        let prepared = catch_unwind(AssertUnwindSafe(|| {
+            let function = function
+                .try_into()
+                .map(ScSymbol)
+                .map_err(|_| InvocationFailure {
+                    error: None,
+                    kind: InvokeErrorKind::Abort,
+                })?;
+            let function =
+                Symbol::try_from_val(self.env, &ScVal::Symbol(function)).map_err(|_| {
+                    InvocationFailure {
+                        error: None,
+                        kind: InvokeErrorKind::Abort,
+                    }
+                })?;
+            Ok::<_, InvocationFailure>((function, args.into_val(self.env)))
+        }));
+        let (function, args) = match prepared {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(failure)) => return Err(failure),
+            Err(_) => {
+                return Err(InvocationFailure {
+                    error: None,
+                    kind: InvokeErrorKind::Abort,
+                });
+            }
+        };
+        invoke_once(self.env, contract, &function, args)
+    }
+
+    /// Executes one contract call in an isolated child environment.
+    ///
+    /// The returned report contains detached return/error, authorization,
+    /// events, diagnostics, state changes, and an optional local resource
+    /// estimate. The outer environment's state, events, authorization, and SDK
+    /// generators are never changed. Locally deployed WASM and captured
+    /// cross-contract calls remain available through the cloned snapshot.
+    ///
+    /// Preview resources are local Host estimates, not network fee parity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed strict error for invalid detached values, exact-auth
+    /// mismatch, Host inspection failure, or an unknown offline dependency.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn preview(
+        &self,
+        contract: &Address,
+        function: &str,
+        args: impl IntoVal<Env, SorobanVec<Val>>,
+        auth: PreviewAuth,
+    ) -> Result<InvocationReport, StrictForkError> {
+        let function = ScSymbol(
+            function
+                .try_into()
+                .map_err(|_| StrictForkError::InvalidInvocationXdr)?,
+        );
+        let args = catch_unwind(AssertUnwindSafe(|| {
+            let args = args.into_val(self.env);
+            args.iter()
+                .map(|arg| {
+                    ScVal::try_from_val(self.env, &arg)
+                        .map_err(|_| StrictForkError::InvalidInvocationXdr)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        }))
+        .map_err(|_| StrictForkError::InvalidInvocationXdr)??;
+        let request = InvokeRequest {
+            contract: ScAddress::from(contract),
+            function,
+            args,
+        };
+
+        let before = self.env.to_ledger_snapshot();
+        let before_digest = crate::canonical_ledger_digest(&before)?;
+        let mut child = Env::from_snapshot(self.env.to_snapshot());
+        child.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        child.mock_all_auths();
+        let (contract, function, args) = invocation_values(&child, &request)?;
+        let outcome = invoke_outcome(&child, &contract, &function, args);
+        let upstream_reads = self.forward_preview_reads(&child)?;
+        let resources = child.host().get_last_invocation_resources();
+        let (authorization, events) = detached_snapshot_evidence(&child);
+        let (auth_mode, expected) = match auth {
+            PreviewAuth::Record => (AppliedAuthMode::RecordMockSatisfied, None),
+            PreviewAuth::Exact(expected) => (AppliedAuthMode::MockExact, Some(expected)),
+        };
+        if expected
+            .as_ref()
+            .is_some_and(|expected| expected != &authorization)
+        {
+            return Err(StrictForkError::AuthTreeMismatch);
+        }
+
+        let mut after = child.to_ledger_snapshot();
+        strip_new_mock_nonces(&before, &mut after)?;
+        let after_digest = crate::canonical_ledger_digest(&after)?;
+        let state_changes = state_diff(&before, &after)?;
+        let diagnostics = detached_diagnostics(&child)?;
+        Ok(InvocationReport {
+            receipt: Receipt {
+                request,
+                outcome,
+                auth_mode,
+                authorization,
+                events,
+                diagnostics,
+                state_changes,
+                before_digest,
+                after_digest,
+                disposition: ReceiptDisposition::Previewed,
+                upstream_reads,
+            },
+            resources,
+        })
+    }
+
+    fn forward_preview_reads(&self, child: &Env) -> Result<u64, StrictForkError> {
+        let Some(source) = &self.tracking_source else {
+            return Ok(0);
+        };
+        let reads_before = source.rpc_reads();
+        let mut inspection_failed = false;
+        for (key, _) in child
+            .host()
+            .get_stored_entries()
+            .map_err(|_| StrictForkError::HostInspection)?
+        {
+            if matches!(
+                key.as_ref(),
+                LedgerKey::ContractData(data) if is_nonce_data(data)
+            ) {
+                continue;
+            }
+            if source.observe(&key).is_err() {
+                inspection_failed = true;
+            }
+        }
+        let unknown = source.unknown_keys();
+        if !unknown.is_empty() {
+            return Err(StrictForkError::UnknownLedgerKeys {
+                count: unknown.len(),
+                keys: unknown.into_iter().collect(),
+            });
+        }
+        if inspection_failed {
+            return Err(StrictForkError::HostInspection);
+        }
+        Ok(source.rpc_reads().saturating_sub(reads_before))
+    }
 }
 
 /// How the automatic runner obtained its fixture.
@@ -540,6 +887,7 @@ pub enum AutoRunError {
 
 #[cfg(test)]
 mod tests {
+    use soroban_env_host::xdr::ScError;
     use soroban_sdk::testutils::{EnvTestConfig, Ledger as _};
 
     use super::*;
@@ -563,7 +911,7 @@ mod tests {
             .host()
             .with_ledger_info(|ledger| Ok(ledger.network_id))
             .unwrap();
-        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()));
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
 
         let actual = fork.local_account("alice");
         let mut digest = Sha256::new();
@@ -636,11 +984,248 @@ mod tests {
         let existing = stateful::Client::new(&env, &occupied);
         assert_eq!(existing.get(), 41);
 
-        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()));
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = fork.deploy(stateful::WASM, (99_i64,));
         }))
         .is_err());
         assert_eq!(existing.get(), 41);
+    }
+
+    #[test]
+    fn try_invoke_applies_success_and_returns_contract_failure_atomically() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let contract = fork.deploy(stateful::WASM, (41_i64,));
+
+        assert_eq!(
+            fork.try_invoke::<i64>(&contract, "increment", (1_i64,))
+                .unwrap(),
+            42
+        );
+
+        let failure = fork
+            .try_invoke::<i64>(&contract, "increment_then_fail", (5_i64,))
+            .unwrap_err();
+        assert_eq!(failure.error, Some(ScError::Contract(1)));
+        assert_eq!(failure.kind, InvokeErrorKind::Contract(1));
+        assert_eq!(fork.invoke::<i64>(&contract, "get", ()), 42);
+    }
+
+    #[test]
+    fn try_invoke_rejects_long_function_without_panicking_or_mutating() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let contract = fork.deploy(stateful::WASM, (41_i64,));
+        let before = env.to_snapshot();
+
+        let failure = fork
+            .try_invoke::<i64>(
+                &contract,
+                "function_name_that_is_definitely_longer_than_thirty_two_characters",
+                (),
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.error, None);
+        assert_eq!(failure.kind, InvokeErrorKind::Abort);
+        assert_eq!(env.to_snapshot(), before);
+    }
+
+    #[test]
+    fn preview_reports_detached_evidence_without_leaking_into_outer_env() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let contract = fork.deploy(stateful::WASM, (41_i64,));
+        let outer_before = env.to_snapshot();
+
+        let report = fork
+            .preview(&contract, "increment", (1_i64,), PreviewAuth::Record)
+            .unwrap();
+
+        assert_eq!(report.result::<i64>(&env).unwrap(), 42);
+        assert_eq!(report.receipt().disposition, ReceiptDisposition::Previewed);
+        assert!(!report.events().is_empty());
+        assert!(!report.state_changes().is_empty());
+        assert!(report.resources().is_some());
+        assert_eq!(env.to_snapshot().events, outer_before.events);
+        assert_eq!(env.to_snapshot().auth, outer_before.auth);
+        assert_eq!(fork.invoke::<i64>(&contract, "get", ()), 41);
+    }
+
+    #[test]
+    fn preview_record_then_exact_validates_auth_without_mutation() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let contract = fork.deploy(stateful::WASM, (41_i64,));
+        let user = fork.local_account("preview-auth-user");
+        let outer_before = env.to_snapshot();
+
+        let recorded = fork
+            .preview(
+                &contract,
+                "authorized_increment",
+                (user.clone(), 1_i64),
+                PreviewAuth::Record,
+            )
+            .unwrap();
+        assert_eq!(recorded.result::<i64>(&env).unwrap(), 42);
+        assert!(!recorded.authorization().is_empty());
+
+        let exact = fork
+            .preview(
+                &contract,
+                "authorized_increment",
+                (user.clone(), 1_i64),
+                PreviewAuth::Exact(recorded.authorization().to_vec()),
+            )
+            .unwrap();
+        assert_eq!(exact.result::<i64>(&env).unwrap(), 42);
+
+        let mismatch = fork
+            .preview(
+                &contract,
+                "authorized_increment",
+                (user, 1_i64),
+                PreviewAuth::Exact(Vec::new()),
+            )
+            .unwrap_err();
+        assert!(matches!(mismatch, StrictForkError::AuthTreeMismatch));
+        assert_eq!(env.to_snapshot().events, outer_before.events);
+        assert_eq!(env.to_snapshot().auth, outer_before.auth);
+        assert_eq!(fork.invoke::<i64>(&contract, "get", ()), 41);
+    }
+
+    #[test]
+    fn preview_rejects_long_function_without_panicking_or_mutating() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let contract = fork.deploy(stateful::WASM, (41_i64,));
+        let before = env.to_snapshot();
+
+        let failure = fork
+            .preview(
+                &contract,
+                "function_name_that_is_definitely_longer_than_thirty_two_characters",
+                (),
+                PreviewAuth::Record,
+            )
+            .unwrap_err();
+
+        assert!(matches!(failure, StrictForkError::InvalidInvocationXdr));
+        assert_eq!(env.to_snapshot(), before);
+    }
+
+    #[test]
+    fn default_cache_path_is_deterministic_sanitized_and_bounded() {
+        let first = mainnet_from_stable_callsite();
+        let second = mainnet_from_stable_callsite();
+        assert_eq!(first.cache, second.cache);
+        assert_ne!(first.cache, mainnet_from_other_callsite().cache);
+        let path = first
+            .cache
+            .expect("public mainnet runner must cache by default");
+        assert_eq!(path.parent(), Some(Path::new(".kanatoko")));
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert!(Path::new(file_name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json")));
+        assert!(file_name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')));
+
+        let sanitized = default_cache_path(
+            "module::test / unicode 🚀 and a very long suffix that must not make filesystem paths surprising 0123456789",
+            "tests/example.rs",
+            12,
+            34,
+        );
+        let stem = sanitized.file_stem().unwrap().to_str().unwrap();
+        let (human, hash) = stem.rsplit_once('-').unwrap();
+        assert!(human.len() <= DEFAULT_CACHE_NAME_MAX);
+        assert_eq!(hash.len(), DEFAULT_CACHE_HASH_HEX);
+        assert!(hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(!human.contains("--"));
+        assert!(default_cache_path("🚀", "tests/example.rs", 12, 34)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("scenario-"));
+
+        let punctuation_a = default_cache_path("module::test", "tests/example.rs", 12, 34);
+        let punctuation_b = default_cache_path("module--test", "tests/example.rs", 12, 34);
+        assert_eq!(
+            sanitize_cache_name("module::test"),
+            sanitize_cache_name("module--test")
+        );
+        assert_ne!(cache_hash(&punctuation_a), cache_hash(&punctuation_b));
+
+        let long_prefix = "a".repeat(DEFAULT_CACHE_NAME_MAX);
+        let unicode_a =
+            default_cache_path(&format!("{long_prefix}🚀first"), "tests/example.rs", 12, 34);
+        let unicode_b = default_cache_path(
+            &format!("{long_prefix}🎯second"),
+            "tests/example.rs",
+            12,
+            34,
+        );
+        assert_eq!(
+            unicode_a.file_stem().unwrap().to_str().unwrap()[..DEFAULT_CACHE_NAME_MAX],
+            unicode_b.file_stem().unwrap().to_str().unwrap()[..DEFAULT_CACHE_NAME_MAX]
+        );
+        assert_ne!(cache_hash(&unicode_a), cache_hash(&unicode_b));
+
+        let case_a = default_cache_path("CaseName", "tests/example.rs", 12, 34);
+        let case_b = default_cache_path("casename", "tests/example.rs", 12, 34);
+        assert_ne!(cache_hash(&case_a), cache_hash(&case_b));
+    }
+
+    #[test]
+    fn explicit_cache_overrides_public_default_while_custom_builder_stays_disabled() {
+        let explicit = PathBuf::from("custom/capture.json");
+        assert_eq!(
+            mainnet_from_stable_callsite().cache(&explicit).cache,
+            Some(explicit)
+        );
+
+        let builder =
+            CaptureBuilder::mainnet(DEFAULT_MAINNET_RPC_URL).expect("built-in URL must be valid");
+        assert!(AutoRunner::with_builder(builder, MAINNET_PASSPHRASE)
+            .cache
+            .is_none());
+    }
+
+    fn mainnet_from_stable_callsite() -> AutoRunner {
+        mainnet()
+    }
+
+    fn mainnet_from_other_callsite() -> AutoRunner {
+        mainnet()
+    }
+
+    fn cache_hash(path: &Path) -> &str {
+        path.file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit_once('-')
+            .unwrap()
+            .1
     }
 }
