@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref }}
+  group: kanatoko-release
   cancel-in-progress: false
 
 env:
@@ -30,13 +30,14 @@ jobs:
     name: Verify release
     runs-on: ubuntu-latest
     outputs:
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
       version: ${{ steps.release.outputs.version }}
     steps:
       - name: Check out the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         run: |
@@ -46,7 +47,7 @@ jobs:
             --component rustfmt
           rustup default "${RUST_TOOLCHAIN}"
 
-      - name: Verify tag, crate version, and master ancestry
+      - name: Verify release line and resolved runtime
         id: release
         shell: bash
         run: |
@@ -58,23 +59,163 @@ jobs:
             exit 1
           fi
 
+          package_metadata="$(cargo metadata --locked --no-deps --format-version 1)"
           version="$(
-            cargo metadata --locked --no-deps --format-version 1 |
-              jq -er '.packages[] | select(.name == "kanatoko") | .version'
+            jq -er '.packages[] | select(.name == "kanatoko") | .version' \
+              <<<"${package_metadata}"
           )"
           if [[ "${tag}" != "v${version}" ]]; then
             echo "Tag ${tag} does not match Cargo.toml version ${version}" >&2
             exit 1
           fi
 
-          git fetch --no-tags origin master
-          tag_commit="$(git rev-list -n 1 "${tag}")"
-          if ! git merge-base --is-ancestor "${tag_commit}" origin/master; then
-            echo "Tag ${tag} is not attached to a commit on origin/master" >&2
+          if [[ "${version}" == "0.1.0" ]]; then
+            sdk_major="27"
+            release_branch="master"
+          else
+            sdk_major="${version%%.*}"
+            case "${sdk_major}" in
+              25|26|27) ;;
+              *)
+                echo "Unsupported Kanatoko release major: ${sdk_major}" >&2
+                exit 1
+                ;;
+            esac
+            release_branch="sdk-${sdk_major}"
+          fi
+
+          expected_requirement="^${sdk_major}"
+          for dependency in \
+            soroban-env-host \
+            soroban-ledger-snapshot \
+            soroban-sdk
+          do
+            mapfile -t requirements < <(
+              jq -r --arg dependency "${dependency}" '
+                .packages[]
+                | select(.name == "kanatoko")
+                | .dependencies[]
+                | select(.name == $dependency)
+                | .req
+              ' <<<"${package_metadata}"
+            )
+            if [[ "${#requirements[@]}" -ne 1 ]]; then
+              echo "Expected one direct ${dependency} dependency" >&2
+              exit 1
+            fi
+            if [[ "${requirements[0]}" != "${expected_requirement}" ]]; then
+              echo \
+                "${dependency} must use broad major ${sdk_major}, found ${requirements[0]}" \
+                >&2
+              exit 1
+            fi
+          done
+
+          locked_metadata="$(cargo metadata --locked --format-version 1)"
+          for dependency in \
+            soroban-env-host \
+            soroban-ledger-snapshot \
+            soroban-sdk
+          do
+            mapfile -t versions < <(
+              jq -r --arg dependency "${dependency}" '
+                .packages[]
+                | select(.name == $dependency)
+                | .version
+              ' <<<"${locked_metadata}" |
+                sort -u
+            )
+            if [[ "${#versions[@]}" -ne 1 ]]; then
+              echo \
+                "Expected one resolved ${dependency} version, found: ${versions[*]:-none}" \
+                >&2
+              exit 1
+            fi
+            if [[ "${versions[0]%%.*}" != "${sdk_major}" ]]; then
+              echo \
+                "${dependency} resolved to ${versions[0]}, expected major ${sdk_major}" \
+                >&2
+              exit 1
+            fi
+          done
+
+          git fetch --no-tags origin \
+            "refs/heads/${release_branch}:refs/remotes/origin/${release_branch}"
+          tag_commit="$(
+            git rev-parse --verify "refs/tags/${tag}^{commit}"
+          )"
+          if ! git merge-base --is-ancestor \
+            "${tag_commit}" "origin/${release_branch}"
+          then
+            echo \
+              "Tag ${tag} is not attached to a commit on origin/${release_branch}" \
+              >&2
             exit 1
           fi
 
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit_sha=${tag_commit}" >> "${GITHUB_OUTPUT}"
+          echo "sdk_major=${sdk_major}" >> "${GITHUB_OUTPUT}"
+          echo "release_branch=${release_branch}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check a fresh same-major resolution
+        shell: bash
+        env:
+          SDK_MAJOR: ${{ steps.release.outputs.sdk_major }}
+        run: |
+          set -euo pipefail
+
+          fresh_source="$(
+            mktemp -d "${RUNNER_TEMP}/kanatoko-fresh-source.XXXXXX"
+          )"
+          fresh_target="$(
+            mktemp -d "${RUNNER_TEMP}/kanatoko-fresh-target.XXXXXX"
+          )"
+          cleanup() {
+            rm -rf -- "${fresh_source}" "${fresh_target}"
+          }
+          trap cleanup EXIT
+
+          git archive --format=tar HEAD | tar -xf - -C "${fresh_source}"
+          rm -f -- "${fresh_source}/Cargo.lock"
+
+          CARGO_TARGET_DIR="${fresh_target}" cargo check \
+            --manifest-path "${fresh_source}/Cargo.toml" \
+            --all-targets \
+            --all-features
+
+          fresh_metadata="$(
+            cargo metadata \
+              --manifest-path "${fresh_source}/Cargo.toml" \
+              --locked \
+              --format-version 1
+          )"
+          for dependency in \
+            soroban-env-host \
+            soroban-ledger-snapshot \
+            soroban-sdk
+          do
+            mapfile -t versions < <(
+              jq -r --arg dependency "${dependency}" '
+                .packages[]
+                | select(.name == $dependency)
+                | .version
+              ' <<<"${fresh_metadata}" |
+                sort -u
+            )
+            if [[ "${#versions[@]}" -ne 1 ]]; then
+              echo \
+                "Fresh resolution has multiple ${dependency} versions: ${versions[*]:-none}" \
+                >&2
+              exit 1
+            fi
+            if [[ "${versions[0]%%.*}" != "${SDK_MAJOR}" ]]; then
+              echo \
+                "Fresh ${dependency} ${versions[0]} does not match major ${SDK_MAJOR}" \
+                >&2
+              exit 1
+            fi
+          done
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -123,7 +264,24 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.verify.outputs.commit_sha }}
+
+      - name: Verify the release tag did not move
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.verify.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          actual_commit="$(
+            git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}"
+          )"
+          if [[ "${actual_commit}" != "${EXPECTED_COMMIT}" ]]; then
+            echo "Release tag ${RELEASE_TAG} moved after verification" >&2
+            exit 1
+          fi
 
       - name: Install Rust
         run: |
@@ -242,14 +400,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.verify.outputs.commit_sha }}
 
       - name: Create the release
         env:
+          EXPECTED_COMMIT: ${{ needs.verify.outputs.commit_sha }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+
+          git fetch --force --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          actual_commit="$(
+            git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}"
+          )"
+          if [[ "${actual_commit}" != "${EXPECTED_COMMIT}" ]]; then
+            echo "Release tag ${RELEASE_TAG} moved after publication" >&2
+            exit 1
+          fi
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "GitHub release ${RELEASE_TAG} already exists"

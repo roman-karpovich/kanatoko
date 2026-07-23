@@ -2,6 +2,15 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 27.0.0 - 2026-07-23
+
+- Align the Kanatoko release major with its Soroban SDK, Host, ledger snapshot,
+  and supported ledger protocol.
+- Keep Soroban dependencies on broad same-major ranges so downstream test
+  harnesses resolve one compatible runtime.
+- Prepare release automation and documentation for maintained SDK lines 25,
+  26, and 27.
+
 ## 0.1.0 - 2026-07-23
 
 - Capture coherent mainnet or testnet state from the contracts, accounts,

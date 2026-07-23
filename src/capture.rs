@@ -1857,7 +1857,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
     output
 }
 
-#[cfg(test)]
+#[cfg(all(test, kanatoko_protocol_27_fixtures))]
 mod tests {
     use std::{
         cell::{Cell, RefCell},

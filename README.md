@@ -13,8 +13,17 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "0.1", features = ["capture"] }
+kanatoko = { version = "27", features = ["capture"] }
 ```
+
+Choose the Kanatoko major that matches the Soroban SDK and Host used by the
+test harness:
+
+| Soroban SDK/Host | Kanatoko | Network state |
+| --- | --- | --- |
+| 25.x | `kanatoko = "25"` | Protocol-25 fixtures and networks |
+| 26.x | `kanatoko = "26"` | Protocol-26 fixtures and networks |
+| 27.x | `kanatoko = "27"` | Protocol-27 fixtures and networks |
 
 ## Your contract against mainnet
 
@@ -61,6 +70,7 @@ newer ledger, or `.offline()` in CI to require an existing cache.
 
 ## Network and RPC
 
+On the Kanatoko line matching the public network's current protocol,
 `mainnet()` and `testnet()` are symmetric and immediately usable with their
 default RPC endpoints:
 
@@ -208,18 +218,25 @@ Preview resources are the raw local Host estimate, not fee parity. Kanatoko
 keeps typed `ScError` and raw XDR evidence and does not derive stable behavior
 by parsing diagnostic or panic text.
 
-Kanatoko 0.1 targets protocol 27. Its SDK, Host, and ledger-snapshot dependency
-ranges are aligned so Cargo resolves one compatible protocol-27 runtime. Use
-the re-exported `kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
-`kanatoko::soroban_ledger_snapshot` in the test harness instead of declaring a
-second runtime version.
+Each Kanatoko major selects the same major of the SDK, Host, and
+ledger-snapshot crates. Their broad major ranges let Cargo resolve one
+compatible runtime with the rest of the test harness. Use the re-exported
+`kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
+`kanatoko::soroban_ledger_snapshot` instead of declaring a second runtime
+version when possible.
+
+A Kanatoko line can capture and replay a live network only when its selected
+Host protocol matches the protocol reported by that network. For example, a
+protocol-27 network requires Kanatoko 27; Kanatoko 25 or 26 is not a historical
+network-state fork.
 
 Your production contract does not need to upgrade with the harness. A contract
 crate may remain on Soroban SDK 25 or 26, produce its normal network-valid
-WASM, and let a separate Kanatoko integration-test crate import that WASM.
-Kanatoko's protocol-27 SDK then generates only the test-side ABI client; the
-protocol-27 Host executes the original older WASM. Do not pass environment-bound
-`Env`, `Address`, or `Val` values from the older contract SDK into the harness.
+WASM, and let a Kanatoko 27 integration-test crate import that WASM when testing
+against a protocol-27 network. The current Host executes the original older
+WASM; its SDK generates only the test-side ABI client. Do not pass
+environment-bound `Env`, `Address`, or `Val` values from the older contract SDK
+into the harness.
 
 Unsupported ledger-entry families and uncaptured keys fail closed.
 

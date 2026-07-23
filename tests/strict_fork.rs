@@ -1,4 +1,4 @@
-#![cfg(feature = "capture")]
+#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
 
 use kanatoko::{
     AppliedAuthMode, AuthMode, CandidateInstallMode, CapturedFixture, ExecutionMode, InvokeOutcome,

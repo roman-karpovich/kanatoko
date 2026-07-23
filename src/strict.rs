@@ -243,7 +243,8 @@ impl StrictFork {
     }
 
     /// Captures strict ledger/coverage state. SDK address/nonce generator
-    /// continuity is deliberately not claimed for strict forks under SDK v27.
+    /// continuity is deliberately not claimed for strict forks under the
+    /// selected SDK.
     #[must_use]
     pub fn checkpoint(&self) -> StrictCheckpoint {
         StrictCheckpoint {

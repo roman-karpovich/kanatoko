@@ -1,3 +1,5 @@
+#![cfg(kanatoko_protocol_27_fixtures)]
+
 use kanatoko::{Fork, FrozenFixture};
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{ContractEventBody, Hash, ScAddress, ScSymbol, ScVal};

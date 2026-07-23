@@ -1,4 +1,4 @@
-#![cfg(feature = "capture")]
+#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
 
 use kanatoko::{mainnet, CacheStatus, ScenarioFork};
 use sha2::{Digest, Sha256};

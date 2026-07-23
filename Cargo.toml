@@ -1,6 +1,6 @@
 [package]
 name = "kanatoko"
-version = "0.1.0"
+version = "27.0.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Test Soroban contracts against captured Stellar network state"
@@ -21,8 +21,8 @@ base64 = { version = "=0.22.1", optional = true }
 serde = { version = "=1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "=1.0.151", optional = true }
 sha2 = "=0.10.9"
-# Keep these major ranges aligned. soroban-sdk pins its compatible Host patch,
-# so Cargo resolves one shared protocol-27 runtime with downstream test crates.
+# Keep these major ranges aligned with the Kanatoko release major. soroban-sdk
+# pins its compatible Host patch, so Cargo resolves one shared runtime.
 soroban-env-host = "27"
 soroban-ledger-snapshot = "27"
 soroban-sdk = { version = "27", features = ["testutils"] }

@@ -5,13 +5,8 @@ use soroban_env_host::xdr::{Limits, WriteXdr};
 use soroban_ledger_snapshot::{Error as SnapshotError, LedgerSnapshot};
 use thiserror::Error;
 
-/// The only ledger protocol accepted by the selected Soroban Host 27.x.
-pub const SUPPORTED_PROTOCOL_VERSION: u32 = 27;
-
-const _: () = assert!(
-    soroban_env_host::VERSION.interface.protocol == SUPPORTED_PROTOCOL_VERSION,
-    "Kanatoko's declared protocol must match the selected Soroban Host"
-);
+/// The only ledger protocol accepted by the selected Soroban Host.
+pub const SUPPORTED_PROTOCOL_VERSION: u32 = soroban_env_host::VERSION.interface.protocol;
 
 const LEDGER_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0LEDGER-SNAPSHOT\0V1\0";
 

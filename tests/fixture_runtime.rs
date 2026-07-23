@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use kanatoko::{FixtureError, Fork, FrozenFixture, RuntimeError};
+use kanatoko::{FixtureError, Fork, FrozenFixture, RuntimeError, SUPPORTED_PROTOCOL_VERSION};
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     BytesM, ContractCodeEntry, ContractCodeEntryExt, Hash, LedgerEntry, LedgerEntryData,
@@ -49,7 +49,7 @@ fn network_id(passphrase: &str) -> [u8; 32] {
 
 fn empty_snapshot() -> LedgerSnapshot {
     LedgerSnapshot {
-        protocol_version: 27,
+        protocol_version: SUPPORTED_PROTOCOL_VERSION,
         sequence_number: 1_000,
         timestamp: 1_721_600_000,
         network_id: network_id(NETWORK_PASSPHRASE),
@@ -91,17 +91,29 @@ fn registered_fork(initial: i64) -> (Fork, Address) {
 }
 
 #[test]
+fn package_major_and_selected_host_match_the_supported_protocol() {
+    let package_major = env!("CARGO_PKG_VERSION_MAJOR").parse::<u32>().unwrap();
+
+    assert_eq!(package_major, SUPPORTED_PROTOCOL_VERSION);
+    assert_eq!(
+        soroban_env_host::VERSION.interface.protocol,
+        SUPPORTED_PROTOCOL_VERSION
+    );
+}
+
+#[test]
 fn rejects_protocol_mismatch() {
     let mut snapshot = empty_snapshot();
-    snapshot.protocol_version = 26;
+    let unsupported = SUPPORTED_PROTOCOL_VERSION - 1;
+    snapshot.protocol_version = unsupported;
 
     let error = FrozenFixture::from_snapshot(snapshot, NETWORK_PASSPHRASE).unwrap_err();
     assert!(matches!(
         error,
         FixtureError::UnsupportedProtocol {
-            found: 26,
-            supported: 27
-        }
+            found,
+            supported
+        } if found == unsupported && supported == SUPPORTED_PROTOCOL_VERSION
     ));
 }
 
@@ -165,6 +177,7 @@ fn digest_is_order_independent_and_covers_ttl() {
 #[test]
 fn canonical_digest_v1_has_a_fixed_vector() {
     let mut snapshot = empty_snapshot();
+    snapshot.protocol_version = 27;
     snapshot.ledger_entries = vec![code_entry(2), code_entry(1)];
 
     assert_eq!(
@@ -265,7 +278,7 @@ fn production_wasm_registration_and_invocation() {
 }
 
 #[test]
-fn protocol_25_candidate_wasm_runs_on_protocol_27_host() {
+fn protocol_25_candidate_wasm_runs_on_selected_host() {
     let actual_hash: [u8; 32] = Sha256::digest(LEGACY_V25_WASM).into();
     assert_eq!(actual_hash, LEGACY_V25_WASM_SHA256);
 
