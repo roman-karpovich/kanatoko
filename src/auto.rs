@@ -13,9 +13,9 @@ use std::{
 use sha2::{Digest, Sha256};
 use soroban_env_host::{
     xdr::{
-        AccountEntry, AccountEntryExt, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt,
-        LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScSymbol, ScVal, SequenceNumber,
-        String32, Thresholds, Uint256, VecM,
+        AccountEntry, AccountEntryExt, AccountId, ContractExecutable, Hash, LedgerEntry,
+        LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey, ScAddress,
+        ScSymbol, ScVal, SequenceNumber, String32, Thresholds, Uint256, VecM,
     },
     InvocationResources,
 };
@@ -706,6 +706,70 @@ impl<'a> ScenarioFork<'a> {
         self.env.register_at(&address, wasm, constructor_args)
     }
 
+    /// Replaces an existing captured contract's WASM without changing its
+    /// address or storage.
+    ///
+    /// The replacement code is installed locally, then only the executable
+    /// hash in the existing contract instance is changed. Instance,
+    /// persistent, and temporary storage remain intact, the instance TTL is
+    /// preserved, and the replacement constructor is not called. Calls from
+    /// other captured contracts to the same address therefore execute the
+    /// replacement code.
+    ///
+    /// This is a test-only code override. It does not invoke the production
+    /// contract's upgrade entrypoint or emulate upgrade authorization,
+    /// transaction envelopes, fees, signatures, or consensus.
+    ///
+    /// Returns the SHA-256 hash of the replacement WASM.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `contract` is not an existing WASM contract, `wasm` is
+    /// invalid, or the Host rejects the local code override.
+    pub fn replace_wasm(&self, contract: &Address, wasm: &[u8]) -> [u8; 32] {
+        let address = ScAddress::from(contract);
+        assert!(
+            matches!(address, ScAddress::Contract(_)),
+            "WASM can only replace a contract C-address"
+        );
+
+        let instance_key = Rc::new(contract_instance_key(address));
+        let (instance_entry, live_until_ledger) = self
+            .env
+            .host()
+            .get_ledger_entry(&instance_key)
+            .expect("the Host must be able to inspect the existing contract")
+            .expect("WASM can only replace an existing contract");
+        let mut instance_entry = instance_entry.as_ref().clone();
+        let LedgerEntryData::ContractData(instance_data) = &mut instance_entry.data else {
+            panic!("contract instance key must contain ContractData");
+        };
+        let ScVal::ContractInstance(instance) = &mut instance_data.val else {
+            panic!("contract instance key must contain a contract instance");
+        };
+        assert!(
+            matches!(instance.executable, ContractExecutable::Wasm(_)),
+            "WASM cannot replace a Stellar Asset Contract"
+        );
+
+        let wasm_sha256: [u8; 32] = Sha256::digest(wasm).into();
+        self.local_ledger.mark_code(wasm_sha256);
+        let uploaded = self.env.deployer().upload_contract_wasm(wasm);
+        assert_eq!(
+            uploaded.to_array(),
+            wasm_sha256,
+            "the Host returned an unexpected replacement WASM hash"
+        );
+
+        instance.executable = ContractExecutable::Wasm(Hash(wasm_sha256));
+        self.env
+            .host()
+            .add_ledger_entry(&instance_key, &Rc::new(instance_entry), live_until_ledger)
+            .expect("the Host must accept the local code override");
+
+        wasm_sha256
+    }
+
     /// Enables the SDK's explicit record-and-mock authorization mode.
     ///
     /// This is mocked behavioral evidence, not signature evidence.
@@ -969,6 +1033,13 @@ mod tests {
         );
     }
 
+    mod legacy_v25 {
+        soroban_sdk::contractimport!(
+            file = "fixtures/wasm/kanatoko_legacy_v25_fixture.wasm",
+            sha256 = "d601c7569be29b0a52af409ed65425b8c3595db8a83c444fe65dd8294423a879",
+        );
+    }
+
     #[test]
     fn local_account_is_unfunded_and_explicit_funding_is_scoped_and_additive() {
         let mut env = Env::default();
@@ -1060,6 +1131,30 @@ mod tests {
         }))
         .is_err());
         assert_eq!(existing.get(), 41);
+    }
+
+    #[test]
+    fn replace_wasm_preserves_instance_and_does_not_run_constructor() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let contract = env.register(stateful::WASM, (41_i64,));
+        let instance_key = Rc::new(contract_instance_key((&contract).into()));
+        let before = env.host().get_ledger_entry(&instance_key).unwrap().unwrap();
+
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        fork.replace_wasm(&contract, legacy_v25::WASM);
+        assert_eq!(legacy_v25::Client::new(&env, &contract).sdk_major(), 25);
+
+        assert_eq!(
+            fork.replace_wasm(&contract, stateful::WASM),
+            <[u8; 32]>::from(Sha256::digest(stateful::WASM))
+        );
+
+        let after = env.host().get_ledger_entry(&instance_key).unwrap().unwrap();
+        assert_eq!(after, before);
+        assert_eq!(stateful::Client::new(&env, &contract).get(), 41);
     }
 
     #[test]

@@ -10,6 +10,8 @@ All notable changes to Kanatoko are documented in this file.
   harnesses resolve one compatible runtime.
 - Prepare release automation and documentation for maintained SDK lines 25,
   26, and 27.
+- Add `ScenarioFork::replace_wasm` for testing candidate code at an existing
+  captured address without changing its storage, TTL, or running a constructor.
 
 ## 0.1.0 - 2026-07-23
 

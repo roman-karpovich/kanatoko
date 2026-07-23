@@ -2084,6 +2084,49 @@ mod tests {
     }
 
     #[test]
+    fn auto_runner_replaces_captured_wasm_and_reuses_cache_offline() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-replace-wasm");
+        let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
+            let pool = fork.contract(POOL_ID);
+            assert_eq!(
+                fork.replace_wasm(&pool, local_stateful::WASM),
+                <[u8; 32]>::from(Sha256::digest(local_stateful::WASM))
+            );
+            assert_eq!(local_stateful::Client::new(fork.env(), &pool).get(), 0);
+        };
+
+        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        assert_eq!(first.cache_status(), CacheStatus::Created);
+        let local_code_hash = Hash(Sha256::digest(local_stateful::WASM).into());
+        assert!(first
+            .fixture()
+            .frozen_fixture()
+            .ledger_snapshot()
+            .ledger_entries
+            .iter()
+            .all(|(_, (entry, _))| !matches!(
+                &entry.data,
+                LedgerEntryData::ContractCode(code) if code.hash == local_code_hash
+            )));
+        let reads_after_capture = fake.ledger_entry_reads();
+
+        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(scenario)
+            .unwrap();
+        assert_eq!(second.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn preview_only_dependencies_reach_fixed_point_and_replay_offline() {
         use crate::{
             auto::{AutoRunner, CacheStatus},

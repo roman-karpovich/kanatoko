@@ -16,14 +16,15 @@ WASM and captured network contracts then call each other normally.
 kanatoko = { version = "27", features = ["capture"] }
 ```
 
-Choose the Kanatoko major that matches the Soroban SDK and Host used by the
-test harness:
+Choose the Kanatoko major that matches the ledger protocol being captured.
+The selected Host executes finalized contract WASM built for that protocol or
+an older one:
 
-| Soroban SDK/Host | Kanatoko | Network state |
+| Ledger protocol | Kanatoko | Contract WASM |
 | --- | --- | --- |
-| 25.x | `kanatoko = "25"` | Protocol-25 fixtures and networks |
-| 26.x | `kanatoko = "26"` | Protocol-26 fixtures and networks |
-| 27.x | `kanatoko = "27"` | Protocol-27 fixtures and networks |
+| 25 | `kanatoko = "25"` | Protocol 25 or older |
+| 26 | `kanatoko = "26"` | Protocol 26 or older |
+| 27 | `kanatoko = "27"` | Protocol 27 or older |
 
 ## Your contract against mainnet
 
@@ -61,6 +62,47 @@ fn local_contract_uses_mainnet_state() {
         .unwrap();
 }
 ```
+
+## New code at a production address
+
+Replace only the executable of an existing captured contract to test a new
+version against its production storage:
+
+```rust,ignore
+use kanatoko::mainnet;
+
+mod next {
+    use kanatoko::soroban_sdk;
+
+    soroban_sdk::contractimport!(
+        file = "../target/wasm32v1-none/release/my_vault.wasm"
+    );
+}
+
+const VAULT: &str = "C...";
+
+#[test]
+fn candidate_uses_production_state() {
+    mainnet()
+        .run(|fork| {
+            let vault = fork.contract(VAULT);
+            fork.replace_wasm(&vault, next::WASM);
+
+            let upgraded = next::Client::new(fork.env(), &vault);
+            assert!(upgraded.health_factor() > 0);
+        })
+        .unwrap();
+}
+```
+
+`replace_wasm` preserves the address, instance/persistent/temporary storage,
+and their TTLs. It does not call the constructor. Every captured contract that
+calls the same address sees the replacement code.
+
+This is a local code override, not an upgrade transaction: it does not call the
+production upgrade method or test its authorization, delays, events, fees, or
+signatures. If the replacement touches ledger keys absent from an older cache,
+an online run recaptures them; offline mode fails closed until then.
 
 The cache file is generated automatically under `.kanatoko/` from the selected
 network, test thread name, and runner callsite. The first run discovers the
@@ -169,6 +211,7 @@ mutable state and can be mixed freely.
 | `fork.account("G...")` | Parses a network account; Host access discovers its real account and trustlines. |
 | `fork.muxed_account("M...")` | Parses a muxed address; ledger state belongs to its underlying G-address. |
 | `fork.deploy(wasm, args)` | Locally installs candidate WASM and runs its constructor, if defined. |
+| `fork.replace_wasm(contract, wasm)` | Replaces an existing WASM executable while preserving its address, storage, and TTL. |
 | `fork.invoke(contract, fn, args)` | Invokes any contract without generated bindings. |
 | `fork.try_invoke(contract, fn, args)` | Applies one call and returns a small typed failure instead of unwinding. |
 | `fork.preview(contract, fn, args, auth)` | Simulates one call in an isolated child and returns detached result/auth/events/diff/resources. |

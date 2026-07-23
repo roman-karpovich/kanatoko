@@ -1,10 +1,12 @@
 #![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
 
+use std::collections::BTreeMap;
+
 use kanatoko::{mainnet, CacheStatus, ScenarioFork};
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
-    AlphaNum4, AssetCode4, ContractEventBody, ContractExecutable, LedgerEntryData, ScAddress,
-    ScVal, TrustLineAsset, TrustLineFlags,
+    AlphaNum4, AssetCode4, ContractEventBody, ContractExecutable, Hash, LedgerEntry,
+    LedgerEntryData, LedgerKey, ScAddress, ScVal, TrustLineAsset, TrustLineFlags,
 };
 use soroban_sdk::{
     testutils::{EnvTestConfig, Events as _, MuxedAddress as _},
@@ -27,6 +29,13 @@ mod incompatible_abi {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
         sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+    );
+}
+
+mod replacement {
+    soroban_sdk::contractimport!(
+        file = "fixtures/wasm/kanatoko_legacy_v25_fixture.wasm",
+        sha256 = "d601c7569be29b0a52af409ed65425b8c3595db8a83c444fe65dd8294423a879",
     );
 }
 
@@ -66,6 +75,25 @@ fn incompatible_local_abi_fails_instead_of_replacing_network_wasm() {
             let pool_id = fork.contract(POOL);
             let incompatible = incompatible_abi::Client::new(fork.env(), &pool_id);
             assert!(incompatible.try_get().is_err());
+        })
+        .unwrap();
+}
+
+#[test]
+fn replacement_wasm_runs_at_captured_address_without_changing_its_storage() {
+    mainnet()
+        .cache(CAPTURE)
+        .offline()
+        .run(|fork| {
+            let pool = fork.contract(POOL);
+            let before = contract_storage(fork.env(), &pool);
+            assert!(!before.is_empty());
+
+            fork.replace_wasm(&pool, replacement::WASM);
+
+            let replacement = replacement::Client::new(fork.env(), &pool);
+            assert_eq!(replacement.sdk_major(), 25);
+            assert_eq!(contract_storage(fork.env(), &pool), before);
         })
         .unwrap();
 }
@@ -228,4 +256,31 @@ fn captured_contract_wasm_hash(fixture: &kanatoko::CapturedFixture, contract: &s
             Some(hash.0)
         })
         .expect("captured contract must reference network WASM")
+}
+
+fn contract_storage(
+    env: &Env,
+    contract: &Address,
+) -> BTreeMap<LedgerKey, (LedgerEntry, Option<u32>)> {
+    let contract: ScAddress = contract.into();
+    env.to_ledger_snapshot()
+        .ledger_entries
+        .into_iter()
+        .filter_map(|(key, (entry, live_until))| {
+            let LedgerEntryData::ContractData(data) = &entry.data else {
+                return None;
+            };
+            if data.contract != contract {
+                return None;
+            }
+
+            let mut entry = *entry;
+            if let LedgerEntryData::ContractData(data) = &mut entry.data {
+                if let ScVal::ContractInstance(instance) = &mut data.val {
+                    instance.executable = ContractExecutable::Wasm(Hash([0; 32]));
+                }
+            }
+            Some((*key, (entry, live_until)))
+        })
+        .collect()
 }
