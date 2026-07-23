@@ -2,6 +2,16 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 27.0.1 - Unreleased
+
+- Retry throttled or transient read-only RPC responses with a short bounded
+  backoff while honoring reasonable numeric `Retry-After` values.
+- Stop issuing RPC requests after the first exhausted capture transport
+  failure.
+- Suppress the misleading inner Host panic when a captured read ends in a
+  typed transport failure.
+- Add an opt-in read-RPC rate limit; capture remains unlimited by default.
+
 ## 27.0.0 - 2026-07-23
 
 - Align the Kanatoko release major with its Soroban SDK, Host, ledger snapshot,

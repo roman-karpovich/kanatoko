@@ -157,6 +157,7 @@ fn sanitize_cache_name(raw: &str) -> String {
 pub struct AutoRunner {
     source: CaptureSource,
     network_passphrase: String,
+    rpc_rate_limit: u32,
     cache: Option<PathBuf>,
     offline: bool,
     refresh: bool,
@@ -177,6 +178,7 @@ impl AutoRunner {
                 rpc_url: rpc_url.into(),
             },
             network_passphrase: network_passphrase.into(),
+            rpc_rate_limit: 0,
             cache: None,
             offline: false,
             refresh: false,
@@ -191,6 +193,7 @@ impl AutoRunner {
         Self {
             source: CaptureSource::Builder(builder),
             network_passphrase: network_passphrase.into(),
+            rpc_rate_limit: 0,
             cache: None,
             offline: false,
             refresh: false,
@@ -208,6 +211,15 @@ impl AutoRunner {
         self.source = CaptureSource::Http {
             rpc_url: url.into(),
         };
+        self
+    }
+
+    /// Limits read-only RPC requests within each capture run, including retry
+    /// attempts, to at most the supplied requests per second. The default and
+    /// `0` both mean unlimited. Separate capture runs do not share a quota.
+    #[must_use]
+    pub const fn rpc_rate_limit(mut self, max_requests_per_second: u32) -> Self {
+        self.rpc_rate_limit = max_requests_per_second;
         self
     }
 
@@ -292,7 +304,8 @@ impl AutoRunner {
         let captured = match &self.source {
             CaptureSource::Http { rpc_url } => {
                 let builder =
-                    CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?;
+                    CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?
+                        .rpc_rate_limit(self.rpc_rate_limit);
                 builder.capture_with_local(|env, local, source| {
                     scenario(&ScenarioFork::new(env, local, Some(source)));
                 })?
@@ -1387,6 +1400,8 @@ mod tests {
 
         assert_eq!(mainnet_runner.network_passphrase, MAINNET_PASSPHRASE);
         assert_eq!(testnet_runner.network_passphrase, TESTNET_PASSPHRASE);
+        assert_eq!(mainnet_runner.rpc_rate_limit, 0);
+        assert_eq!(testnet_runner.rpc_rate_limit, 0);
         assert!(matches!(
             &mainnet_runner.source,
             CaptureSource::Http { rpc_url } if rpc_url == DEFAULT_MAINNET_RPC_URL
@@ -1429,6 +1444,10 @@ mod tests {
         let testnet_runner =
             testnet_from_stable_callsite().rpc_url("https://testnet-rpc.example.test");
         assert_eq!(testnet_runner.network_passphrase, TESTNET_PASSPHRASE);
+
+        let limited = mainnet_from_stable_callsite().rpc_rate_limit(5);
+        assert_eq!(limited.rpc_rate_limit, 5);
+        assert_eq!(limited.cache, default.cache);
     }
 
     #[test]

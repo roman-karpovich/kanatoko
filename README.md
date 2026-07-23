@@ -127,6 +127,7 @@ testnet()
 
 mainnet()
     .rpc_url("https://my-mainnet-rpc.example.com")
+    .rpc_rate_limit(5)
     .run(|fork| {
         // Same mainnet identity, another capture provider.
     })
@@ -138,10 +139,14 @@ passphrase. Capture fails if that provider reports another network. Automatic
 cache paths include the network identity but not the RPC URL, so mainnet and
 testnet cannot share a default cache while two providers for the same network
 can. A cache hit does not parse or contact the configured RPC; `.refresh()`
-forces capture and therefore validates the URL and network.
+forces capture and therefore validates the URL and network. RPC pacing is
+disabled by default; `.rpc_rate_limit(5)` opts into a five-request-per-second
+limit within each capture run that also covers retry attempts. Separate
+capture runs do not share a quota.
 
 For lower-level capture, use `CaptureBuilder::mainnet(url)` or
-`CaptureBuilder::testnet(url)`.
+`CaptureBuilder::testnet(url)` and apply the same `.rpc_rate_limit(...)`
+setting when needed.
 
 Candidate code and its own storage remain local to each pass. Rebuilding it
 does not invalidate the cache unless it starts touching new external ledger
@@ -204,6 +209,7 @@ mutable state and can be mixed freely.
 | `mainnet()` | Selects Stellar mainnet and derives a scenario cache path; it does not privilege one root contract. |
 | `testnet()` | Selects Stellar public testnet with otherwise identical behavior. |
 | `.rpc_url(url)` | Overrides the capture provider without changing network identity or automatic cache identity. |
+| `.rpc_rate_limit(rps)` | Opts into per-capture read-RPC pacing; `0` keeps the default unlimited behavior. |
 | `.cache(path)` | Overrides the automatically derived cache path. |
 | `.offline()` | Requires a cache hit and performs no discovery. |
 | `.refresh()` | Captures a fresh coherent ledger. |

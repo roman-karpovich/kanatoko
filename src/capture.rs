@@ -11,17 +11,21 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use soroban_env_host::xdr::{
-    ConfigSettingEntry, ConfigSettingId, ContractDataDurability, ContractExecutable, Hash,
-    LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerHeader, LedgerKey, LedgerKeyConfigSetting,
-    LedgerKeyContractCode, LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScErrorCode,
-    ScErrorType, ScVal, StateArchivalSettings, WriteXdr,
+use soroban_env_host::{
+    testutils::call_with_suppressed_panic_hook,
+    xdr::{
+        ConfigSettingEntry, ConfigSettingId, ContractDataDurability, ContractExecutable, Hash,
+        LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerHeader, LedgerKey,
+        LedgerKeyConfigSetting, LedgerKeyContractCode, LedgerKeyContractData, Limits, ReadXdr,
+        ScAddress, ScErrorCode, ScErrorType, ScVal, StateArchivalSettings, WriteXdr,
+    },
 };
 use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
@@ -40,6 +44,12 @@ pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
+const RPC_RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+];
+const RPC_MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
 const CAPTURE_BUNDLE_SCHEMA_VERSION: u32 = 2;
 const INVENTORY_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-INVENTORY\0V1\0";
 const BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"KANATOKO\0CAPTURE-BUNDLE\0V2\0";
@@ -95,6 +105,7 @@ pub struct CaptureBuilder {
     network_passphrase: String,
     rpc_origin: String,
     transport: Rc<dyn Transport>,
+    rpc_rate_limiter: Option<Rc<RequestRateLimiter>>,
     max_coherence_attempts: usize,
     max_discovery_rounds: usize,
 }
@@ -129,14 +140,27 @@ impl CaptureBuilder {
     ) -> Result<Self, CaptureError> {
         let rpc_url = rpc_url.into();
         let rpc_origin = redact_rpc_origin(&rpc_url)?;
-        let transport = Rc::new(HttpTransport::new(rpc_url));
+        let rpc_rate_limiter = Rc::new(RequestRateLimiter::new(0));
+        let transport = Rc::new(HttpTransport::new(rpc_url, rpc_rate_limiter.clone()));
         Ok(Self {
             network_passphrase: network_passphrase.into(),
             rpc_origin,
             transport,
+            rpc_rate_limiter: Some(rpc_rate_limiter),
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         })
+    }
+
+    /// Limits read-only RPC requests made by this builder, including retry
+    /// attempts, to at most the supplied requests per second. The default and
+    /// `0` both mean unlimited. Separate builders do not share a quota.
+    #[must_use]
+    pub fn rpc_rate_limit(self, max_requests_per_second: u32) -> Self {
+        if let Some(limiter) = &self.rpc_rate_limiter {
+            limiter.set_requests_per_second(max_requests_per_second);
+        }
+        self
     }
 
     /// Captures the fixed point of ledger keys touched by `scenario`.
@@ -145,9 +169,8 @@ impl CaptureBuilder {
     /// addresses must be recreated inside the closure. The closure can run
     /// several times and must be deterministic, repeatable, and free of
     /// external side effects. Scenario panics are converted to a terminal error
-    /// only after key discovery stops; Rust's standard panic hook still runs
-    /// and may print the panic payload, so panic messages must not contain
-    /// secrets.
+    /// only after key discovery stops. Panic output is suppressed during these
+    /// discovery passes.
     ///
     /// # Errors
     ///
@@ -198,7 +221,7 @@ impl CaptureBuilder {
                 local.clone(),
             ));
             let env = env_from_materialized(&materialized, source.clone());
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let outcome = call_with_suppressed_panic_hook(AssertUnwindSafe(|| {
                 scenario(&env, local.clone(), source.clone());
             }));
 
@@ -399,6 +422,7 @@ impl CaptureBuilder {
             network_passphrase: network_passphrase.into(),
             rpc_origin: "https://fake.invalid".to_string(),
             transport,
+            rpc_rate_limiter: None,
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         }
@@ -1182,6 +1206,9 @@ impl TrackingSource {
 
 impl SnapshotSource for TrackingSource {
     fn get(&self, key: &Rc<LedgerKey>) -> Result<Option<PresentEntry>, HostError> {
+        if self.failure.get().is_some() {
+            return Err(Self::host_error());
+        }
         let Ok(id) = key_id(key) else {
             self.failure.set(Some("ledger-key-encode"));
             return Err(Self::host_error());
@@ -1229,18 +1256,73 @@ impl SnapshotSource for TrackingSource {
     }
 }
 
+struct RequestRateLimiter {
+    min_interval: Cell<Duration>,
+    next_request: Cell<Option<Instant>>,
+}
+
+impl RequestRateLimiter {
+    fn new(max_requests_per_second: u32) -> Self {
+        Self {
+            min_interval: Cell::new(request_interval(max_requests_per_second)),
+            next_request: Cell::new(None),
+        }
+    }
+
+    fn set_requests_per_second(&self, max_requests_per_second: u32) {
+        self.min_interval
+            .set(request_interval(max_requests_per_second));
+        self.next_request.set(None);
+    }
+
+    fn reserve_delay(&self, now: Instant) -> Duration {
+        let interval = self.min_interval.get();
+        if interval.is_zero() {
+            self.next_request.set(None);
+            return Duration::ZERO;
+        }
+        let Some(next_request) = self.next_request.get() else {
+            self.next_request.set(Some(now + interval));
+            return Duration::ZERO;
+        };
+        if next_request <= now {
+            self.next_request.set(Some(now + interval));
+            return Duration::ZERO;
+        }
+        self.next_request.set(Some(next_request + interval));
+        next_request.duration_since(now)
+    }
+
+    fn wait(&self) {
+        let delay = self.reserve_delay(Instant::now());
+        if !delay.is_zero() {
+            thread::sleep(delay);
+        }
+    }
+}
+
+fn request_interval(max_requests_per_second: u32) -> Duration {
+    if max_requests_per_second == 0 {
+        return Duration::ZERO;
+    }
+    let nanos = 1_000_000_000_u64.div_ceil(u64::from(max_requests_per_second));
+    Duration::from_nanos(nanos)
+}
+
 struct HttpTransport {
     rpc_url: String,
     agent: ureq::Agent,
+    rate_limiter: Rc<RequestRateLimiter>,
 }
 
 impl HttpTransport {
-    fn new(rpc_url: String) -> Self {
+    fn new(rpc_url: String, rate_limiter: Rc<RequestRateLimiter>) -> Self {
         Self {
             rpc_url,
             agent: ureq::AgentBuilder::new()
                 .timeout(Duration::from_secs(30))
                 .build(),
+            rate_limiter,
         }
     }
 
@@ -1249,16 +1331,20 @@ impl HttpTransport {
         operation: &'static str,
         params: &serde_json::Value,
     ) -> Result<T, TransportFailure> {
-        let response = self
-            .agent
-            .post(&self.rpc_url)
-            .send_json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": operation,
-                "params": params,
-            }))
-            .map_err(|_| TransportFailure { operation })?;
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": operation,
+            "params": params,
+        });
+        let response = send_read_rpc_with_retry(
+            || {
+                self.rate_limiter.wait();
+                self.agent.post(&self.rpc_url).send_json(request.clone())
+            },
+            thread::sleep,
+        )
+        .map_err(|_| TransportFailure { operation })?;
         let body: RpcResponse<T> = response
             .into_json()
             .map_err(|_| TransportFailure { operation })?;
@@ -1267,6 +1353,50 @@ impl HttpTransport {
         }
         body.result.ok_or(TransportFailure { operation })
     }
+}
+
+// All RPC methods routed through this helper are read-only. Keep transaction
+// submission out of this retry path.
+fn send_read_rpc_with_retry(
+    mut send: impl FnMut() -> Result<ureq::Response, ureq::Error>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<ureq::Response, Box<ureq::Error>> {
+    let mut retry = 0_usize;
+    loop {
+        match send() {
+            Err(ureq::Error::Status(status, response))
+                if is_retryable_http_status(status) && retry < RPC_RETRY_BACKOFF.len() =>
+            {
+                let Some(delay) =
+                    retry_delay(RPC_RETRY_BACKOFF[retry], response.header("Retry-After"))
+                else {
+                    return Err(Box::new(ureq::Error::Status(status, response)));
+                };
+                retry += 1;
+                sleep(delay);
+            }
+            result => return result.map_err(Box::new),
+        }
+    }
+}
+
+const fn is_retryable_http_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+fn retry_delay(backoff: Duration, retry_after: Option<&str>) -> Option<Duration> {
+    let Some(retry_after) = retry_after else {
+        return Some(backoff);
+    };
+    let Ok(seconds) = retry_after.trim().parse::<u64>() else {
+        return Some(backoff);
+    };
+    let retry_after = Duration::from_secs(seconds);
+    // Do not violate a long server-requested pause by retrying early.
+    if retry_after > RPC_MAX_RETRY_AFTER {
+        return None;
+    }
+    Some(backoff.max(retry_after))
 }
 
 impl Transport for HttpTransport {
@@ -1860,7 +1990,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
 mod tests {
     use std::{
         cell::{Cell, RefCell},
-        collections::{BTreeMap, BTreeSet},
+        collections::{BTreeMap, BTreeSet, VecDeque},
         rc::Rc,
     };
 
@@ -2453,6 +2583,181 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(transport_error, CaptureError::Transport { .. }));
+    }
+
+    #[test]
+    fn generated_client_transport_panic_returns_the_capture_failure() {
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let failed_key = contract_instance_key(contract);
+        let failed_id = key_id(&failed_key).unwrap();
+        fake.fail_keys.borrow_mut().insert(failed_id.clone());
+
+        let error = builder(&fake)
+            .capture(|env| {
+                let pool_id = Address::from_str(env, POOL_ID);
+                let _ = pool::Client::new(env, &pool_id).get_tokens();
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CaptureError::Transport {
+                operation: "getLedgerEntries"
+            }
+        ));
+        assert_eq!(
+            fake.batch_calls
+                .borrow()
+                .iter()
+                .filter(|keys| keys.contains(&failed_id))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn read_rpc_retries_transient_statuses_with_short_backoff() {
+        let mut responses = VecDeque::from([
+            Err(http_status_error(429, Some("0"))),
+            Err(http_status_error(503, None)),
+            Ok(ureq::Response::new(200, "OK", "{}").unwrap()),
+        ]);
+        let mut delays = Vec::new();
+
+        let response = send_read_rpc_with_retry(
+            || responses.pop_front().expect("one response per attempt"),
+            |delay| delays.push(delay),
+        )
+        .unwrap();
+
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            delays,
+            [Duration::from_millis(200), Duration::from_millis(400)]
+        );
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn read_rpc_retry_budget_is_bounded_and_non_retryable_statuses_fail_fast() {
+        let attempts = Cell::new(0_u32);
+        let mut delays = Vec::new();
+        let exhausted = send_read_rpc_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(http_status_error(500, None))
+            },
+            |delay| delays.push(delay),
+        )
+        .unwrap_err();
+
+        assert!(matches!(*exhausted, ureq::Error::Status(500, _)));
+        assert_eq!(attempts.get(), 4);
+        assert_eq!(
+            delays,
+            [
+                Duration::from_millis(200),
+                Duration::from_millis(400),
+                Duration::from_millis(800)
+            ]
+        );
+
+        let attempts = Cell::new(0_u32);
+        let mut delays = Vec::new();
+        let rejected = send_read_rpc_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(http_status_error(400, None))
+            },
+            |delay| delays.push(delay),
+        )
+        .unwrap_err();
+
+        assert!(matches!(*rejected, ureq::Error::Status(400, _)));
+        assert_eq!(attempts.get(), 1);
+        assert!(delays.is_empty());
+    }
+
+    #[test]
+    fn read_rpc_honors_bounded_numeric_retry_after() {
+        let mut responses = VecDeque::from([
+            Err(http_status_error(429, Some("1"))),
+            Ok(ureq::Response::new(200, "OK", "{}").unwrap()),
+        ]);
+        let mut delays = Vec::new();
+
+        send_read_rpc_with_retry(
+            || responses.pop_front().expect("one response per attempt"),
+            |delay| delays.push(delay),
+        )
+        .unwrap();
+
+        assert_eq!(delays, [Duration::from_secs(1)]);
+
+        let attempts = Cell::new(0_u32);
+        let mut delays = Vec::new();
+        let rejected = send_read_rpc_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(http_status_error(429, Some("6")))
+            },
+            |delay| delays.push(delay),
+        )
+        .unwrap_err();
+
+        assert!(matches!(*rejected, ureq::Error::Status(429, _)));
+        assert_eq!(attempts.get(), 1);
+        assert!(delays.is_empty());
+    }
+
+    #[test]
+    fn request_rate_limiter_spaces_requests_and_can_be_disabled() {
+        let limiter = RequestRateLimiter::new(5);
+        let start = std::time::Instant::now();
+
+        assert_eq!(limiter.reserve_delay(start), Duration::ZERO);
+        assert_eq!(
+            limiter.reserve_delay(start + Duration::from_millis(50)),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            limiter.reserve_delay(start + Duration::from_millis(400)),
+            Duration::ZERO
+        );
+
+        limiter.set_requests_per_second(0);
+        assert_eq!(limiter.reserve_delay(start), Duration::ZERO);
+        assert_eq!(limiter.reserve_delay(start), Duration::ZERO);
+    }
+
+    #[test]
+    fn tracking_source_latches_transport_failure_without_refetching() {
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let failed_key = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 889);
+        fake.fail_keys
+            .borrow_mut()
+            .insert(key_id(&failed_key).unwrap());
+        let source = TrackingSource::rpc_with_local(
+            BTreeMap::new(),
+            fake.clone(),
+            Rc::new(LocalLedger::default()),
+        );
+        let failed_key = Rc::new(failed_key);
+
+        assert!(source.get(&failed_key).is_err());
+        assert!(source.get(&failed_key).is_err());
+
+        assert_eq!(fake.ledger_entry_reads(), 1);
+        assert_eq!(source.take_failure(), Some("getLedgerEntries"));
+    }
+
+    fn http_status_error(status: u16, retry_after: Option<&str>) -> ureq::Error {
+        let retry_after = retry_after
+            .map(|value| format!("Retry-After: {value}\r\n"))
+            .unwrap_or_default();
+        let raw = format!("HTTP/1.1 {status} Test\r\n{retry_after}\r\n");
+        ureq::Error::Status(status, raw.parse().unwrap())
     }
 
     #[test]

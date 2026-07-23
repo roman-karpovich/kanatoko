@@ -9,9 +9,9 @@
 //!
 //! Kanatoko does not emulate transactions or claim network-faithful execution.
 //!
-//! Capture contains scenario panics as returned errors, but Rust's standard
-//! panic hook still runs and can print panic payloads. Scenario panic messages
-//! must therefore never contain credentials or other secrets.
+//! Capture discovery suppresses panic-hook output and returns scenario panics
+//! as opaque errors. Strict replay still uses Rust's standard panic hook, so
+//! scenario panic messages must never contain credentials or other secrets.
 
 mod fixture;
 mod runtime;
