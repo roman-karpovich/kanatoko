@@ -508,13 +508,7 @@ impl<'a> ScenarioFork<'a> {
     #[must_use]
     pub fn muxed_account(&self, account: &str) -> MuxedAddress {
         let address = MuxedAddress::from_str(self.env, account);
-        assert!(
-            matches!(
-                ScVal::from(&address),
-                ScVal::Address(ScAddress::MuxedAccount(_))
-            ),
-            "expected a multiplexed M-address"
-        );
+        assert!(address.id().is_some(), "expected a multiplexed M-address");
         address
     }
 
