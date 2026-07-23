@@ -2,7 +2,7 @@
 
 All notable changes to Kanatoko are documented in this file.
 
-## 27.0.2 - Unreleased
+## 27.0.2 - 2026-07-23
 
 - Bind cached state values to the complete captured ledger anchor and probe the
   current anchor before every online cache hit.
