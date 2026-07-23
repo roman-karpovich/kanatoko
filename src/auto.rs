@@ -10,9 +10,9 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
-    AccountEntry, AccountEntryExt, AccountId, ContractId, LedgerEntry, LedgerEntryData,
-    LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScVal, SequenceNumber,
-    String32, Thresholds, Uint256, VecM,
+    AccountEntry, AccountEntryExt, AccountId, LedgerEntry, LedgerEntryData, LedgerEntryExt,
+    LedgerKey, LedgerKeyAccount, PublicKey, ScAddress, ScVal, SequenceNumber, String32, Thresholds,
+    Uint256, VecM,
 };
 use soroban_sdk::{
     Address, Env, IntoVal, MuxedAddress, Symbol, TryFromVal, Val, Vec as SorobanVec,
@@ -22,32 +22,31 @@ use thiserror::Error;
 use crate::{capture::MAINNET_PASSPHRASE, CaptureBuilder, CaptureError, CapturedFixture};
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
-const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v1";
+const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
 const LOCAL_ACCOUNT_MIN_BALANCE: i64 = 100_000_000;
 const LOCAL_ACCOUNT_BASE_RESERVES: i64 = 100;
 
-/// Creates an automatic mainnet runner rooted at `root_contract`.
+/// Creates an automatic mainnet runner.
 ///
 /// The same scenario closure performs dependency discovery and the final
-/// strict replay. No separate capture scenario is required.
+/// strict replay. Every contract and account enters the scenario explicitly
+/// through [`ScenarioFork`]; no address is privileged as a capture root.
 ///
 /// # Panics
 ///
 /// Panics only if Kanatoko's built-in mainnet RPC URL is not a valid HTTPS
 /// origin, which would be an internal library invariant violation.
 #[must_use]
-pub fn mainnet(root_contract: impl Into<String>) -> AutoRunner {
-    let root_contract = root_contract.into();
-    let builder = CaptureBuilder::mainnet(DEFAULT_MAINNET_RPC_URL, root_contract.clone())
+pub fn mainnet() -> AutoRunner {
+    let builder = CaptureBuilder::mainnet(DEFAULT_MAINNET_RPC_URL)
         .expect("the built-in mainnet RPC URL must have a valid HTTPS origin");
-    AutoRunner::with_builder(builder, MAINNET_PASSPHRASE, root_contract)
+    AutoRunner::with_builder(builder, MAINNET_PASSPHRASE)
 }
 
 /// Runs one repeatable scenario through automatic discovery and strict replay.
 pub struct AutoRunner {
     builder: CaptureBuilder,
     network_passphrase: String,
-    root_contract: String,
     cache: Option<PathBuf>,
     offline: bool,
     refresh: bool,
@@ -57,12 +56,10 @@ impl AutoRunner {
     pub(crate) fn with_builder(
         builder: CaptureBuilder,
         network_passphrase: impl Into<String>,
-        root_contract: impl Into<String>,
     ) -> Self {
         Self {
             builder,
             network_passphrase: network_passphrase.into(),
-            root_contract: root_contract.into(),
             cache: None,
             offline: false,
             refresh: false,
@@ -109,7 +106,7 @@ impl AutoRunner {
     ///
     /// # Errors
     ///
-    /// Returns a capture, cache identity, offline-cache, or strict replay
+    /// Returns a capture, cache validation, offline-cache, or strict replay
     /// error. Scenario panics remain opaque at this boundary.
     pub fn run<F>(&self, scenario: F) -> Result<AutoRun, AutoRunError>
     where
@@ -119,7 +116,6 @@ impl AutoRunner {
         if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
             if path.exists() {
                 let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
-                self.validate_root(&cached)?;
                 match replay(&cached, &scenario) {
                     Ok(()) => {
                         return Ok(AutoRun {
@@ -143,10 +139,9 @@ impl AutoRunner {
             });
         }
 
-        let captured = self.builder.capture(|env, root| {
-            scenario(&ScenarioFork::new(env, root));
+        let captured = self.builder.capture(|env| {
+            scenario(&ScenarioFork::new(env));
         })?;
-        self.validate_root(&captured)?;
         replay(&captured, &scenario)?;
 
         let cache_status = match self.cache.as_deref() {
@@ -174,25 +169,14 @@ impl AutoRunner {
             cache_status,
         })
     }
-
-    fn validate_root(&self, fixture: &CapturedFixture) -> Result<(), AutoRunError> {
-        if fixture.root_contract() == self.root_contract {
-            Ok(())
-        } else {
-            Err(AutoRunError::CacheRootMismatch {
-                expected: self.root_contract.clone(),
-                found: fixture.root_contract().to_string(),
-            })
-        }
-    }
 }
 
 fn replay<F>(fixture: &CapturedFixture, scenario: &F) -> Result<(), CaptureError>
 where
     F: for<'a> Fn(&ScenarioFork<'a>),
 {
-    fixture.replay(|env, root| {
-        scenario(&ScenarioFork::new(env, root));
+    fixture.replay(|env| {
+        scenario(&ScenarioFork::new(env));
     })
 }
 
@@ -204,15 +188,13 @@ where
 /// for final strict replay.
 pub struct ScenarioFork<'a> {
     env: &'a Env,
-    root: &'a Address,
     local_accounts: RefCell<BTreeSet<[u8; 32]>>,
 }
 
 impl<'a> ScenarioFork<'a> {
-    fn new(env: &'a Env, root: &'a Address) -> Self {
+    fn new(env: &'a Env) -> Self {
         Self {
             env,
-            root,
             local_accounts: RefCell::new(BTreeSet::new()),
         }
     }
@@ -221,12 +203,6 @@ impl<'a> ScenarioFork<'a> {
     #[must_use]
     pub const fn env(&self) -> &'a Env {
         self.env
-    }
-
-    /// Captured root address in the current pass environment.
-    #[must_use]
-    pub const fn root(&self) -> &'a Address {
-        self.root
     }
 
     /// Parses a contract C-address in the current pass environment.
@@ -287,10 +263,10 @@ impl<'a> ScenarioFork<'a> {
 
     /// Creates a funded local Stellar account and returns its G-address.
     ///
-    /// The address is pseudorandom but deterministic for the captured network,
-    /// root contract, and `label`. This keeps dependency discovery, strict
-    /// replay, cache hits, and CI runs reproducible. Reusing a label in one
-    /// scenario pass returns the same account without resetting its state.
+    /// The address is pseudorandom but deterministic for the captured network
+    /// and `label`. This keeps dependency discovery, strict replay, cache hits,
+    /// and CI runs reproducible. Reusing a label in one scenario pass returns
+    /// the same account without resetting its state.
     ///
     /// This is explicit local ledger injection, not a mainnet account creation
     /// or a transaction-faithful operation. The account has no signing key;
@@ -315,14 +291,9 @@ impl<'a> ScenarioFork<'a> {
                 ))
             })
             .expect("the scenario environment must have ledger metadata");
-        let ScAddress::Contract(ContractId(root_id)) = ScAddress::from(self.root) else {
-            unreachable!("an automatic capture root is always a contract");
-        };
-
         let mut digest = Sha256::new();
         digest.update(LOCAL_ACCOUNT_DOMAIN);
         digest.update(network_id);
-        digest.update(root_id.0);
         digest.update((label.len() as u64).to_be_bytes());
         digest.update(label.as_bytes());
         let public_key: [u8; 32] = digest.finalize().into();
@@ -449,6 +420,38 @@ pub enum AutoRunError {
     Capture(#[from] CaptureError),
     #[error("offline mode requires an existing capture cache at {path}")]
     OfflineCacheMissing { path: PathBuf },
-    #[error("capture cache root mismatch: expected {expected}, found {found}")]
-    CacheRootMismatch { expected: String, found: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use soroban_sdk::testutils::EnvTestConfig;
+
+    use super::*;
+
+    #[test]
+    fn local_account_is_derived_from_v2_domain_network_and_label_without_a_contract() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let network_id = env
+            .host()
+            .with_ledger_info(|ledger| Ok(ledger.network_id))
+            .unwrap();
+        let fork = ScenarioFork::new(&env);
+
+        let actual = fork.local_account("alice");
+        let mut digest = Sha256::new();
+        digest.update(b"kanatoko.local-account.v2");
+        digest.update(network_id);
+        digest.update((5_u64).to_be_bytes());
+        digest.update(b"alice");
+        let expected = ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+            digest.finalize().into(),
+        ))));
+
+        assert_eq!(ScAddress::from(&actual), expected);
+        assert_eq!(fork.local_account("alice"), actual);
+        assert_ne!(fork.local_account("bob"), actual);
+    }
 }

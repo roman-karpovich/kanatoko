@@ -18,7 +18,7 @@ use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 mod aquarius_capture;
 
 const DEFAULT_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
-const DEFAULT_ROOT: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const DEFAULT_POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
 const DEFAULT_BUNDLE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapper.wasm");
@@ -34,11 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_help();
             Ok(())
         }
-        Options::Capture {
-            rpc_url,
-            root,
-            bundle,
-        } => aquarius_capture::capture(&rpc_url, &root, &bundle),
+        Options::Capture { rpc_url, bundle } => aquarius_capture::capture(&rpc_url, &bundle),
         Options::Run {
             fixture,
             candidate,
@@ -55,7 +51,7 @@ fn run(
 ) -> Result<(), Box<dyn Error>> {
     let captured = CapturedFixture::from_file(fixture_path, MAINNET_PASSPHRASE)?;
     let mut fork = captured.fork();
-    let pool = address(captured.root_contract());
+    let pool = address(DEFAULT_POOL);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
     let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
     let wasm = candidate_artifact.bytes()?;
@@ -165,7 +161,7 @@ fn run(
         "transactionFaithfulDeploy": false,
         "fixture": fixture_path,
         "ledger": captured.provenance().ledger_sequence(),
-        "root": captured.root_contract(),
+        "scenarioPool": DEFAULT_POOL,
         "candidateRegistration": registration_json(&registration),
         "mintedUsdc": minted.to_string(),
         "receivedXlm": received.to_string(),
@@ -388,7 +384,6 @@ enum Options {
     Help,
     Capture {
         rpc_url: String,
-        root: String,
         bundle: PathBuf,
     },
     Run {
@@ -414,21 +409,15 @@ impl Options {
         match command.as_str() {
             "capture" => {
                 let mut rpc_url = DEFAULT_RPC_URL.to_string();
-                let mut root = DEFAULT_ROOT.to_string();
                 let mut bundle = PathBuf::from(DEFAULT_BUNDLE);
                 while let Some(option) = args.next() {
                     match option.as_str() {
                         "--rpc-url" => rpc_url = next(&mut args, &option)?,
-                        "--root" | "--root-contract" => root = next(&mut args, &option)?,
                         "--bundle" => bundle = PathBuf::from(next(&mut args, &option)?),
                         _ => return Err(format!("unknown capture option: {option}").into()),
                     }
                 }
-                Ok(Self::Capture {
-                    rpc_url,
-                    root,
-                    bundle,
-                })
+                Ok(Self::Capture { rpc_url, bundle })
             }
             "run" => {
                 let mut fixture = PathBuf::from(DEFAULT_BUNDLE);
@@ -533,7 +522,7 @@ fn print_help() {
     println!(
         "Kanatoko strict Soroban fork workflow\n\n\
          Capture the Aquarius scenario:\n  \
-         kanatoko capture aquarius-cp [--rpc-url URL] [--root C...] [--bundle PATH]\n\n\
+         kanatoko capture aquarius-cp [--rpc-url URL] [--bundle PATH]\n\n\
          Run the strict workflow fully offline:\n  \
          kanatoko run aquarius-cp [--fixture PATH] [--format text|json]\n  \
          [--candidate-wasm PATH --candidate-sha256 HEX]\n"

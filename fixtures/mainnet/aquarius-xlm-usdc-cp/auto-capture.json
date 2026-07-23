@@ -1,10 +1,9 @@
 {
-  "schema_version": 1,
-  "root_contract": "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE",
+  "schema_version": 2,
   "ledger_snapshot": {
     "protocol_version": 27,
-    "sequence_number": 63609273,
-    "timestamp": 1784802521,
+    "sequence_number": 63609576,
+    "timestamp": 1784804231,
     "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
     "base_reserve": 5000000,
     "min_persistent_entry_ttl": 2073600,
@@ -149,7 +148,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63609080,
+          "last_modified_ledger_seq": 63609566,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -172,7 +171,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "92731727172986"
+                      "i128": "92724946565167"
                     }
                   },
                   {
@@ -197,7 +196,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 64110268
+        "live_until": 64127785
       },
       {
         "entry": {
@@ -272,7 +271,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63609080,
+          "last_modified_ledger_seq": 63609566,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -513,7 +512,7 @@
                               "symbol": "accumulated"
                             },
                             "val": {
-                              "u128": "2166948551333684"
+                              "u128": "2166985255168384"
                             }
                           },
                           {
@@ -521,7 +520,7 @@
                               "symbol": "block"
                             },
                             "val": {
-                              "u64": "27089"
+                              "u64": "27090"
                             }
                           },
                           {
@@ -529,7 +528,7 @@
                               "symbol": "claimed"
                             },
                             "val": {
-                              "u128": "1262937316217431"
+                              "u128": "1262937319443801"
                             }
                           },
                           {
@@ -537,7 +536,7 @@
                               "symbol": "last_time"
                             },
                             "val": {
-                              "u64": "1784792854"
+                              "u64": "1784803043"
                             }
                           }
                         ]
@@ -552,7 +551,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "3971706659"
+                        "u128": "3972352667"
                       }
                     },
                     {
@@ -564,7 +563,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "649525052"
+                        "u128": "650271973"
                       }
                     },
                     {
@@ -588,7 +587,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "92727755466327"
+                        "u128": "92720974212500"
                       }
                     },
                     {
@@ -600,7 +599,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "17140668709065"
+                        "u128": "17141923177729"
                       }
                     },
                     {
@@ -612,7 +611,7 @@
                         ]
                       },
                       "val": {
-                        "u32": 63609080
+                        "u32": 63609566
                       }
                     },
                     {
@@ -791,7 +790,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63609080,
+          "last_modified_ledger_seq": 63609566,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -836,10 +835,10 @@
                     "val": {
                       "vec": [
                         {
-                          "u128": "92727755466327"
+                          "u128": "92720974212500"
                         },
                         {
-                          "u128": "17140668709065"
+                          "u128": "17141923177729"
                         }
                       ]
                     }
@@ -1081,7 +1080,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 63609080,
+          "last_modified_ledger_seq": 63609566,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -1104,7 +1103,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "17141318234117"
+                      "i128": "17142573449702"
                     }
                   },
                   {
@@ -1330,12 +1329,12 @@
     ]
   },
   "known_absent": [
-    "AAAAAAAAAAAyVR31WWf04TQ6Qz3C8nbfCisqIcHShBPjNuIi2MsEEw==",
-    "AAAAAAAAAADGPT9gjDxAOX5rtabc5gaQFtSsRjyzjDrOKPIFo9ZlTg==",
-    "AAAAAQAAAADGPT9gjDxAOX5rtabc5gaQFtSsRjyzjDrOKPIFo9ZlTgAAAAFVU0RDAAAAADuZETgO/piLoKiQDrHP5E82b32+lGvtB3JA9/Yk3xXF",
-    "AAAABgAAAAAAAAAAMlUd9Vln9OE0OkM9wvJ23worKiHB0oQT4zbiItjLBBMAAAAVHDW2PHQHyd8AAAAA",
-    "AAAABgAAAAAAAAAAxj0/YIw8QDl+a7Wm3OYGkBbUrEY8s4w6zijyBaPWZU4AAAAVCyEDby6XMK4AAAAA",
-    "AAAABgAAAAAAAAAAxj0/YIw8QDl+a7Wm3OYGkBbUrEY8s4w6zijyBaPWZU4AAAAVQyQDsUmwIb8AAAAA",
+    "AAAAAAAAAABbFAMX1f4JeCUWkmhVSIguvW19Y/yduC1dwVitxMNDzQ==",
+    "AAAAAAAAAACVMFWkFhnYerXuEGaSjk5xAwHA3KwK7YMzKQQmD6ktZw==",
+    "AAAAAQAAAABbFAMX1f4JeCUWkmhVSIguvW19Y/yduC1dwVitxMNDzQAAAAFVU0RDAAAAADuZETgO/piLoKiQDrHP5E82b32+lGvtB3JA9/Yk3xXF",
+    "AAAABgAAAAAAAAAAWxQDF9X+CXglFpJoVUiILr1tfWP8nbgtXcFYrcTDQ80AAAAVCyEDby6XMK4AAAAA",
+    "AAAABgAAAAAAAAAAWxQDF9X+CXglFpJoVUiILr1tfWP8nbgtXcFYrcTDQ80AAAAVQyQDsUmwIb8AAAAA",
+    "AAAABgAAAAAAAAAAlTBVpBYZ2Hq17hBmko5OcQMBwNysCu2DMykEJg+pLWcAAAAVHDW2PHQHyd8AAAAA",
     "AAAABgAAAAGetNfgUoqCcXctaWzcaNHasgv02KBwMqNeDwKZhqzFHgAAABUOWEdQFwSDCAAAAAA=",
     "AAAABgAAAAGetNfgUoqCcXctaWzcaNHasgv02KBwMqNeDwKZhqzFHgAAABVM5l8NaFYv7wAAAAA="
   ],
@@ -1348,11 +1347,11 @@
   "provenance": {
     "rpc_origin": "https://mainnet.sorobanrpc.com",
     "network_passphrase": "Public Global Stellar Network ; September 2015",
-    "ledger_sequence": 63609273,
-    "ledger_hash": "d8a73f9a2fe64732ce830ad3b66798d74b15f3cdf1b4f17032d70b19442db1c2",
+    "ledger_sequence": 63609576,
+    "ledger_hash": "4882f2284f73308f7d0cb985f346d64b9d9dcfe50aeb6c711fa6c0de8da70d9f",
     "protocol_version": 27
   },
-  "ledger_digest": "c091bc49e2c4e5bb90649efa6beddea0dfa6ca69137fa561e09b8708a5e4bd2d",
-  "inventory_digest": "69c27b7042aa202383b8ecb430fc57c016fd155c93ec6b6864a4f907b9034762",
-  "canonical_digest": "f1d7f9bd3542cadf16fa665856a6e6d0364478045265cce563978eb8259bcecd"
+  "ledger_digest": "dd370b89cb3acb52f052e46b4ce29ca97eae3114a6a21f04ce68b942888ebefc",
+  "inventory_digest": "d16e37f68eddadd89bc016ee0a7e678aaefd87b9945b34e319bc5d60b17914c8",
+  "canonical_digest": "137e90f12126e38fe6d2148f9eddf4570695a1cdb43954f66a8b8674b4d9a8ec"
 }

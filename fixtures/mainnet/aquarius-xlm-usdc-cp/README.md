@@ -1,11 +1,11 @@
 # Aquarius XLM/USDC constant-product fixture
 
 This directory contains the frozen `ledger.json`/`manifest.json` compatibility
-fixture, the lower-level `capture.json` bundle, and the one-scenario
-`auto-capture.json` cache. Local WASM artifacts generate client ABIs only; the
-normal test suite never contacts a network.
+fixture, the legacy lower-level `capture.json` bundle, and the rootless
+one-scenario `auto-capture.json` cache. Local WASM artifacts generate client
+ABIs only; the normal test suite never contacts a network.
 
-The root contract is Aquarius pool
+The scenario's primary contract is Aquarius pool
 `CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE`. Executing its real
 mainnet WASM exposed a write-time dependency on pool plane
 `CCABO2IQYDWRGGQ4DYQ73CV3ZFDBRZTEQNDDJMFT7JZO54CLS4RYJROY`; that dependency is
@@ -57,22 +57,25 @@ admin/mint tree is asserted exactly and recording is cleared. The subsequent
 user swap uses an explicit exact `MockAuth` tree rooted at `pool.swap`, with the
 nested `USDC.transfer` invocation. No production signature or secret is used.
 
-## Address-first capture and replay
+## Execution-driven capture and replay
 
-The current capture tool starts with the pool address and RPC URL. During
-scenario execution it automatically discovers every Host-read or Host-written
-ledger key, follows each discovered contract instance to its referenced WASM,
-then rematerializes the whole set at one coherent ledger. Confirmed-absent keys
-are retained separately for strict unknown-key rejection.
+The current capture tool starts with an RPC URL. The scenario names the pool
+like every other address. During execution Kanatoko automatically discovers
+every Host-read or Host-written ledger key, follows each discovered contract
+instance to its referenced WASM, then rematerializes the whole set at one
+coherent ledger. Confirmed-absent keys are retained separately for strict
+unknown-key rejection.
 
-It atomically writes one self-validating `capture.json` containing the ledger
-snapshot, Present/Absent inventory, root address, sanitized source origin,
-provenance, and canonical digests. It immediately loads that file and replays
-quote -> mint -> swap -> requote without RPC access. `pool.wasm` supplies only
-the compile-time ABI; executable network WASM comes from captured
-`ContractCode` entries.
+New captures atomically write a rootless schema-v2 bundle containing the ledger
+snapshot, Present/Absent inventory, sanitized source origin, provenance, and
+canonical digests. The tool immediately loads that file and replays quote ->
+mint -> swap -> requote without RPC access. `pool.wasm` supplies only the
+compile-time ABI; executable network WASM comes from captured `ContractCode`
+entries.
 
-The committed capture bundle was captured at mainnet ledger `63600296` (hash
+The committed `capture.json` is a schema-v1 compatibility artifact. Its root
+field is validated only as part of that legacy envelope and is discarded from
+the runtime model. It was captured at mainnet ledger `63600296` (hash
 `63aa87f14ca20f1761fd5b055359eb864db3555a33bece46a68df8fb673ece94`).
 It reached a fixed point in two rounds with 12 present and six RPC-confirmed
 absent entries, and recorded zero RPC reads during final replay. Host-driven
@@ -112,23 +115,24 @@ its M-address and verifies the multiplexing ID in the emitted event.
 The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
 
-- Mainnet ledger: `63609273`
+- Bundle schema: `2` (no root address)
+- Mainnet ledger: `63609576`
 - Ledger hash:
-  `d8a73f9a2fe64732ce830ad3b66798d74b15f3cdf1b4f17032d70b19442db1c2`
+  `4882f2284f73308f7d0cb985f346d64b9d9dcfe50aeb6c711fa6c0de8da70d9f`
 - Discovery: 2 rounds, 14 present, 8 confirmed absent
 - Final replay RPC reads: `0`
 - Canonical ledger digest:
-  `c091bc49e2c4e5bb90649efa6beddea0dfa6ca69137fa561e09b8708a5e4bd2d`
+  `dd370b89cb3acb52f052e46b4ce29ca97eae3114a6a21f04ce68b942888ebefc`
 - Inventory digest:
-  `69c27b7042aa202383b8ecb430fc57c016fd155c93ec6b6864a4f907b9034762`
+  `d16e37f68eddadd89bc016ee0a7e678aaefd87b9945b34e319bc5d60b17914c8`
 - Canonical bundle digest:
-  `f1d7f9bd3542cadf16fa665856a6e6d0364478045265cce563978eb8259bcecd`
+  `137e90f12126e38fe6d2148f9eddf4570695a1cdb43954f66a8b8674b4d9a8ec`
 - `auto-capture.json` SHA-256:
-  `57683036179620e02a5cc16ba6dc5466a7325b7cdc077af65f0e762e7a6e72be`
+  `1c65ce976f6ec82da983c484207d0cbe9ae8731a2bf10ba816687080ce06bcac`
 
 The typed client is deliberately generated from the different
 `kanatoko_aquarius_wrapper.wasm` artifact. The test asserts that its hash is
-not the captured root executable hash, proving the imported file is only an
+not the captured pool executable hash, proving the imported file is only an
 ABI source and the captured network pool WASM executes. A second negative test
 uses incompatible generated bindings and requires the typed `try_*` call to
 return an error rather than execute the local artifact. The acceptance passes

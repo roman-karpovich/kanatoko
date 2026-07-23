@@ -1,7 +1,8 @@
 //! Capture or replay the Aquarius XLM/USDC constant-product scenario.
 //!
-//! Capture starts with only an RPC URL and the pool address. Contract code and
-//! every ledger key touched by the scenario are discovered by `CaptureBuilder`.
+//! Capture starts with only an RPC URL. The scenario names the pool like every
+//! other address; contract code and every touched ledger key are discovered by
+//! `CaptureBuilder`.
 //! The local `pool.wasm` is used only by `contractimport!` to generate the typed
 //! client ABI. Replay reads one validated bundle and performs no RPC calls.
 
@@ -37,18 +38,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     match Options::parse()?.mode {
         Mode::Capture {
             rpc_url,
-            root_contract,
             bundle_path,
-        } => capture(&rpc_url, &root_contract, &bundle_path),
+        } => capture(&rpc_url, &bundle_path),
         Mode::Replay { bundle_path } => replay(&bundle_path),
     }
 }
 
-pub(crate) fn capture(
-    rpc_url: &str,
-    root_contract: &str,
-    bundle_path: &Path,
-) -> Result<(), Box<dyn Error>> {
+pub(crate) fn capture(rpc_url: &str, bundle_path: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = bundle_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -56,7 +52,7 @@ pub(crate) fn capture(
         fs::create_dir_all(parent)?;
     }
 
-    let captured = CaptureBuilder::mainnet(rpc_url, root_contract)?.capture(aquarius_scenario)?;
+    let captured = CaptureBuilder::mainnet(rpc_url)?.capture(aquarius_scenario)?;
     captured.write_file(bundle_path)?;
 
     // Read back through the public fail-closed loader and prove that the exact
@@ -66,7 +62,7 @@ pub(crate) fn capture(
 
     println!("captured ledger {}", loaded.provenance().ledger_sequence());
     println!("source origin: {}", loaded.provenance().rpc_origin());
-    println!("root contract: {}", loaded.root_contract());
+    println!("scenario pool: {DEFAULT_POOL_ID}");
     println!("present entries: {}", loaded.report().present_entries());
     println!(
         "confirmed absent entries: {}",
@@ -84,14 +80,15 @@ fn replay(bundle_path: &Path) -> Result<(), Box<dyn Error>> {
         "replayed ledger {}",
         captured.provenance().ledger_sequence()
     );
-    println!("root contract: {}", captured.root_contract());
+    println!("scenario pool: {DEFAULT_POOL_ID}");
     println!("bundle: {}", bundle_path.display());
     println!("offline replay: ok");
     Ok(())
 }
 
-fn aquarius_scenario(env: &Env, root: &Address) {
-    let pool = pool::Client::new(env, root);
+fn aquarius_scenario(env: &Env) {
+    let pool_id = Address::from_str(env, DEFAULT_POOL_ID);
+    let pool = pool::Client::new(env, &pool_id);
     let tokens = pool.get_tokens();
     assert_eq!(tokens.len(), 2);
     let usdc = tokens.get(1).expect("pool must have a token at index 1");
@@ -135,12 +132,12 @@ fn aquarius_scenario(env: &Env, root: &Address) {
     let transfer = MockAuthInvoke {
         contract: &usdc,
         fn_name: "transfer",
-        args: (user.clone(), root.clone(), minted_i128).into_val(env),
+        args: (user.clone(), pool_id.clone(), minted_i128).into_val(env),
         sub_invokes: &[],
     };
     let nested = [transfer];
     let swap = MockAuthInvoke {
-        contract: root,
+        contract: &pool_id,
         fn_name: "swap",
         args: (user.clone(), 1_u32, 0_u32, minted, 0_u128).into_val(env),
         sub_invokes: &nested,
@@ -158,7 +155,7 @@ fn aquarius_scenario(env: &Env, root: &Address) {
             user.clone(),
             AuthorizedInvocation {
                 function: AuthorizedFunction::Contract((
-                    root.clone(),
+                    pool_id.clone(),
                     Symbol::new(env, "swap"),
                     (user.clone(), 1_u32, 0_u32, minted, 0_u128).into_val(env),
                 )),
@@ -166,7 +163,7 @@ fn aquarius_scenario(env: &Env, root: &Address) {
                     function: AuthorizedFunction::Contract((
                         usdc,
                         Symbol::new(env, "transfer"),
-                        (user, root.clone(), minted_i128).into_val(env),
+                        (user, pool_id.clone(), minted_i128).into_val(env),
                     )),
                     sub_invocations: std::vec![],
                 }],
@@ -191,7 +188,6 @@ struct Options {
 enum Mode {
     Capture {
         rpc_url: String,
-        root_contract: String,
         bundle_path: PathBuf,
     },
     Replay {
@@ -202,16 +198,12 @@ enum Mode {
 impl Options {
     fn parse() -> Result<Self, OptionsError> {
         let mut rpc_url = DEFAULT_RPC_URL.to_string();
-        let mut root_contract = DEFAULT_POOL_ID.to_string();
         let mut bundle_path = PathBuf::from(DEFAULT_OUTPUT_DIR).join("capture.json");
         let mut replay_path = None;
         let mut args = std::env::args().skip(1);
         while let Some(argument) = args.next() {
             match argument.as_str() {
                 "--rpc-url" => rpc_url = next_value(&mut args, "--rpc-url")?,
-                "--root-contract" => {
-                    root_contract = next_value(&mut args, "--root-contract")?;
-                }
                 "--bundle" => bundle_path = PathBuf::from(next_value(&mut args, "--bundle")?),
                 "--out-dir" => {
                     bundle_path =
@@ -226,7 +218,6 @@ impl Options {
         let mode = replay_path.map_or(
             Mode::Capture {
                 rpc_url,
-                root_contract,
                 bundle_path,
             },
             |bundle_path| Mode::Replay { bundle_path },

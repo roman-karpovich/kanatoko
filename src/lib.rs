@@ -3,7 +3,7 @@
 //! The default build exposes deterministic fixture loading, production WASM
 //! registration, stateful execution, and checkpoint/revert. The optional
 //! `capture` feature adds a one-scenario mainnet runner: generated clients and
-//! dynamic calls drive automatic address-first capture, then the same body
+//! dynamic calls drive automatic execution-based capture, then the same body
 //! replays strictly offline. Imported client WASM supplies ABI bindings only;
 //! captured network instances and WASM always execute.
 //!

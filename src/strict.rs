@@ -178,7 +178,6 @@ pub struct StrictCheckpoint {
 pub struct StrictFork {
     id: u64,
     env: Env,
-    root: ScAddress,
     coverage: BTreeMap<KeyId, LookupState>,
     local_contracts: BTreeSet<ScAddress>,
     local_code_hashes: BTreeSet<[u8; 32]>,
@@ -188,7 +187,6 @@ pub struct StrictFork {
 impl StrictFork {
     pub(crate) fn from_captured(
         snapshot: &LedgerSnapshot,
-        root: ScAddress,
         coverage: BTreeMap<KeyId, LookupState>,
     ) -> Self {
         let id = NEXT_STRICT_FORK_ID.fetch_add(1, Ordering::Relaxed);
@@ -203,18 +201,11 @@ impl StrictFork {
         Self {
             id,
             env,
-            root,
             coverage,
             local_contracts: BTreeSet::new(),
             local_code_hashes: BTreeSet::new(),
             receipts: Vec::new(),
         }
-    }
-
-    /// Captured root contract as detached XDR.
-    #[must_use]
-    pub const fn root_contract(&self) -> &ScAddress {
-        &self.root
     }
 
     /// Strict forks never retain an RPC transport.

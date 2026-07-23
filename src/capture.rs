@@ -1,4 +1,5 @@
-//! Address-first capture of the ledger state a Soroban scenario actually uses.
+//! Execution-driven capture of the ledger state a Soroban scenario actually
+//! uses.
 
 use std::{
     cell::{Cell, RefCell},
@@ -25,7 +26,7 @@ use soroban_env_host::xdr::{
 use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
     testutils::{EnvTestConfig, HostError, LedgerInfo, SnapshotSource, SnapshotSourceInput},
-    Address, Env, TryFromVal,
+    Address, Env,
 };
 use thiserror::Error;
 
@@ -35,15 +36,16 @@ pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; Sep
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
-const CAPTURE_BUNDLE_SCHEMA_VERSION: u32 = 1;
+const CAPTURE_BUNDLE_SCHEMA_VERSION: u32 = 2;
 const INVENTORY_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-INVENTORY\0V1\0";
-const BUNDLE_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-BUNDLE\0V1\0";
+const BUNDLE_DIGEST_DOMAIN_V2: &[u8] = b"KANATOKO\0CAPTURE-BUNDLE\0V2\0";
+const LEGACY_BUNDLE_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0CAPTURE-BUNDLE\0V1\0";
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) type KeyId = Vec<u8>;
 type PresentEntry = (Rc<LedgerEntry>, Option<u32>);
 
-/// Builds an address-first, RPC-backed capture.
+/// Builds an execution-driven, RPC-backed capture.
 ///
 /// The URL is held only by the HTTP transport. Debug output and capture
 /// provenance retain only the scheme and hostname/port. Userinfo, path, query,
@@ -51,7 +53,6 @@ type PresentEntry = (Rc<LedgerEntry>, Option<u32>);
 /// be recognized and will remain visible, so credentials must not be placed
 /// there.
 pub struct CaptureBuilder {
-    root_contract: String,
     network_passphrase: String,
     rpc_origin: String,
     transport: Rc<dyn Transport>,
@@ -64,13 +65,9 @@ impl CaptureBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error when the URL has no HTTP(S) origin. The contract ID is
-    /// validated before the first RPC read by [`Self::capture`].
-    pub fn mainnet(
-        rpc_url: impl Into<String>,
-        root_contract: impl Into<String>,
-    ) -> Result<Self, CaptureError> {
-        Self::rpc(rpc_url, MAINNET_PASSPHRASE, root_contract)
+    /// Returns an error when the URL has no HTTP(S) origin.
+    pub fn mainnet(rpc_url: impl Into<String>) -> Result<Self, CaptureError> {
+        Self::rpc(rpc_url, MAINNET_PASSPHRASE)
     }
 
     /// Creates a capture builder for an explicit RPC network and passphrase.
@@ -81,13 +78,11 @@ impl CaptureBuilder {
     pub fn rpc(
         rpc_url: impl Into<String>,
         network_passphrase: impl Into<String>,
-        root_contract: impl Into<String>,
     ) -> Result<Self, CaptureError> {
         let rpc_url = rpc_url.into();
         let rpc_origin = redact_rpc_origin(&rpc_url)?;
         let transport = Rc::new(HttpTransport::new(rpc_url));
         Ok(Self {
-            root_contract: root_contract.into(),
             network_passphrase: network_passphrase.into(),
             rpc_origin,
             transport,
@@ -98,31 +93,30 @@ impl CaptureBuilder {
 
     /// Captures the fixed point of ledger keys touched by `scenario`.
     ///
-    /// A fresh [`Env`] and root [`Address`] are supplied on every run, so
-    /// generated clients must be recreated inside the closure. The closure can
-    /// run several times and must be deterministic, repeatable, and free of
-    /// external side effects. Scenario panics are converted to a terminal
-    /// error only after key discovery stops; Rust's standard panic hook still
-    /// runs and may print the panic payload, so panic messages must not contain
+    /// A fresh [`Env`] is supplied on every run, so generated clients and
+    /// addresses must be recreated inside the closure. The closure can run
+    /// several times and must be deterministic, repeatable, and free of
+    /// external side effects. Scenario panics are converted to a terminal error
+    /// only after key discovery stops; Rust's standard panic hook still runs
+    /// and may print the panic payload, so panic messages must not contain
     /// secrets.
     ///
     /// # Errors
     ///
     /// Fails closed on network/protocol mismatch, transport or XDR failure,
-    /// incoherent ledger batches, a missing root/code entry, a terminal
-    /// scenario panic, or a bounded fixed-point failure.
+    /// incoherent ledger batches, missing referenced code, a terminal scenario
+    /// panic, or a bounded fixed-point failure.
     pub fn capture<F>(&self, scenario: F) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&Env, &Address),
+        F: Fn(&Env),
     {
         self.capture_ref(&scenario)
     }
 
     fn capture_ref<F>(&self, scenario: &F) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&Env, &Address),
+        F: Fn(&Env),
     {
-        let root = parse_contract_address(&self.root_contract)?;
         let network = self
             .transport
             .network()
@@ -138,9 +132,7 @@ impl CaptureBuilder {
         }
 
         let mut keys = BTreeMap::new();
-        insert_key(&mut keys, contract_instance_key(root.clone()))?;
         let mut materialized = self.materialize(&keys)?;
-        ensure_root_present(&root, &materialized.coverage)?;
         materialized = self.expand_code_closure(&mut keys, materialized)?;
 
         for round in 1..=self.max_discovery_rounds {
@@ -149,9 +141,7 @@ impl CaptureBuilder {
                 self.transport.clone(),
             ));
             let env = env_from_materialized(&materialized, source.clone());
-            let root_address = Address::try_from_val(&env, &root)
-                .map_err(|_| CaptureError::InvalidRootContract)?;
-            let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, &root_address)));
+            let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env)));
 
             if let Some(operation) = source.take_failure() {
                 return Err(transport_error(operation));
@@ -216,8 +206,6 @@ impl CaptureBuilder {
             };
             return Ok(CapturedFixture {
                 fixture,
-                root_contract: self.root_contract.clone(),
-                root,
                 coverage: materialized.coverage,
                 report,
                 provenance,
@@ -344,13 +332,8 @@ impl CaptureBuilder {
     }
 
     #[cfg(test)]
-    fn with_transport(
-        transport: Rc<dyn Transport>,
-        network_passphrase: impl Into<String>,
-        root_contract: impl Into<String>,
-    ) -> Self {
+    fn with_transport(transport: Rc<dyn Transport>, network_passphrase: impl Into<String>) -> Self {
         Self {
-            root_contract: root_contract.into(),
             network_passphrase: network_passphrase.into(),
             rpc_origin: "https://fake.invalid".to_string(),
             transport,
@@ -364,7 +347,6 @@ impl fmt::Debug for CaptureBuilder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CaptureBuilder")
-            .field("root_contract", &self.root_contract)
             .field("rpc_origin", &self.rpc_origin)
             .field("max_coherence_attempts", &self.max_coherence_attempts)
             .field("max_discovery_rounds", &self.max_discovery_rounds)
@@ -376,8 +358,6 @@ impl fmt::Debug for CaptureBuilder {
 #[derive(Clone, Debug)]
 pub struct CapturedFixture {
     fixture: FrozenFixture,
-    root_contract: String,
-    root: ScAddress,
     coverage: BTreeMap<KeyId, LookupState>,
     report: CaptureReport,
     provenance: CaptureProvenance,
@@ -388,12 +368,6 @@ impl CapturedFixture {
     #[must_use]
     pub const fn frozen_fixture(&self) -> &FrozenFixture {
         &self.fixture
-    }
-
-    /// Returns the root contract `StrKey` supplied to the builder.
-    #[must_use]
-    pub fn root_contract(&self) -> &str {
-        &self.root_contract
     }
 
     /// Returns capture counts, fixed-point rounds, and inventory digest.
@@ -441,7 +415,7 @@ impl CapturedFixture {
     ///
     /// Fails closed on I/O or JSON errors, an unsupported schema, a network or
     /// protocol mismatch, malformed XDR, changed canonical digests, inconsistent
-    /// Present/Absent coverage, or a missing root instance/referenced WASM.
+    /// Present/Absent coverage, or missing referenced WASM.
     pub fn from_file(
         path: impl AsRef<Path>,
         expected_network_passphrase: &str,
@@ -450,9 +424,7 @@ impl CapturedFixture {
             operation: "read",
             source,
         })?;
-        let bundle: CaptureBundleV1 =
-            serde_json::from_slice(&bytes).map_err(|_| CaptureError::MalformedCaptureBundle)?;
-        Self::from_bundle(bundle, expected_network_passphrase)
+        Self::from_bundle_bytes(&bytes, expected_network_passphrase)
     }
 
     /// Replays once with strict unknown-key rejection and no RPC transport.
@@ -466,7 +438,7 @@ impl CapturedFixture {
     /// secrets in scenario panic messages.
     pub fn replay<F, R>(&self, scenario: F) -> Result<R, CaptureError>
     where
-        F: FnOnce(&Env, &Address) -> R,
+        F: FnOnce(&Env) -> R,
     {
         let materialized = Materialized {
             anchor: Anchor {
@@ -481,9 +453,7 @@ impl CapturedFixture {
         };
         let source = Rc::new(TrackingSource::strict(self.coverage.clone()));
         let env = env_from_materialized(&materialized, source.clone());
-        let root = Address::try_from_val(&env, &self.root)
-            .map_err(|_| CaptureError::InvalidRootContract)?;
-        let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env, &root)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| scenario(&env)));
 
         let mut unknown = source.unknown_keys();
         for (key, _) in env
@@ -509,14 +479,10 @@ impl CapturedFixture {
     /// applied invocation, mutation, and revert.
     #[must_use]
     pub fn fork(&self) -> StrictFork {
-        StrictFork::from_captured(
-            self.fixture.ledger_snapshot(),
-            self.root.clone(),
-            self.coverage.clone(),
-        )
+        StrictFork::from_captured(self.fixture.ledger_snapshot(), self.coverage.clone())
     }
 
-    fn to_bundle(&self) -> Result<CaptureBundleV1, CaptureError> {
+    fn to_bundle(&self) -> Result<CaptureBundleV2, CaptureError> {
         let known_absent: Vec<String> = self
             .known_absent_keys()
             .map(|key| BASE64.encode(key))
@@ -543,16 +509,14 @@ impl CapturedFixture {
             protocol_version: self.provenance.protocol_version,
         };
         let canonical_digest = canonical_bundle_digest(
-            &self.root_contract,
             &known_absent,
             &report,
             &provenance,
             &ledger_digest,
             &inventory_digest,
         )?;
-        Ok(CaptureBundleV1 {
+        Ok(CaptureBundleV2 {
             schema_version: CAPTURE_BUNDLE_SCHEMA_VERSION,
-            root_contract: self.root_contract.clone(),
             ledger_snapshot: self.fixture.ledger_snapshot().clone(),
             known_absent,
             report,
@@ -564,7 +528,7 @@ impl CapturedFixture {
     }
 
     fn from_bundle(
-        bundle: CaptureBundleV1,
+        bundle: CaptureBundleV2,
         expected_network_passphrase: &str,
     ) -> Result<Self, CaptureError> {
         let digests = validate_bundle_envelope(&bundle, expected_network_passphrase)?;
@@ -574,11 +538,9 @@ impl CapturedFixture {
             return Err(CaptureError::CaptureBundleIntegrity);
         }
 
-        let root = parse_contract_address(&bundle.root_contract)?;
         let coverage = bundle_coverage(fixture.ledger_snapshot(), &bundle.known_absent)?;
         let (present_entries, absent_entries) = validate_bundle_coverage(
             &coverage,
-            &root,
             &bundle.report,
             &digests.inventory,
             fixture.ledger_snapshot().sequence_number,
@@ -602,8 +564,76 @@ impl CapturedFixture {
         };
         Ok(Self {
             fixture,
-            root_contract: bundle.root_contract,
-            root,
+            coverage,
+            report,
+            provenance,
+        })
+    }
+
+    fn from_bundle_bytes(
+        bytes: &[u8],
+        expected_network_passphrase: &str,
+    ) -> Result<Self, CaptureError> {
+        let version: BundleVersion =
+            serde_json::from_slice(bytes).map_err(|_| CaptureError::MalformedCaptureBundle)?;
+        match version.schema_version {
+            CAPTURE_BUNDLE_SCHEMA_VERSION => {
+                let bundle: CaptureBundleV2 = serde_json::from_slice(bytes)
+                    .map_err(|_| CaptureError::MalformedCaptureBundle)?;
+                Self::from_bundle(bundle, expected_network_passphrase)
+            }
+            1 => {
+                let bundle: LegacyCaptureBundleV1 = serde_json::from_slice(bytes)
+                    .map_err(|_| CaptureError::MalformedCaptureBundle)?;
+                Self::from_legacy_bundle(bundle, expected_network_passphrase)
+            }
+            found => Err(CaptureError::UnsupportedCaptureBundleSchema {
+                found,
+                supported: CAPTURE_BUNDLE_SCHEMA_VERSION,
+            }),
+        }
+    }
+
+    fn from_legacy_bundle(
+        bundle: LegacyCaptureBundleV1,
+        expected_network_passphrase: &str,
+    ) -> Result<Self, CaptureError> {
+        let digests = validate_legacy_bundle_envelope(&bundle, expected_network_passphrase)?;
+        let fixture =
+            FrozenFixture::from_snapshot(bundle.ledger_snapshot, expected_network_passphrase)?;
+        if fixture.ledger_digest() != digests.ledger {
+            return Err(CaptureError::CaptureBundleIntegrity);
+        }
+
+        let root = parse_legacy_contract_address(&bundle.root_contract)?;
+        let coverage = bundle_coverage(fixture.ledger_snapshot(), &bundle.known_absent)?;
+        ensure_legacy_root_present(&root, &coverage)
+            .map_err(|_| CaptureError::CaptureBundleIntegrity)?;
+        let (present_entries, absent_entries) = validate_bundle_coverage(
+            &coverage,
+            &bundle.report,
+            &digests.inventory,
+            fixture.ledger_snapshot().sequence_number,
+            fixture.ledger_snapshot().max_entry_ttl,
+        )?;
+
+        let report = CaptureReport {
+            discovery_rounds: usize::try_from(bundle.report.discovery_rounds)
+                .map_err(|_| CaptureError::MalformedCaptureBundle)?,
+            present_entries,
+            absent_entries,
+            inventory_digest: digests.inventory,
+            final_replay_rpc_reads: 0,
+        };
+        let provenance = CaptureProvenance {
+            rpc_origin: bundle.provenance.rpc_origin,
+            network_passphrase: bundle.provenance.network_passphrase,
+            ledger_sequence: bundle.provenance.ledger_sequence,
+            ledger_hash: bundle.provenance.ledger_hash,
+            protocol_version: bundle.provenance.protocol_version,
+        };
+        Ok(Self {
+            fixture,
             coverage,
             report,
             provenance,
@@ -611,9 +641,27 @@ impl CapturedFixture {
     }
 }
 
+#[derive(Deserialize)]
+struct BundleVersion {
+    schema_version: u32,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CaptureBundleV1 {
+struct CaptureBundleV2 {
+    schema_version: u32,
+    ledger_snapshot: LedgerSnapshot,
+    known_absent: Vec<String>,
+    report: BundleReport,
+    provenance: BundleProvenance,
+    ledger_digest: String,
+    inventory_digest: String,
+    canonical_digest: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCaptureBundleV1 {
     schema_version: u32,
     root_contract: String,
     ledger_snapshot: LedgerSnapshot,
@@ -650,7 +698,7 @@ struct BundleDigests {
 }
 
 fn validate_bundle_envelope(
-    bundle: &CaptureBundleV1,
+    bundle: &CaptureBundleV2,
     expected_network_passphrase: &str,
 ) -> Result<BundleDigests, CaptureError> {
     if bundle.schema_version != CAPTURE_BUNDLE_SCHEMA_VERSION {
@@ -659,28 +707,76 @@ fn validate_bundle_envelope(
             supported: CAPTURE_BUNDLE_SCHEMA_VERSION,
         });
     }
-    if bundle.provenance.network_passphrase != expected_network_passphrase {
-        return Err(CaptureError::NetworkMismatch);
-    }
-    if redact_rpc_origin(&bundle.provenance.rpc_origin)? != bundle.provenance.rpc_origin {
-        return Err(CaptureError::MalformedCaptureBundle);
-    }
-    let discovery_rounds = usize::try_from(bundle.report.discovery_rounds)
-        .map_err(|_| CaptureError::MalformedCaptureBundle)?;
-    if bundle.provenance.ledger_sequence != bundle.ledger_snapshot.sequence_number
-        || bundle.provenance.protocol_version != bundle.ledger_snapshot.protocol_version
-        || bundle.provenance.ledger_hash.is_empty()
-        || discovery_rounds == 0
-        || discovery_rounds > MAX_DISCOVERY_ROUNDS
-        || bundle.report.final_replay_rpc_reads != 0
-    {
-        return Err(CaptureError::CaptureBundleIntegrity);
-    }
+    validate_bundle_metadata(
+        &bundle.ledger_snapshot,
+        &bundle.report,
+        &bundle.provenance,
+        expected_network_passphrase,
+    )?;
 
     let ledger = decode_hex_digest(&bundle.ledger_digest)?;
     let inventory = decode_hex_digest(&bundle.inventory_digest)?;
     let actual_canonical = decode_hex_digest(&bundle.canonical_digest)?;
     let expected_canonical = canonical_bundle_digest(
+        &bundle.known_absent,
+        &bundle.report,
+        &bundle.provenance,
+        &ledger,
+        &inventory,
+    )?;
+    if actual_canonical != expected_canonical {
+        return Err(CaptureError::CaptureBundleIntegrity);
+    }
+    Ok(BundleDigests { ledger, inventory })
+}
+
+fn validate_bundle_metadata(
+    ledger_snapshot: &LedgerSnapshot,
+    report: &BundleReport,
+    provenance: &BundleProvenance,
+    expected_network_passphrase: &str,
+) -> Result<(), CaptureError> {
+    if provenance.network_passphrase != expected_network_passphrase {
+        return Err(CaptureError::NetworkMismatch);
+    }
+    if redact_rpc_origin(&provenance.rpc_origin)? != provenance.rpc_origin {
+        return Err(CaptureError::MalformedCaptureBundle);
+    }
+    let discovery_rounds = usize::try_from(report.discovery_rounds)
+        .map_err(|_| CaptureError::MalformedCaptureBundle)?;
+    if provenance.ledger_sequence != ledger_snapshot.sequence_number
+        || provenance.protocol_version != ledger_snapshot.protocol_version
+        || provenance.ledger_hash.is_empty()
+        || discovery_rounds == 0
+        || discovery_rounds > MAX_DISCOVERY_ROUNDS
+        || report.final_replay_rpc_reads != 0
+    {
+        return Err(CaptureError::CaptureBundleIntegrity);
+    }
+    Ok(())
+}
+
+fn validate_legacy_bundle_envelope(
+    bundle: &LegacyCaptureBundleV1,
+    expected_network_passphrase: &str,
+) -> Result<BundleDigests, CaptureError> {
+    if bundle.schema_version != 1 {
+        return Err(CaptureError::UnsupportedCaptureBundleSchema {
+            found: bundle.schema_version,
+            supported: CAPTURE_BUNDLE_SCHEMA_VERSION,
+        });
+    }
+    validate_bundle_metadata(
+        &bundle.ledger_snapshot,
+        &bundle.report,
+        &bundle.provenance,
+        expected_network_passphrase,
+    )?;
+
+    let ledger = decode_hex_digest(&bundle.ledger_digest)?;
+    let inventory = decode_hex_digest(&bundle.inventory_digest)?;
+    let actual_canonical = decode_hex_digest(&bundle.canonical_digest)?;
+    let expected_canonical = legacy_canonical_bundle_digest(
         &bundle.root_contract,
         &bundle.known_absent,
         &bundle.report,
@@ -745,14 +841,12 @@ fn bundle_coverage(
 
 fn validate_bundle_coverage(
     coverage: &BTreeMap<KeyId, LookupState>,
-    root: &ScAddress,
     report: &BundleReport,
     expected_inventory_digest: &[u8; 32],
     ledger_sequence: u32,
     max_entry_ttl: u32,
 ) -> Result<(usize, usize), CaptureError> {
     if validate_coverage(coverage, ledger_sequence, max_entry_ttl).is_err()
-        || ensure_root_present(root, coverage).is_err()
         || ensure_referenced_code_present(coverage).is_err()
     {
         return Err(CaptureError::CaptureBundleIntegrity);
@@ -852,8 +946,6 @@ impl CaptureProvenance {
 pub enum CaptureError {
     #[error("RPC URL must contain an http(s) origin")]
     InvalidRpcUrl,
-    #[error("root address is not a contract StrKey")]
-    InvalidRootContract,
     #[error("RPC network passphrase does not match the requested network")]
     NetworkMismatch,
     #[error("unsupported ledger protocol {found}; pinned Host supports exactly {supported}")]
@@ -866,8 +958,6 @@ pub enum CaptureError {
     IncoherentLedger { attempts: usize },
     #[error("StateArchival config was absent from a coherent ledger")]
     MissingStateArchival,
-    #[error("root contract instance is absent from the captured ledger")]
-    MissingRootContract,
     #[error("captured contract instance references absent WASM code")]
     MissingReferencedCode,
     #[error("scenario panicked after reaching a ledger-key fixed point")]
@@ -1316,7 +1406,7 @@ fn validate_entry_metadata(
     }
 }
 
-fn ensure_root_present(
+fn ensure_legacy_root_present(
     root: &ScAddress,
     coverage: &BTreeMap<KeyId, LookupState>,
 ) -> Result<(), CaptureError> {
@@ -1328,9 +1418,9 @@ fn ensure_root_present(
             {
                 Ok(())
             }
-            _ => Err(CaptureError::MissingRootContract),
+            _ => Err(CaptureError::CaptureBundleIntegrity),
         },
-        _ => Err(CaptureError::MissingRootContract),
+        _ => Err(CaptureError::CaptureBundleIntegrity),
     }
 }
 
@@ -1427,6 +1517,27 @@ fn inventory_digest(coverage: &BTreeMap<KeyId, LookupState>) -> Result<[u8; 32],
 }
 
 fn canonical_bundle_digest(
+    known_absent: &[String],
+    report: &BundleReport,
+    provenance: &BundleProvenance,
+    ledger_digest: &[u8; 32],
+    inventory_digest: &[u8; 32],
+) -> Result<[u8; 32], CaptureError> {
+    let mut digest = Sha256::new();
+    digest.update(BUNDLE_DIGEST_DOMAIN_V2);
+    digest.update(CAPTURE_BUNDLE_SCHEMA_VERSION.to_be_bytes());
+    update_bundle_digest(
+        &mut digest,
+        known_absent,
+        report,
+        provenance,
+        ledger_digest,
+        inventory_digest,
+    )?;
+    Ok(digest.finalize().into())
+}
+
+fn legacy_canonical_bundle_digest(
     root_contract: &str,
     known_absent: &[String],
     report: &BundleReport,
@@ -1435,28 +1546,47 @@ fn canonical_bundle_digest(
     inventory_digest: &[u8; 32],
 ) -> Result<[u8; 32], CaptureError> {
     let mut digest = Sha256::new();
-    digest.update(BUNDLE_DIGEST_DOMAIN_V1);
-    digest.update(CAPTURE_BUNDLE_SCHEMA_VERSION.to_be_bytes());
+    digest.update(LEGACY_BUNDLE_DIGEST_DOMAIN_V1);
+    digest.update(1_u32.to_be_bytes());
     digest_field(&mut digest, root_contract.as_bytes());
+    update_bundle_digest(
+        &mut digest,
+        known_absent,
+        report,
+        provenance,
+        ledger_digest,
+        inventory_digest,
+    )?;
+    Ok(digest.finalize().into())
+}
+
+fn update_bundle_digest(
+    digest: &mut Sha256,
+    known_absent: &[String],
+    report: &BundleReport,
+    provenance: &BundleProvenance,
+    ledger_digest: &[u8; 32],
+    inventory_digest: &[u8; 32],
+) -> Result<(), CaptureError> {
     digest.update((known_absent.len() as u64).to_be_bytes());
     for encoded in known_absent {
         let key = BASE64
             .decode(encoded)
             .map_err(|_| CaptureError::MalformedCaptureBundle)?;
-        digest_field(&mut digest, &key);
+        digest_field(digest, &key);
     }
     digest.update(report.discovery_rounds.to_be_bytes());
     digest.update(report.present_entries.to_be_bytes());
     digest.update(report.absent_entries.to_be_bytes());
     digest.update(report.final_replay_rpc_reads.to_be_bytes());
-    digest_field(&mut digest, provenance.rpc_origin.as_bytes());
-    digest_field(&mut digest, provenance.network_passphrase.as_bytes());
+    digest_field(digest, provenance.rpc_origin.as_bytes());
+    digest_field(digest, provenance.network_passphrase.as_bytes());
     digest.update(provenance.ledger_sequence.to_be_bytes());
-    digest_field(&mut digest, provenance.ledger_hash.as_bytes());
+    digest_field(digest, provenance.ledger_hash.as_bytes());
     digest.update(provenance.protocol_version.to_be_bytes());
     digest.update(ledger_digest);
     digest.update(inventory_digest);
-    Ok(digest.finalize().into())
+    Ok(())
 }
 
 fn digest_field(digest: &mut Sha256, value: &[u8]) {
@@ -1564,23 +1694,19 @@ fn cleanup_temporary_file(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-fn parse_contract_address(value: &str) -> Result<ScAddress, CaptureError> {
+fn parse_legacy_contract_address(value: &str) -> Result<ScAddress, CaptureError> {
     let mut env = Env::default();
     env.set_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
     let address = catch_unwind(AssertUnwindSafe(|| Address::from_str(&env, value)))
-        .map_err(|_| CaptureError::InvalidRootContract)?;
+        .map_err(|_| CaptureError::MalformedCaptureBundle)?;
     let address: ScAddress = (&address).into();
     if matches!(address, ScAddress::Contract(_)) {
         Ok(address)
     } else {
-        Err(CaptureError::InvalidRootContract)
+        Err(CaptureError::MalformedCaptureBundle)
     }
-}
-
-fn insert_key(keys: &mut BTreeMap<KeyId, LedgerKey>, key: LedgerKey) -> Result<bool, CaptureError> {
-    Ok(keys.insert(key_id(&key)?, key).is_none())
 }
 
 fn key_id(key: &LedgerKey) -> Result<KeyId, CaptureError> {
@@ -1678,27 +1804,47 @@ mod tests {
     const ONE_USDC: u128 = 10_000_000;
 
     #[test]
-    fn root_instance_and_matching_wasm_are_seeded_without_dependency_inputs() {
+    fn empty_scenario_does_not_seed_any_contract() {
         let fake = FakeTransport::from_aquarius_snapshot();
-        let captured = builder(&fake).capture(|_, _| {}).unwrap();
-        let root = parse_contract_address(POOL_ID).unwrap();
-        let root_id = key_id(&contract_instance_key(root)).unwrap();
+        let captured = builder(&fake).capture(|_| {}).unwrap();
 
-        let root_entry = captured
+        assert!(captured
+            .frozen_fixture()
+            .ledger_snapshot()
+            .ledger_entries
+            .is_empty());
+        assert_eq!(captured.report().present_entries(), 0);
+        assert_eq!(captured.report().absent_entries(), 0);
+        assert_eq!(captured.report().final_replay_rpc_reads(), 0);
+    }
+
+    #[test]
+    fn touched_contract_instance_and_matching_wasm_are_discovered() {
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let captured = builder(&fake)
+            .capture(|env| {
+                let pool_id = Address::from_str(env, POOL_ID);
+                assert_eq!(pool::Client::new(env, &pool_id).get_tokens().len(), 2);
+            })
+            .unwrap();
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract_id = key_id(&contract_instance_key(contract)).unwrap();
+
+        let contract_entry = captured
             .frozen_fixture()
             .ledger_snapshot()
             .ledger_entries
             .iter()
-            .find(|(key, _)| key_id(key).unwrap() == root_id)
+            .find(|(key, _)| key_id(key).unwrap() == contract_id)
             .unwrap();
-        let LedgerEntryData::ContractData(data) = &root_entry.1 .0.data else {
-            panic!("root must be contract data");
+        let LedgerEntryData::ContractData(data) = &contract_entry.1 .0.data else {
+            panic!("contract instance must be contract data");
         };
         let ScVal::ContractInstance(instance) = &data.val else {
-            panic!("root must be a contract instance");
+            panic!("contract instance must contain a contract instance value");
         };
         let ContractExecutable::Wasm(hash) = &instance.executable else {
-            panic!("Aquarius root must be WASM");
+            panic!("Aquarius pool must be WASM");
         };
         let code_id = key_id(&LedgerKey::ContractCode(LedgerKeyContractCode {
             hash: hash.clone(),
@@ -1711,32 +1857,6 @@ mod tests {
             .iter()
             .any(|(key, _)| key_id(key).unwrap() == code_id));
         assert_eq!(captured.report().final_replay_rpc_reads(), 0);
-    }
-
-    #[test]
-    fn root_validation_requires_a_contract_instance_value() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let captured = builder(&fake).capture(|_, _| {}).unwrap();
-        let root = parse_contract_address(POOL_ID).unwrap();
-        let root_id = key_id(&contract_instance_key(root.clone())).unwrap();
-        let LookupState::Present(entry, live_until) = &captured.coverage[&root_id] else {
-            panic!("root coverage must be present");
-        };
-        let mut malformed = (**entry).clone();
-        let LedgerEntryData::ContractData(data) = &mut malformed.data else {
-            panic!("root entry must be contract data");
-        };
-        data.val = ScVal::U32(7);
-        let mut coverage = captured.coverage.clone();
-        coverage.insert(
-            root_id,
-            LookupState::Present(Rc::new(malformed), *live_until),
-        );
-
-        assert!(matches!(
-            ensure_root_present(&root, &coverage),
-            Err(CaptureError::MissingRootContract)
-        ));
     }
 
     #[test]
@@ -1756,16 +1876,15 @@ mod tests {
 
         let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner");
-        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .run(mixed_auto_scenario)
             .unwrap();
         assert_eq!(first.cache_status(), CacheStatus::Created);
-        assert_eq!(first.fixture().root_contract(), POOL_ID);
         assert_eq!(first.fixture().report().final_replay_rpc_reads(), 0);
         let reads_after_capture = fake.ledger_entry_reads();
 
-        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        let second = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .offline()
             .run(mixed_auto_scenario)
@@ -1783,13 +1902,13 @@ mod tests {
 
         let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner-refresh");
-        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .run(|fork| mixed_auto_scenario_for_user(fork, "first-user"))
             .unwrap();
         let reads_before_refresh = fake.ledger_entry_reads();
 
-        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        let refreshed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .run(|fork| mixed_auto_scenario_for_user(fork, "second-user"))
             .unwrap();
@@ -1797,7 +1916,7 @@ mod tests {
         assert!(fake.ledger_entry_reads() > reads_before_refresh);
 
         let reads_after_refresh = fake.ledger_entry_reads();
-        let replayed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        let replayed = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .offline()
             .run(|fork| mixed_auto_scenario_for_user(fork, "second-user"))
@@ -1814,7 +1933,7 @@ mod tests {
 
         let fake = FakeTransport::from_aquarius_snapshot();
         let path = test_bundle_path("auto-runner-missing");
-        let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE, POOL_ID)
+        let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
             .offline()
             .run(|_| {});
@@ -1834,7 +1953,6 @@ mod tests {
         captured.write_file(&path).unwrap();
 
         let loaded = CapturedFixture::from_file(&path, MAINNET_PASSPHRASE).unwrap();
-        assert_eq!(loaded.root_contract(), POOL_ID);
         assert_eq!(loaded.report(), captured.report());
         assert_eq!(loaded.provenance(), captured.provenance());
         assert_eq!(
@@ -1847,6 +1965,26 @@ mod tests {
         assert!(matches!(
             CapturedFixture::from_file(&path, "not the captured network"),
             Err(CaptureError::NetworkMismatch)
+        ));
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["schema_version"], 2);
+        assert!(document.get("root_contract").is_none());
+        document["root_contract"] = serde_json::Value::String(POOL_ID.to_string());
+        fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        assert!(matches!(
+            CapturedFixture::from_file(&path, MAINNET_PASSPHRASE),
+            Err(CaptureError::MalformedCaptureBundle)
+        ));
+        document.as_object_mut().unwrap().remove("root_contract");
+        document["schema_version"] = serde_json::Value::from(3);
+        fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        assert!(matches!(
+            CapturedFixture::from_file(&path, MAINNET_PASSPHRASE),
+            Err(CaptureError::UnsupportedCaptureBundleSchema {
+                found: 3,
+                supported: 2
+            })
         ));
 
         fs::remove_file(path).unwrap();
@@ -1874,21 +2012,24 @@ mod tests {
     #[test]
     fn capture_and_bundle_loading_reject_invalid_ledger_metadata() {
         let mut fake = FakeTransport::from_aquarius_snapshot();
-        let root = parse_contract_address(POOL_ID).unwrap();
-        let root_id = key_id(&contract_instance_key(root)).unwrap();
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract_id = key_id(&contract_instance_key(contract)).unwrap();
         Rc::get_mut(&mut fake)
             .unwrap()
             .entries
-            .get_mut(&root_id)
+            .get_mut(&contract_id)
             .unwrap()
             .live_until = None;
         assert!(matches!(
-            builder(&fake).capture(|_, _| {}),
+            builder(&fake).capture(|env| {
+                let pool_id = Address::from_str(env, POOL_ID);
+                let _ = pool::Client::new(env, &pool_id).get_tokens();
+            }),
             Err(CaptureError::MalformedRpc { .. })
         ));
 
         let captured = builder(&FakeTransport::from_aquarius_snapshot())
-            .capture(|_, _| {})
+            .capture(aquarius_scenario)
             .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
         let (_, (_, live_until)) = bundle
@@ -1945,11 +2086,11 @@ mod tests {
     #[test]
     fn write_only_and_confirmed_missing_keys_are_sealed_but_other_unknowns_fail_replay() {
         let fake = FakeTransport::from_aquarius_snapshot();
-        let root = parse_contract_address(POOL_ID).unwrap();
-        let missing = data_key(root.clone(), 777);
-        let write_only = data_key(root.clone(), 778);
-        let written_entry = contract_data_entry(root, 778, 42);
-        let scenario = |env: &Env, _: &Address| {
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let missing = data_key(contract.clone(), 777);
+        let write_only = data_key(contract.clone(), 778);
+        let written_entry = contract_data_entry(contract, 778, 42);
+        let scenario = |env: &Env| {
             assert!(env
                 .host()
                 .get_ledger_entry(&Rc::new(missing.clone()))
@@ -1969,9 +2110,9 @@ mod tests {
         assert!(absent.contains(&key_id(&missing).unwrap()));
         assert!(absent.contains(&key_id(&write_only).unwrap()));
 
-        let unknown = data_key(parse_contract_address(POOL_ID).unwrap(), 779);
+        let unknown = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 779);
         let error = captured
-            .replay(|env, _| {
+            .replay(|env| {
                 let _ = env.host().get_ledger_entry(&Rc::new(unknown));
             })
             .unwrap_err();
@@ -1985,13 +2126,13 @@ mod tests {
     fn coherent_materialization_batches_at_200_and_retries_the_whole_attempt() {
         let fake = FakeTransport::from_aquarius_snapshot();
         fake.mix_second_large_batch_once.set(true);
-        let root = parse_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
         let keys: Vec<LedgerKey> = (1_000..1_401)
-            .map(|index| data_key(root.clone(), index))
+            .map(|index| data_key(contract.clone(), index))
             .collect();
 
         let captured = builder(&fake)
-            .capture(|env, _| {
+            .capture(|env| {
                 for key in &keys {
                     assert!(env
                         .host()
@@ -2025,18 +2166,18 @@ mod tests {
     fn terminal_panic_returns_opaque_error_and_transport_failure_is_not_absence() {
         let fake = FakeTransport::from_aquarius_snapshot();
         let panic_error = builder(&fake)
-            .capture(|_, _| panic!("scenario-payload-must-not-leak"))
+            .capture(|_| panic!("scenario-payload-must-not-leak"))
             .unwrap_err();
         let rendered = format!("{panic_error:?} {panic_error}");
         assert!(matches!(panic_error, CaptureError::ScenarioPanicked));
         assert!(!rendered.contains("scenario-payload-must-not-leak"));
 
-        let failed_key = data_key(parse_contract_address(POOL_ID).unwrap(), 888);
+        let failed_key = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 888);
         fake.fail_keys
             .borrow_mut()
             .insert(key_id(&failed_key).unwrap());
         let transport_error = builder(&fake)
-            .capture(|env, _| {
+            .capture(|env| {
                 let _ = env.host().get_ledger_entry(&Rc::new(failed_key.clone()));
             })
             .unwrap_err();
@@ -2103,8 +2244,8 @@ mod tests {
     fn ledger_metadata_validation_covers_live_archived_and_classic_entries() {
         let sequence = 100;
         let max_entry_ttl = 20;
-        let root = parse_contract_address(POOL_ID).unwrap();
-        let mut persistent = contract_data_entry(root, 1, 1);
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let mut persistent = contract_data_entry(contract, 1, 1);
         persistent.last_modified_ledger_seq = sequence;
 
         assert!(validate_entry_metadata(
@@ -2192,8 +2333,9 @@ mod tests {
         ));
     }
 
-    fn aquarius_scenario(env: &Env, root: &Address) {
-        let pool = pool::Client::new(env, root);
+    fn aquarius_scenario(env: &Env) {
+        let pool_id = Address::from_str(env, POOL_ID);
+        let pool = pool::Client::new(env, &pool_id);
         let tokens = pool.get_tokens();
         let usdc = tokens.get(1).unwrap();
         assert_eq!(usdc, Address::from_str(env, USDC_ID));
@@ -2209,12 +2351,17 @@ mod tests {
         let transfer = MockAuthInvoke {
             contract: &usdc,
             fn_name: "transfer",
-            args: (user.clone(), root.clone(), i128::try_from(amount).unwrap()).into_val(env),
+            args: (
+                user.clone(),
+                pool_id.clone(),
+                i128::try_from(amount).unwrap(),
+            )
+                .into_val(env),
             sub_invokes: &[],
         };
         let children = [transfer];
         let swap = MockAuthInvoke {
-            contract: root,
+            contract: &pool_id,
             fn_name: "swap",
             args: (user.clone(), 1_u32, 0_u32, amount, 0_u128).into_val(env),
             sub_invokes: &children,
@@ -2233,10 +2380,10 @@ mod tests {
 
     fn mixed_auto_scenario_for_user(fork: &crate::auto::ScenarioFork<'_>, user_label: &str) {
         let env = fork.env();
+        let user = fork.local_account(user_label);
         let pool_id = fork.contract(POOL_ID);
         let usdc = fork.contract(USDC_ID);
         let pool = pool::Client::new(env, &pool_id);
-        let user = fork.local_account(user_label);
         assert!(matches!(ScAddress::from(&user), ScAddress::Account(_)));
 
         assert_eq!(pool.get_tokens().get(1).unwrap(), usdc);
@@ -2267,7 +2414,7 @@ mod tests {
         ))
     }
 
-    fn refresh_bundle_digests(bundle: &mut CaptureBundleV1) {
+    fn refresh_bundle_digests(bundle: &mut CaptureBundleV2) {
         let fixture = FrozenFixture::from_snapshot(
             bundle.ledger_snapshot.clone(),
             &bundle.provenance.network_passphrase,
@@ -2278,7 +2425,6 @@ mod tests {
         bundle.ledger_digest = hex(fixture.ledger_digest());
         bundle.inventory_digest = hex(inventory);
         bundle.canonical_digest = hex(canonical_bundle_digest(
-            &bundle.root_contract,
             &bundle.known_absent,
             &bundle.report,
             &bundle.provenance,
@@ -2289,7 +2435,7 @@ mod tests {
     }
 
     fn builder(fake: &Rc<FakeTransport>) -> CaptureBuilder {
-        CaptureBuilder::with_transport(fake.clone(), MAINNET_PASSPHRASE, POOL_ID)
+        CaptureBuilder::with_transport(fake.clone(), MAINNET_PASSPHRASE)
     }
 
     fn data_key(contract: ScAddress, value: u32) -> LedgerKey {

@@ -41,7 +41,7 @@ const ABI_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapp
 
 #[test]
 fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
-    let run = mainnet(POOL)
+    let run = mainnet()
         .cache(CAPTURE)
         .offline()
         .run(full_scenario)
@@ -50,7 +50,7 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
     assert_eq!(run.cache_status(), CacheStatus::Hit);
     assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_ne!(
-        captured_root_wasm_hash(run.fixture()),
+        captured_contract_wasm_hash(run.fixture(), POOL),
         <[u8; 32]>::from(Sha256::digest(ABI_WASM)),
         "the ABI source WASM must not replace the captured network executable",
     );
@@ -59,7 +59,7 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
 
 #[test]
 fn incompatible_local_abi_fails_instead_of_replacing_network_wasm() {
-    mainnet(POOL)
+    mainnet()
         .cache(CAPTURE)
         .offline()
         .run(|fork| {
@@ -77,10 +77,10 @@ fn full_scenario(fork: &ScenarioFork<'_>) {
 
 fn price_moves(fork: &ScenarioFork<'_>) {
     let env = fork.env();
+    let user = fork.local_account("swap-user");
     let pool_id = fork.contract(POOL);
     let usdc = fork.contract(USDC);
     let pool = pool_abi::Client::new(env, &pool_id);
-    let user = fork.local_account("swap-user");
     assert!(matches!(ScAddress::from(&user), ScAddress::Account(_)));
 
     let before = pool.estimate_swap(&1, &0, &ONE_USDC);
@@ -195,12 +195,12 @@ fn assert_captured_real_account_state(fixture: &kanatoko::CapturedFixture) {
     assert_ne!(flags & (TrustLineFlags::AuthorizedFlag as u32), 0);
 }
 
-fn captured_root_wasm_hash(fixture: &kanatoko::CapturedFixture) -> [u8; 32] {
+fn captured_contract_wasm_hash(fixture: &kanatoko::CapturedFixture, contract: &str) -> [u8; 32] {
     let mut env = Env::default();
     env.set_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
-    let root: ScAddress = (&Address::from_str(&env, fixture.root_contract())).into();
+    let contract: ScAddress = (&Address::from_str(&env, contract)).into();
     fixture
         .frozen_fixture()
         .ledger_snapshot()
@@ -210,7 +210,7 @@ fn captured_root_wasm_hash(fixture: &kanatoko::CapturedFixture) -> [u8; 32] {
             let LedgerEntryData::ContractData(data) = &entry.data else {
                 return None;
             };
-            if data.contract != root {
+            if data.contract != contract {
                 return None;
             }
             let ScVal::ContractInstance(instance) = &data.val else {
@@ -221,5 +221,5 @@ fn captured_root_wasm_hash(fixture: &kanatoko::CapturedFixture) -> [u8; 32] {
             };
             Some(hash.0)
         })
-        .expect("captured root must reference network WASM")
+        .expect("captured contract must reference network WASM")
 }

@@ -30,7 +30,6 @@ fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert()
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
     let mut fork = captured.fork();
     let pool = address(POOL);
-    assert_eq!(fork.root_contract(), &pool);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
     let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
 

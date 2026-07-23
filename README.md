@@ -3,11 +3,10 @@
 Run Soroban Rust tests against a coherent snapshot of real Stellar state —
 locally, deterministically, and without deploying or spending funds.
 
-Point Kanatoko at one deployed contract and write the scenario once. On the
-first run it discovers the contracts, network WASM, accounts, trustlines, and
-contract storage that the scenario actually touches. It then freezes one
-ledger and runs the same scenario against that sealed state with zero RPC
-fallback.
+Select mainnet and write the scenario once. On the first run Kanatoko discovers
+the contracts, network WASM, accounts, trustlines, and contract storage that
+the scenario actually touches. It then freezes one ledger and runs the same
+scenario against that sealed state with zero RPC fallback.
 
 No capture script. No hand-written fixture. No local replacement for the
 contracts under test.
@@ -37,12 +36,12 @@ const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 
 #[test]
 fn swap_moves_the_real_pool_price() {
-    mainnet(POOL)
+    mainnet()
         .cache(".kanatoko/aquarius-swap.json")
         .run(|fork| {
-            let pool_id = fork.root().clone();
-            let usdc = fork.contract(USDC);
             let user = fork.local_account("swap-user");
+            let pool_id = fork.contract(POOL);
+            let usdc = fork.contract(USDC);
 
             // Generated clients and dynamic calls share one mutable Env.
             let pool = pool_abi::Client::new(fork.env(), &pool_id);
@@ -84,17 +83,27 @@ The scenario can run several times while Kanatoko finds the dependency fixed
 point, so keep it deterministic and free of external side effects. Create
 generated clients and Soroban values inside the closure.
 
-## What `mainnet(POOL)` means
+## Why `mainnet()` has no addresses
 
-`POOL` is the initial contract and cache identity, not a whitelist. Its
-instance and, when applicable, referenced WASM are loaded first. The USDC
-Stellar Asset Contract and every other Host key reached by the executed
-scenario are then captured from the same ledger. WASM-backed contracts execute
-their captured network WASM; Stellar Asset Contracts execute natively.
+`mainnet()` selects the network. Addresses belong to the scenario:
 
-Discovery is execution-driven: Kanatoko captures the keys used by this
-scenario path, including confirmed-absent keys, rather than every key a
-contract could possibly access.
+```rust,ignore
+let pool = fork.contract(POOL);
+let usdc = fork.contract(USDC);
+let owner = fork.account(OWNER);
+```
+
+`POOL` and `USDC` are equal inputs. Neither is a hidden root, cache identity, or
+prefetched dependency. Parsing an address does not fetch it by itself; executed
+Host access discovers its instance, WASM, storage, account, or trustline from
+the same ledger.
+
+There is deliberately no `mainnet(POOL, USDC)` list to keep synchronized.
+Kanatoko follows the actual execution path, including contracts reached only
+through cross-contract calls and keys proven absent on the network.
+
+WASM-backed contracts execute their captured network WASM; Stellar Asset
+Contracts execute natively.
 
 ## Typed and dynamic calls
 
@@ -124,6 +133,9 @@ scenario.
 | `fork.account("G...")` | Parses an account address; later Host access discovers its network account and trustlines. |
 | `fork.muxed_account("M...")` | Parses muxed metadata; ledger state belongs to the underlying G-address. |
 | `fork.local_account("label")` | Injects a funded, deterministic local G-account with no private key or initial trustlines. |
+
+`local_account` depends only on the network and label, so it can be created
+before any contract address and remains stable across discovery and replay.
 
 For a real G-address, XLM SAC `balance` reads its complete `AccountEntry`, and
 a classic asset SAC reads its `TrustLineEntry`. Kanatoko captures those exact

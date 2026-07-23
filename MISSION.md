@@ -37,7 +37,8 @@ of an Anvil-like workflow while remaining native to Stellar's execution model.
 
 The first product is a Rust-first library and capture workflow for:
 
-- starting from a network contract address and one ordinary test scenario;
+- selecting a network and naming every address explicitly in one ordinary test
+  scenario, without a privileged root contract;
 - discovering all Host-touched contracts, network WASM, and ledger entries;
 - loading reproducible Stellar ledger fixtures;
 - registering candidate Soroban WASM locally;
