@@ -109,9 +109,33 @@ Addresses belong in the scenario rather than `mainnet(...)`. Host execution
 discovers actual dependencies, including contracts reached only through
 cross-contract calls.
 
-The closure may run several times during dependency discovery. Keep it
-deterministic and free of external side effects, and create Soroban values and
-generated clients inside it.
+On a cache hit, the closure runs once. During a cold capture it may run several
+times while Kanatoko discovers the dependency graph and verifies strict
+replay. Every pass starts from a fresh environment, so contract mutations do
+not accumulate between passes. Only effects outside the Soroban environment,
+such as random generation, file writes, HTTP requests, counters, or output,
+would be repeated.
+
+Generate one-time inputs before `.run(...)` and capture ordinary Rust values in
+the closure. Create environment-bound values, addresses, and generated clients
+inside it:
+
+```rust,ignore
+let amount = generate_amount_once();
+
+mainnet()
+    .cache(".kanatoko/scenario.json")
+    .run(|fork| {
+        let pool = fork.contract(POOL);
+        fork.invoke::<()>(&pool, "deposit", (amount,));
+    })
+    .unwrap();
+```
+
+A test may call `.run(...)` more than once. Each call creates an independent
+fork, and ordinary Rust code between the calls runs once. Use a separate cache
+path for a materially different scenario. If calls must observe each other's
+contract mutations, keep them inside the same `.run(...)` closure.
 
 ## Evidence boundary
 

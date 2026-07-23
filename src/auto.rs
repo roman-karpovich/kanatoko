@@ -99,8 +99,13 @@ impl AutoRunner {
     ///
     /// Generated Soroban clients may use [`ScenarioFork::env`] while other
     /// contracts are called through [`ScenarioFork::invoke`] in the same
-    /// closure and environment. A closure can execute several times and must
-    /// therefore be deterministic and free of external side effects.
+    /// closure and environment. A cache hit executes the closure once. A cold
+    /// capture can execute it several times, each in a fresh environment, so
+    /// contract mutations never accumulate between discovery passes. External
+    /// effects such as randomness, file or network I/O, counters, and output
+    /// would be repeated; produce one-time ordinary Rust inputs before calling
+    /// this method. Environment-bound values and clients must still be created
+    /// inside the closure.
     ///
     /// Imported WASM used by `contractimport!` supplies only the generated
     /// client ABI. Calls to captured addresses always execute the contract
