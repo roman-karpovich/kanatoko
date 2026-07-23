@@ -24,11 +24,23 @@ mod stateful {
     );
 }
 
+mod legacy_v25 {
+    soroban_sdk::contractimport!(
+        file = "fixtures/wasm/kanatoko_legacy_v25_fixture.wasm",
+        sha256 = "d601c7569be29b0a52af409ed65425b8c3595db8a83c444fe65dd8294423a879",
+    );
+}
+
 const NETWORK_PASSPHRASE: &str = "Standalone Network ; February 2017";
 const STATEFUL_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
 const STATEFUL_WASM_SHA256: [u8; 32] = [
     0x6f, 0x6f, 0x46, 0x97, 0x98, 0xb6, 0x86, 0xcc, 0x48, 0x5a, 0xd2, 0x07, 0xf3, 0x2e, 0x3f, 0x77,
     0x00, 0x9c, 0x4b, 0x69, 0xab, 0x24, 0x37, 0xd9, 0xbd, 0xca, 0x97, 0xf1, 0x49, 0xb5, 0x4b, 0xa8,
+];
+const LEGACY_V25_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_legacy_v25_fixture.wasm");
+const LEGACY_V25_WASM_SHA256: [u8; 32] = [
+    0xd6, 0x01, 0xc7, 0x56, 0x9b, 0xe2, 0x9b, 0x0a, 0x52, 0xaf, 0x40, 0x9e, 0xd6, 0x54, 0x25, 0xb8,
+    0xc3, 0x59, 0x5d, 0xb8, 0xa8, 0x3c, 0x44, 0x4f, 0xe6, 0x5d, 0xd8, 0x29, 0x44, 0x23, 0xa8, 0x79,
 ];
 
 fn network_id(passphrase: &str) -> [u8; 32] {
@@ -250,6 +262,21 @@ fn production_wasm_registration_and_invocation() {
     let client = stateful::Client::new(fork.env(), &contract);
 
     assert_eq!(client.get(), 41);
+}
+
+#[test]
+fn protocol_25_candidate_wasm_runs_on_protocol_27_host() {
+    let actual_hash: [u8; 32] = Sha256::digest(LEGACY_V25_WASM).into();
+    assert_eq!(actual_hash, LEGACY_V25_WASM_SHA256);
+
+    let fork = Fork::from_fixture(&fixture());
+    let contract = fork
+        .register_wasm(LEGACY_V25_WASM, LEGACY_V25_WASM_SHA256, ())
+        .unwrap();
+    let client = legacy_v25::Client::new(fork.env(), &contract);
+
+    assert_eq!(client.sdk_major(), 25);
+    assert_eq!(client.add(&20, &22), 42);
 }
 
 #[test]

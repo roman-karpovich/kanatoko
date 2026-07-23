@@ -44,3 +44,9 @@ pub use fixture::{
     canonical_ledger_digest, FixtureError, FrozenFixture, SUPPORTED_PROTOCOL_VERSION,
 };
 pub use runtime::{Checkpoint, Fork, RuntimeError};
+
+// Re-export the selected protocol line so downstream harnesses can avoid
+// introducing a second, type-incompatible Env/Host dependency.
+pub use soroban_env_host;
+pub use soroban_ledger_snapshot;
+pub use soroban_sdk;

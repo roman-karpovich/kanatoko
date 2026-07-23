@@ -3,7 +3,14 @@ name = "kanatoko"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
-publish = false
+description = "Test Soroban contracts against captured Stellar network state"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/roman-karpovich/kanatoko"
+homepage = "https://github.com/roman-karpovich/kanatoko"
+documentation = "https://docs.rs/kanatoko"
+readme = "README.md"
+keywords = ["stellar", "soroban", "testing", "fork", "smart-contracts"]
+categories = ["development-tools::testing"]
 
 [features]
 default = []
@@ -14,9 +21,11 @@ base64 = { version = "=0.22.1", optional = true }
 serde = { version = "=1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "=1.0.151", optional = true }
 sha2 = "=0.10.9"
-soroban-env-host = "=27.0.0"
-soroban-ledger-snapshot = "=27.0.0"
-soroban-sdk = { version = "=27.0.0", features = ["testutils"] }
+# Keep these major ranges aligned. soroban-sdk pins its compatible Host patch,
+# so Cargo resolves one shared protocol-27 runtime with downstream test crates.
+soroban-env-host = "27"
+soroban-ledger-snapshot = "27"
+soroban-sdk = { version = "27", features = ["testutils"] }
 thiserror = "2"
 ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
 
@@ -36,3 +45,6 @@ unsafe_code = "forbid"
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+[package.metadata.docs.rs]
+all-features = true

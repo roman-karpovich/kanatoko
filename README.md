@@ -13,8 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { git = "https://github.com/roman-karpovich/kanatoko", features = ["capture"] }
-soroban-sdk = { version = "=27.0.0", features = ["testutils"] }
+kanatoko = { version = "0.1", features = ["capture"] }
 ```
 
 ## Your contract against mainnet
@@ -26,6 +25,8 @@ Suppose `my_vault.wasm` accepts a token address in its constructor and
 use kanatoko::mainnet;
 
 mod app {
+    use kanatoko::soroban_sdk;
+
     soroban_sdk::contractimport!(
         // Adjust this path to your build artifact.
         file = "../target/wasm32v1-none/release/my_vault.wasm"
@@ -207,8 +208,20 @@ Preview resources are the raw local Host estimate, not fee parity. Kanatoko
 keeps typed `ScError` and raw XDR evidence and does not derive stable behavior
 by parsing diagnostic or panic text.
 
-The current release is pinned to protocol 27. Unsupported ledger-entry families
-and uncaptured keys fail closed.
+Kanatoko 0.1 targets protocol 27. Its SDK, Host, and ledger-snapshot dependency
+ranges are aligned so Cargo resolves one compatible protocol-27 runtime. Use
+the re-exported `kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
+`kanatoko::soroban_ledger_snapshot` in the test harness instead of declaring a
+second runtime version.
+
+Your production contract does not need to upgrade with the harness. A contract
+crate may remain on Soroban SDK 25 or 26, produce its normal network-valid
+WASM, and let a separate Kanatoko integration-test crate import that WASM.
+Kanatoko's protocol-27 SDK then generates only the test-side ABI client; the
+protocol-27 Host executes the original older WASM. Do not pass environment-bound
+`Env`, `Address`, or `Val` values from the older contract SDK into the harness.
+
+Unsupported ledger-entry families and uncaptured keys fail closed.
 
 ```sh
 cargo test --locked --all-features

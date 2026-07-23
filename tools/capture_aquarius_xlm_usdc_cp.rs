@@ -21,7 +21,7 @@ use soroban_sdk::{
 };
 
 mod pool {
-    #![allow(clippy::too_many_arguments)]
+    #![allow(clippy::ref_option, clippy::too_many_arguments)]
 
     soroban_sdk::contractimport!(
         file = "fixtures/mainnet/aquarius-xlm-usdc-cp/pool.wasm",

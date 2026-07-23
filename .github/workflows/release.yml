@@ -1,0 +1,249 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUST_TOOLCHAIN: "1.91.0"
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}" \
+            --profile minimal \
+            --component clippy \
+            --component rustfmt
+          rustup default "${RUST_TOOLCHAIN}"
+
+      - name: Verify tag, crate version, and master ancestry
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must have the form vMAJOR.MINOR.PATCH: ${tag}" >&2
+            exit 1
+          fi
+
+          version="$(
+            cargo metadata --locked --no-deps --format-version 1 |
+              jq -er '.packages[] | select(.name == "kanatoko") | .version'
+          )"
+          if [[ "${tag}" != "v${version}" ]]; then
+            echo "Tag ${tag} does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin master
+          tag_commit="$(git rev-list -n 1 "${tag}")"
+          if ! git merge-base --is-ancestor "${tag_commit}" origin/master; then
+            echo "Tag ${tag} is not attached to a commit on origin/master" >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run default-feature tests
+        run: cargo test --locked
+
+      - name: Run all-feature tests
+        run: cargo test --locked --all-features
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --all-features --no-deps
+
+      - name: Verify the crates.io package
+        run: cargo publish --locked --dry-run
+
+  publish:
+    name: Publish to crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      crate_checksum: ${{ steps.registry_readback.outputs.crate_checksum }}
+    steps:
+      - name: Select crates.io authentication mode
+        id: auth_mode
+        shell: bash
+        env:
+          BOOTSTRAP_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -n "${BOOTSTRAP_TOKEN}" ]]; then
+            echo "bootstrap=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "bootstrap=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${RUST_TOOLCHAIN}"
+
+      - name: Build the crate archive
+        run: cargo package --locked
+
+      - name: Check for an existing crates.io version
+        id: registry
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          crate="target/package/kanatoko-${VERSION}.crate"
+          local_checksum="$(sha256sum "${crate}" | cut -d ' ' -f 1)"
+          response="${RUNNER_TEMP}/crates-io-version.json"
+          status="$(
+            curl --silent --show-error --location \
+              --header "User-Agent: kanatoko-release-workflow (github.com/roman-karpovich/kanatoko)" \
+              --output "${response}" \
+              --write-out "%{http_code}" \
+              "https://crates.io/api/v1/crates/kanatoko/${VERSION}"
+          )"
+
+          case "${status}" in
+            200)
+              remote_checksum="$(jq -er '.version.checksum' "${response}")"
+              if [[ "${remote_checksum}" != "${local_checksum}" ]]; then
+                echo "kanatoko ${VERSION} exists with a different checksum" >&2
+                exit 1
+              fi
+              echo "kanatoko ${VERSION} already exists with the same checksum"
+              echo "exists=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            404)
+              echo "exists=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "crates.io returned HTTP ${status}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "local_checksum=${local_checksum}" >> "${GITHUB_OUTPUT}"
+
+      - name: Authenticate with crates.io trusted publishing
+        id: crates_io_auth
+        if: >-
+          steps.registry.outputs.exists == 'false' &&
+          steps.auth_mode.outputs.bootstrap == 'false'
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish with the bootstrap token
+        if: >-
+          steps.registry.outputs.exists == 'false' &&
+          steps.auth_mode.outputs.bootstrap == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --no-verify
+
+      - name: Publish with trusted publishing
+        if: >-
+          steps.registry.outputs.exists == 'false' &&
+          steps.auth_mode.outputs.bootstrap == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates_io_auth.outputs.token }}
+        run: cargo publish --locked --no-verify
+
+      - name: Verify crates.io checksum
+        id: registry_readback
+        shell: bash
+        env:
+          EXPECTED_CHECKSUM: ${{ steps.registry.outputs.local_checksum }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          response="${RUNNER_TEMP}/crates-io-readback.json"
+          for attempt in $(seq 1 24); do
+            status="$(
+              curl --silent --show-error --location \
+                --header "User-Agent: kanatoko-release-workflow (github.com/roman-karpovich/kanatoko)" \
+                --output "${response}" \
+                --write-out "%{http_code}" \
+                "https://crates.io/api/v1/crates/kanatoko/${VERSION}"
+            )"
+            if [[ "${status}" == "200" ]]; then
+              remote_checksum="$(jq -er '.version.checksum' "${response}")"
+              if [[ "${remote_checksum}" != "${EXPECTED_CHECKSUM}" ]]; then
+                echo "Published checksum does not match the local crate archive" >&2
+                exit 1
+              fi
+              echo "crate_checksum=${remote_checksum}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "kanatoko ${VERSION} was not visible on crates.io after 120 seconds" >&2
+          exit 1
+
+  github-release:
+    name: Create GitHub release
+    needs:
+      - verify
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "GitHub release ${GITHUB_REF_NAME} already exists"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
