@@ -2,10 +2,10 @@
 //!
 //! The default build exposes deterministic fixture loading, production WASM
 //! registration, stateful execution, and checkpoint/revert. The optional
-//! `capture` feature adds a one-scenario mainnet runner: generated clients and
-//! dynamic calls drive automatic execution-based capture, then the same body
-//! replays strictly offline. Imported client WASM supplies ABI bindings only;
-//! captured network instances and WASM always execute.
+//! `capture` feature adds one-scenario mainnet and testnet runners: generated
+//! clients and dynamic calls drive automatic execution-based capture, then the
+//! same body replays strictly offline. Imported client WASM supplies ABI
+//! bindings only; captured network instances and WASM always execute.
 //!
 //! Kanatoko does not emulate transactions or claim network-faithful execution.
 //!
@@ -25,8 +25,8 @@ mod strict;
 
 #[cfg(feature = "capture")]
 pub use auto::{
-    mainnet, AutoRun, AutoRunError, AutoRunner, CacheStatus, InvocationReport, PreviewAuth,
-    ScenarioFork,
+    mainnet, testnet, AutoRun, AutoRunError, AutoRunner, CacheStatus, InvocationReport,
+    PreviewAuth, ScenarioFork,
 };
 #[cfg(feature = "capture")]
 pub use capture::{

@@ -33,6 +33,7 @@ use thiserror::Error;
 use crate::{FixtureError, FrozenFixture, StrictFork, SUPPORTED_PROTOCOL_VERSION};
 
 pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
+pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
@@ -103,6 +104,15 @@ impl CaptureBuilder {
     /// Returns an error when the URL has no HTTP(S) origin.
     pub fn mainnet(rpc_url: impl Into<String>) -> Result<Self, CaptureError> {
         Self::rpc(rpc_url, MAINNET_PASSPHRASE)
+    }
+
+    /// Creates a capture builder for Stellar public testnet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL has no HTTP(S) origin.
+    pub fn testnet(rpc_url: impl Into<String>) -> Result<Self, CaptureError> {
+        Self::rpc(rpc_url, TESTNET_PASSPHRASE)
     }
 
     /// Creates a capture builder for an explicit RPC network and passphrase.
@@ -1992,6 +2002,30 @@ mod tests {
     }
 
     #[test]
+    fn auto_runner_cache_hit_ignores_invalid_rpc_override() {
+        use crate::auto::{mainnet, AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let path = test_bundle_path("auto-runner-invalid-rpc-cache-hit");
+        AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|_| {})
+            .unwrap();
+        let reads_after_capture = fake.ledger_entry_reads();
+
+        let replayed = mainnet()
+            .rpc_url("this-is-not-a-url")
+            .cache(&path)
+            .offline()
+            .run(|_| {})
+            .unwrap();
+
+        assert_eq!(replayed.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_after_capture);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn auto_runner_deploys_local_wasm_that_calls_captured_contract_offline() {
         use crate::auto::{AutoRunner, CacheStatus};
 
@@ -2386,6 +2420,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(origin, "https://rpc.example.test:8443");
+    }
+
+    #[test]
+    fn testnet_builder_uses_testnet_identity_and_redacts_rpc_origin() {
+        let builder = CaptureBuilder::testnet(
+            "https://user:secret@testnet-rpc.example.test/private?token=secret",
+        )
+        .unwrap();
+
+        assert_eq!(builder.network_passphrase, TESTNET_PASSPHRASE);
+        assert_eq!(builder.rpc_origin, "https://testnet-rpc.example.test");
+        let rendered = format!("{builder:?}");
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("private"));
+    }
+
+    #[test]
+    fn capture_fails_closed_when_provider_network_differs_from_selected_network() {
+        let fake = FakeTransport::from_aquarius_snapshot();
+        let error = CaptureBuilder::with_transport(fake, TESTNET_PASSPHRASE)
+            .capture(|_| {})
+            .unwrap_err();
+
+        assert!(matches!(error, CaptureError::NetworkMismatch));
     }
 
     #[test]

@@ -52,11 +52,43 @@ fn local_contract_uses_mainnet_state() {
 }
 ```
 
-The cache file is generated automatically under `.kanatoko/` from the test
-thread name and the `mainnet()` callsite. The first run discovers the
+The cache file is generated automatically under `.kanatoko/` from the selected
+network, test thread name, and runner callsite. The first run discovers the
 scenario's network dependencies; later runs replay the frozen ledger entirely
 offline. Use `.cache(path)` to override the path, `.refresh()` to capture a
 newer ledger, or `.offline()` in CI to require an existing cache.
+
+## Network and RPC
+
+`mainnet()` and `testnet()` are symmetric and immediately usable with their
+default RPC endpoints:
+
+```rust,ignore
+use kanatoko::{mainnet, testnet};
+
+testnet()
+    .run(|fork| {
+        // Test against captured public testnet state.
+    })
+    .unwrap();
+
+mainnet()
+    .rpc_url("https://my-mainnet-rpc.example.com")
+    .run(|fork| {
+        // Same mainnet identity, another capture provider.
+    })
+    .unwrap();
+```
+
+An RPC override changes only the provider, never the selected network
+passphrase. Capture fails if that provider reports another network. Automatic
+cache paths include the network identity but not the RPC URL, so mainnet and
+testnet cannot share a default cache while two providers for the same network
+can. A cache hit does not parse or contact the configured RPC; `.refresh()`
+forces capture and therefore validates the URL and network.
+
+For lower-level capture, use `CaptureBuilder::mainnet(url)` or
+`CaptureBuilder::testnet(url)`.
 
 Candidate code and its own storage remain local to each pass. Rebuilding it
 does not invalidate the cache unless it starts touching new external ledger
@@ -117,6 +149,8 @@ mutable state and can be mixed freely.
 | API | Meaning |
 | --- | --- |
 | `mainnet()` | Selects Stellar mainnet and derives a scenario cache path; it does not privilege one root contract. |
+| `testnet()` | Selects Stellar public testnet with otherwise identical behavior. |
+| `.rpc_url(url)` | Overrides the capture provider without changing network identity or automatic cache identity. |
 | `.cache(path)` | Overrides the automatically derived cache path. |
 | `.offline()` | Requires a cache hit and performs no discovery. |
 | `.refresh()` | Captures a fresh coherent ledger. |
@@ -131,9 +165,9 @@ mutable state and can be mixed freely.
 | `fork.fund_local_account(account, stroops)` | Explicitly creates or funds that local account through ledger injection. |
 | `fork.mock_all_auths()` | Explicitly enables SDK record-and-mock authorization. |
 
-Addresses belong in the scenario rather than `mainnet(...)`. Host execution
-discovers actual dependencies, including contracts reached only through
-cross-contract calls.
+Addresses belong in the scenario rather than `mainnet(...)` or `testnet(...)`.
+Host execution discovers actual dependencies, including contracts reached only
+through cross-contract calls.
 
 On a cache hit, the closure runs once. During a cold capture it may run several
 times while Kanatoko discovers the dependency graph and verifies strict

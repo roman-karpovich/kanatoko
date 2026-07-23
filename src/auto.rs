@@ -27,7 +27,9 @@ use soroban_sdk::{
 use thiserror::Error;
 
 use crate::{
-    capture::{contract_instance_key, LocalLedger, TrackingSource, MAINNET_PASSPHRASE},
+    capture::{
+        contract_instance_key, LocalLedger, TrackingSource, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE,
+    },
     strict::{
         detached_diagnostics, detached_snapshot_evidence, invocation_values, invoke_once,
         invoke_outcome, is_nonce_data, state_diff, strip_new_mock_nonces,
@@ -38,12 +40,14 @@ use crate::{
 };
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
+const DEFAULT_TESTNET_RPC_URL: &str = "https://soroban-testnet.stellar.org";
 const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
-const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v1";
+const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v2";
 const DEFAULT_CACHE_NAME_MAX: usize = 80;
 const DEFAULT_CACHE_HASH_HEX: usize = 12;
 
-/// Creates an automatic mainnet runner.
+/// Creates an automatic mainnet runner using
+/// `https://mainnet.sorobanrpc.com` by default.
 ///
 /// The same scenario closure performs dependency discovery and the final
 /// strict replay. Every contract and account enters the scenario explicitly
@@ -51,27 +55,50 @@ const DEFAULT_CACHE_HASH_HEX: usize = 12;
 /// A default cache path under `.kanatoko/` is derived from the current thread
 /// name and this callsite. [`AutoRunner::cache`] remains an explicit override.
 ///
-/// # Panics
-///
-/// Panics only if Kanatoko's built-in mainnet RPC URL is not a valid HTTPS
-/// origin, which would be an internal library invariant violation.
 #[must_use]
 #[track_caller]
 pub fn mainnet() -> AutoRunner {
-    let builder = CaptureBuilder::mainnet(DEFAULT_MAINNET_RPC_URL)
-        .expect("the built-in mainnet RPC URL must have a valid HTTPS origin");
-    let caller = Location::caller();
+    network_runner(
+        DEFAULT_MAINNET_RPC_URL,
+        MAINNET_PASSPHRASE,
+        Location::caller(),
+    )
+}
+
+/// Creates an automatic public testnet runner using
+/// `https://soroban-testnet.stellar.org` by default.
+///
+/// The runner has the same capture, cache, and strict replay semantics as
+/// [`mainnet`], but fixes network identity to Stellar public testnet. Use
+/// [`AutoRunner::rpc_url`] to select another testnet RPC provider.
+#[must_use]
+#[track_caller]
+pub fn testnet() -> AutoRunner {
+    network_runner(
+        DEFAULT_TESTNET_RPC_URL,
+        TESTNET_PASSPHRASE,
+        Location::caller(),
+    )
+}
+
+fn network_runner(
+    rpc_url: &str,
+    network_passphrase: &str,
+    caller: &'static Location<'static>,
+) -> AutoRunner {
     let thread = std::thread::current();
     let cache = default_cache_path(
+        network_passphrase,
         thread.name().unwrap_or("scenario"),
         caller.file(),
         caller.line(),
         caller.column(),
     );
-    AutoRunner::with_builder(builder, MAINNET_PASSPHRASE).cache(cache)
+    AutoRunner::with_rpc_url(rpc_url, network_passphrase).cache(cache)
 }
 
 fn default_cache_path(
+    network_passphrase: &str,
     thread_name: &str,
     caller_file: &str,
     caller_line: u32,
@@ -80,6 +107,8 @@ fn default_cache_path(
     let human = sanitize_cache_name(thread_name);
     let mut digest = Sha256::new();
     digest.update(DEFAULT_CACHE_DOMAIN);
+    digest.update((network_passphrase.len() as u64).to_be_bytes());
+    digest.update(network_passphrase.as_bytes());
     digest.update((thread_name.len() as u64).to_be_bytes());
     digest.update(thread_name.as_bytes());
     digest.update((caller_file.len() as u64).to_be_bytes());
@@ -126,25 +155,60 @@ fn sanitize_cache_name(raw: &str) -> String {
 
 /// Runs one repeatable scenario through automatic discovery and strict replay.
 pub struct AutoRunner {
-    builder: CaptureBuilder,
+    source: CaptureSource,
     network_passphrase: String,
     cache: Option<PathBuf>,
     offline: bool,
     refresh: bool,
 }
 
+enum CaptureSource {
+    Http {
+        rpc_url: String,
+    },
+    #[cfg(test)]
+    Builder(CaptureBuilder),
+}
+
 impl AutoRunner {
-    pub(crate) fn with_builder(
-        builder: CaptureBuilder,
-        network_passphrase: impl Into<String>,
-    ) -> Self {
+    fn with_rpc_url(rpc_url: impl Into<String>, network_passphrase: impl Into<String>) -> Self {
         Self {
-            builder,
+            source: CaptureSource::Http {
+                rpc_url: rpc_url.into(),
+            },
             network_passphrase: network_passphrase.into(),
             cache: None,
             offline: false,
             refresh: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_builder(
+        builder: CaptureBuilder,
+        network_passphrase: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: CaptureSource::Builder(builder),
+            network_passphrase: network_passphrase.into(),
+            cache: None,
+            offline: false,
+            refresh: false,
+        }
+    }
+
+    /// Uses another RPC provider for the runner's selected network.
+    ///
+    /// This changes only the capture provider. The network passphrase, strict
+    /// cache validation, and automatic cache identity remain unchanged. URL
+    /// validation is deferred until capture is required, so a cache hit or
+    /// offline replay never validates or contacts this provider.
+    #[must_use]
+    pub fn rpc_url(mut self, url: impl Into<String>) -> Self {
+        self.source = CaptureSource::Http {
+            rpc_url: url.into(),
+        };
+        self
     }
 
     /// Uses a scenario-specific capture bundle as a cache.
@@ -225,9 +289,21 @@ impl AutoRunner {
             });
         }
 
-        let captured = self.builder.capture_with_local(|env, local, source| {
-            scenario(&ScenarioFork::new(env, local, Some(source)));
-        })?;
+        let captured = match &self.source {
+            CaptureSource::Http { rpc_url } => {
+                let builder =
+                    CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?;
+                builder.capture_with_local(|env, local, source| {
+                    scenario(&ScenarioFork::new(env, local, Some(source)));
+                })?
+            }
+            #[cfg(test)]
+            CaptureSource::Builder(builder) => {
+                builder.capture_with_local(|env, local, source| {
+                    scenario(&ScenarioFork::new(env, local, Some(source)));
+                })?
+            }
+        };
         replay(&captured, &scenario)?;
 
         let cache_status = match self.cache.as_deref() {
@@ -1150,6 +1226,7 @@ mod tests {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')));
 
         let sanitized = default_cache_path(
+            MAINNET_PASSPHRASE,
             "module::test / unicode 🚀 and a very long suffix that must not make filesystem paths surprising 0123456789",
             "tests/example.rs",
             12,
@@ -1161,15 +1238,29 @@ mod tests {
         assert_eq!(hash.len(), DEFAULT_CACHE_HASH_HEX);
         assert!(hash.chars().all(|ch| ch.is_ascii_hexdigit()));
         assert!(!human.contains("--"));
-        assert!(default_cache_path("🚀", "tests/example.rs", 12, 34)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("scenario-"));
+        assert!(
+            default_cache_path(MAINNET_PASSPHRASE, "🚀", "tests/example.rs", 12, 34)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("scenario-")
+        );
 
-        let punctuation_a = default_cache_path("module::test", "tests/example.rs", 12, 34);
-        let punctuation_b = default_cache_path("module--test", "tests/example.rs", 12, 34);
+        let punctuation_a = default_cache_path(
+            MAINNET_PASSPHRASE,
+            "module::test",
+            "tests/example.rs",
+            12,
+            34,
+        );
+        let punctuation_b = default_cache_path(
+            MAINNET_PASSPHRASE,
+            "module--test",
+            "tests/example.rs",
+            12,
+            34,
+        );
         assert_eq!(
             sanitize_cache_name("module::test"),
             sanitize_cache_name("module--test")
@@ -1177,9 +1268,15 @@ mod tests {
         assert_ne!(cache_hash(&punctuation_a), cache_hash(&punctuation_b));
 
         let long_prefix = "a".repeat(DEFAULT_CACHE_NAME_MAX);
-        let unicode_a =
-            default_cache_path(&format!("{long_prefix}🚀first"), "tests/example.rs", 12, 34);
+        let unicode_a = default_cache_path(
+            MAINNET_PASSPHRASE,
+            &format!("{long_prefix}🚀first"),
+            "tests/example.rs",
+            12,
+            34,
+        );
         let unicode_b = default_cache_path(
+            MAINNET_PASSPHRASE,
             &format!("{long_prefix}🎯second"),
             "tests/example.rs",
             12,
@@ -1191,9 +1288,82 @@ mod tests {
         );
         assert_ne!(cache_hash(&unicode_a), cache_hash(&unicode_b));
 
-        let case_a = default_cache_path("CaseName", "tests/example.rs", 12, 34);
-        let case_b = default_cache_path("casename", "tests/example.rs", 12, 34);
+        let case_a = default_cache_path(MAINNET_PASSPHRASE, "CaseName", "tests/example.rs", 12, 34);
+        let case_b = default_cache_path(MAINNET_PASSPHRASE, "casename", "tests/example.rs", 12, 34);
         assert_ne!(cache_hash(&case_a), cache_hash(&case_b));
+    }
+
+    #[test]
+    fn public_network_runners_use_expected_defaults_and_network_cache_identity() {
+        let mainnet_runner = mainnet_from_stable_callsite();
+        let testnet_runner = testnet_from_stable_callsite();
+
+        assert_eq!(mainnet_runner.network_passphrase, MAINNET_PASSPHRASE);
+        assert_eq!(testnet_runner.network_passphrase, TESTNET_PASSPHRASE);
+        assert!(matches!(
+            &mainnet_runner.source,
+            CaptureSource::Http { rpc_url } if rpc_url == DEFAULT_MAINNET_RPC_URL
+        ));
+        assert!(matches!(
+            &testnet_runner.source,
+            CaptureSource::Http { rpc_url } if rpc_url == DEFAULT_TESTNET_RPC_URL
+        ));
+
+        let mainnet_path = default_cache_path(
+            MAINNET_PASSPHRASE,
+            "module::scenario",
+            "tests/example.rs",
+            12,
+            34,
+        );
+        let testnet_path = default_cache_path(
+            TESTNET_PASSPHRASE,
+            "module::scenario",
+            "tests/example.rs",
+            12,
+            34,
+        );
+        assert_ne!(mainnet_path, testnet_path);
+    }
+
+    #[test]
+    fn rpc_override_changes_provider_without_changing_network_or_default_cache() {
+        let default = mainnet_from_stable_callsite();
+        let overridden = mainnet_from_stable_callsite().rpc_url("https://rpc.example.test/private");
+
+        assert_eq!(overridden.network_passphrase, MAINNET_PASSPHRASE);
+        assert_eq!(overridden.cache, default.cache);
+        assert!(matches!(
+            &overridden.source,
+            CaptureSource::Http { rpc_url }
+                if rpc_url == "https://rpc.example.test/private"
+        ));
+
+        let testnet_runner =
+            testnet_from_stable_callsite().rpc_url("https://testnet-rpc.example.test");
+        assert_eq!(testnet_runner.network_passphrase, TESTNET_PASSPHRASE);
+    }
+
+    #[test]
+    fn invalid_rpc_override_is_typed_only_when_capture_is_required_and_redacted() {
+        let secret = "credential-must-not-leak";
+        let result = mainnet()
+            .rpc_url(format!("not-a-url-{secret}"))
+            .cache(
+                std::env::temp_dir()
+                    .join(format!("kanatoko-invalid-rpc-{}.json", std::process::id())),
+            )
+            .refresh()
+            .run(|_| {});
+
+        let Err(error) = result else {
+            panic!("an invalid RPC URL must fail when capture is required");
+        };
+        assert!(matches!(
+            error,
+            AutoRunError::Capture(CaptureError::InvalidRpcUrl)
+        ));
+        assert!(!format!("{error:?} {error}").contains(secret));
     }
 
     #[test]
@@ -1217,6 +1387,10 @@ mod tests {
 
     fn mainnet_from_other_callsite() -> AutoRunner {
         mainnet()
+    }
+
+    fn testnet_from_stable_callsite() -> AutoRunner {
+        testnet()
     }
 
     fn cache_hash(path: &Path) -> &str {

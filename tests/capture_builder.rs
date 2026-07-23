@@ -16,3 +16,18 @@ fn builder_debug_redacts_rpc_credentials_path_and_query() {
     assert!(!debug.contains("private"));
     assert!(!debug.contains("user:"));
 }
+
+#[test]
+fn testnet_builder_debug_redacts_rpc_credentials_path_and_query() {
+    let secret = "testnet-do-not-leak";
+    let builder = CaptureBuilder::testnet(format!(
+        "https://user:{secret}@rpc.example.test/private/{secret}?token={secret}"
+    ))
+    .unwrap();
+
+    let debug = format!("{builder:?}");
+    assert!(debug.contains("https://rpc.example.test"));
+    assert!(!debug.contains(secret));
+    assert!(!debug.contains("private"));
+    assert!(!debug.contains("user:"));
+}
