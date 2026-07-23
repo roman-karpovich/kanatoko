@@ -16,7 +16,7 @@ use soroban_env_host::xdr::{
 };
 use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
-    testutils::{EnvTestConfig, HostError, SnapshotSource, SnapshotSourceInput},
+    testutils::{HostError, SnapshotSource, SnapshotSourceInput},
     Env, Error, InvokeError, Symbol, TryFromVal, Val, Vec as SorobanVec,
 };
 use thiserror::Error;
@@ -24,6 +24,7 @@ use thiserror::Error;
 use crate::{
     canonical_ledger_digest,
     capture::{KeyId, LookupState},
+    runtime::configure_fork_env,
     FixtureError,
 };
 
@@ -668,9 +669,7 @@ fn strict_env(
         ledger_info: Some(snapshot.ledger_info()),
         snapshot: Some(Rc::new(snapshot.clone())),
     });
-    env.set_config(EnvTestConfig {
-        capture_snapshot_at_drop: false,
-    });
+    configure_fork_env(&mut env);
     (env, source)
 }
 

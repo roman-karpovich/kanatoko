@@ -12,6 +12,8 @@ All notable changes to Kanatoko are documented in this file.
   26, and 27.
 - Add `ScenarioFork::replace_wasm` for testing candidate code at an existing
   captured address without changing its storage, TTL, or running a constructor.
+- Prevent SDK authorization-evidence bookkeeping from exhausting the Host
+  shadow budget without weakening contract execution or invocation limits.
 
 ## 0.1.0 - 2026-07-23
 

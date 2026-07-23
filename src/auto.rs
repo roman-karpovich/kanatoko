@@ -20,9 +20,8 @@ use soroban_env_host::{
     InvocationResources,
 };
 use soroban_sdk::{
-    testutils::{Address as _, EnvTestConfig},
-    Address, ConstructorArgs, Env, IntoVal, MuxedAddress, Symbol, TryFromVal, Val,
-    Vec as SorobanVec,
+    testutils::Address as _, Address, ConstructorArgs, Env, IntoVal, MuxedAddress, Symbol,
+    TryFromVal, Val, Vec as SorobanVec,
 };
 use thiserror::Error;
 
@@ -30,6 +29,7 @@ use crate::{
     capture::{
         contract_instance_key, LocalLedger, TrackingSource, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE,
     },
+    runtime::configure_fork_env,
     strict::{
         detached_diagnostics, detached_snapshot_evidence, invocation_values, invoke_once,
         invoke_outcome, is_nonce_data, state_diff, strip_new_mock_nonces,
@@ -904,9 +904,7 @@ impl<'a> ScenarioFork<'a> {
         let before = self.env.to_ledger_snapshot();
         let before_digest = crate::canonical_ledger_digest(&before)?;
         let mut child = Env::from_snapshot(self.env.to_snapshot());
-        child.set_config(EnvTestConfig {
-            capture_snapshot_at_drop: false,
-        });
+        configure_fork_env(&mut child);
         child.mock_all_auths();
         let (contract, function, args) = invocation_values(&child, &request)?;
         let outcome = invoke_outcome(&child, &contract, &function, args);

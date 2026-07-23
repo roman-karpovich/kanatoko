@@ -25,12 +25,15 @@ use soroban_env_host::xdr::{
 };
 use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
-    testutils::{EnvTestConfig, HostError, LedgerInfo, SnapshotSource, SnapshotSourceInput},
+    testutils::{HostError, LedgerInfo, SnapshotSource, SnapshotSourceInput},
     Address, Env,
 };
 use thiserror::Error;
 
-use crate::{FixtureError, FrozenFixture, StrictFork, SUPPORTED_PROTOCOL_VERSION};
+use crate::{
+    runtime::configure_fork_env, FixtureError, FrozenFixture, StrictFork,
+    SUPPORTED_PROTOCOL_VERSION,
+};
 
 pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
@@ -1571,9 +1574,7 @@ fn env_from_materialized(materialized: &Materialized, source: Rc<TrackingSource>
         ledger_info: Some(materialized.ledger_info.clone()),
         snapshot: Some(Rc::new(snapshot)),
     });
-    env.set_config(EnvTestConfig {
-        capture_snapshot_at_drop: false,
-    });
+    configure_fork_env(&mut env);
     env
 }
 
@@ -1785,9 +1786,7 @@ fn cleanup_temporary_file(path: &Path) {
 
 fn parse_legacy_contract_address(value: &str) -> Result<ScAddress, CaptureError> {
     let mut env = Env::default();
-    env.set_config(EnvTestConfig {
-        capture_snapshot_at_drop: false,
-    });
+    configure_fork_env(&mut env);
     let address = catch_unwind(AssertUnwindSafe(|| Address::from_str(&env, value)))
         .map_err(|_| CaptureError::MalformedCaptureBundle)?;
     let address: ScAddress = (&address).into();

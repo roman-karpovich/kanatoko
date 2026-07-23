@@ -112,20 +112,27 @@ impl Fork {
 
 fn env_from_ledger_snapshot(snapshot: soroban_ledger_snapshot::LedgerSnapshot) -> Env {
     let mut env = Env::from_ledger_snapshot(snapshot);
-    disable_implicit_snapshots(&mut env);
+    configure_fork_env(&mut env);
     env
 }
 
 fn env_from_snapshot(snapshot: Snapshot) -> Env {
     let mut env = Env::from_snapshot(snapshot);
-    disable_implicit_snapshots(&mut env);
+    configure_fork_env(&mut env);
     env
 }
 
-fn disable_implicit_snapshots(env: &mut Env) {
+pub(crate) fn configure_fork_env(env: &mut Env) {
     env.set_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
+    // Soroban SDK testutils serializes authorization evidence in observable
+    // shadow mode after each top-level invocation. That bookkeeping must not
+    // fail an otherwise valid fork call; normal Budget and independent
+    // InvocationResourceLimits remain unchanged.
+    env.host()
+        .set_shadow_budget_limits(u64::MAX, u64::MAX)
+        .expect("a fork Env must accept shadow budget configuration");
 }
 
 /// Errors produced while configuring the local runtime.
@@ -139,4 +146,66 @@ pub enum RuntimeError {
 
     #[error("checkpoint belongs to another fork")]
     CheckpointMismatch,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use soroban_env_host::InvocationResourceLimits;
+    use soroban_sdk::{
+        testutils::{cost_estimate::NetworkInvocationResourceLimits as _, Address as _},
+        Address,
+    };
+
+    use super::*;
+
+    mod stateful {
+        soroban_sdk::contractimport!(
+            file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
+            sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+        );
+    }
+
+    #[test]
+    fn fork_configuration_unbounds_only_shadow_budget() {
+        let mut env = Env::default();
+        env.host().set_shadow_budget_limits(0, 0).unwrap();
+        let normal_limits = normal_budget_limits(&env);
+
+        configure_fork_env(&mut env);
+
+        assert_eq!(normal_budget_limits(&env), normal_limits);
+        env.mock_all_auths();
+        let contract = env.register(stateful::WASM, (0_i64,));
+        let user = Address::generate(&env);
+        stateful::Client::new(&env, &contract).authorized_increment(&user, &1);
+        assert_eq!(env.auths().len(), 1);
+    }
+
+    #[test]
+    fn fork_configuration_keeps_invocation_resource_limits_enforced() {
+        let mut env = Env::default();
+        configure_fork_env(&mut env);
+        env.mock_all_auths();
+        let contract = env.register(stateful::WASM, (0_i64,));
+        let user = Address::generate(&env);
+        let mut limits = InvocationResourceLimits::mainnet();
+        limits.instructions = 0;
+        env.cost_estimate().enforce_resource_limits(limits);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            stateful::Client::new(&env, &contract).authorized_increment(&user, &1);
+        }));
+
+        assert!(result.is_err());
+    }
+
+    fn normal_budget_limits(env: &Env) -> (u64, u64) {
+        let budget = env.host().budget_cloned();
+        (
+            budget.get_cpu_insns_consumed().unwrap() + budget.get_cpu_insns_remaining().unwrap(),
+            budget.get_mem_bytes_consumed().unwrap() + budget.get_mem_bytes_remaining().unwrap(),
+        )
+    }
 }
