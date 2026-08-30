@@ -21,14 +21,14 @@ mod pool_abi {
     // network pool address and execute the captured network pool WASM.
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-        sha256 = "798c959e1e22093c49b4ec6636aafed14e889614fb243426abe5023b30c17520",
+        sha256 = "ef028ba492c063d163f44299148c1a32618e878da7b4fcea92af919f53d0ef4f",
     );
 }
 
 mod incompatible_abi {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-        sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+        sha256 = "b9c70e82ed38f50e4f3dd95f19593e3bb87b9664dc312e576d5d3a05e80c400c",
     );
 }
 

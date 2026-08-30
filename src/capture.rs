@@ -21,10 +21,11 @@ use sha2::{Digest, Sha256};
 use soroban_env_host::{
     testutils::call_with_suppressed_panic_hook,
     xdr::{
-        ConfigSettingEntry, ConfigSettingId, ContractDataDurability, ContractExecutable, Hash,
-        LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerHeader, LedgerKey,
-        LedgerKeyConfigSetting, LedgerKeyContractCode, LedgerKeyContractData, Limits, ReadXdr,
-        ScAddress, ScErrorCode, ScErrorType, ScVal, StateArchivalSettings, WriteXdr,
+        ConfigSettingEntry, ConfigSettingId, ContractDataDurability, ContractExecutable,
+        ContractExecutableExternalRef, Hash, LedgerEntry, LedgerEntryData, LedgerEntryExt,
+        LedgerHeader, LedgerKey, LedgerKeyConfigSetting, LedgerKeyContractCode,
+        LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScErrorCode, ScErrorType, ScVal,
+        StateArchivalSettings, WriteXdr,
     },
 };
 use soroban_ledger_snapshot::LedgerSnapshot;
@@ -43,6 +44,7 @@ pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; Sep
 pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
+const MAX_EXECUTABLE_CLOSURE_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
 const RPC_RETRY_BACKOFF: [Duration; 3] = [
     Duration::from_millis(200),
@@ -175,8 +177,8 @@ impl CaptureBuilder {
     /// # Errors
     ///
     /// Fails closed on network/protocol mismatch, transport or XDR failure,
-    /// incoherent ledger batches, missing referenced code, a terminal scenario
-    /// panic, or a bounded fixed-point failure.
+    /// incoherent ledger batches, incomplete executable dependencies, a
+    /// terminal scenario panic, or a bounded fixed-point failure.
     pub fn capture<F>(&self, scenario: F) -> Result<CapturedFixture, CaptureError>
     where
         F: Fn(&Env),
@@ -435,8 +437,8 @@ impl CaptureBuilder {
         keys: &mut BTreeMap<KeyId, LedgerKey>,
         mut materialized: Materialized,
     ) -> Result<Materialized, CaptureError> {
-        loop {
-            let mut added = false;
+        for round in 0..=MAX_EXECUTABLE_CLOSURE_ROUNDS {
+            let mut required = Vec::new();
             for state in materialized.coverage.values() {
                 let LookupState::Present(entry, _) = state else {
                     continue;
@@ -447,21 +449,43 @@ impl CaptureBuilder {
                 let ScVal::ContractInstance(instance) = &data.val else {
                     continue;
                 };
-                if let ContractExecutable::Wasm(hash) = &instance.executable {
-                    let code_key =
-                        LedgerKey::ContractCode(LedgerKeyContractCode { hash: hash.clone() });
-                    let id = key_id(&code_key)?;
-                    if keys.insert(id, code_key).is_none() {
-                        added = true;
+                match &instance.executable {
+                    ContractExecutable::Wasm(hash) => {
+                        required.push(LedgerKey::ContractCode(LedgerKeyContractCode {
+                            hash: hash.clone(),
+                        }));
                     }
+                    ContractExecutable::ExternalRef(external_ref) => {
+                        required.push(executable_ref_key(external_ref));
+                        if let Some(code_key) =
+                            external_ref_code_key(&materialized.coverage, external_ref)?
+                        {
+                            required.push(code_key);
+                        }
+                    }
+                    ContractExecutable::StellarAsset => {}
+                }
+            }
+
+            let mut added = false;
+            for key in required {
+                let id = key_id(&key)?;
+                if keys.insert(id, key).is_none() {
+                    added = true;
                 }
             }
             if !added {
-                ensure_referenced_code_present(&materialized.coverage)?;
+                ensure_executable_closure_present(&materialized.coverage)?;
                 return Ok(materialized);
             }
-            materialized = self.materialize(keys)?;
+            if round < MAX_EXECUTABLE_CLOSURE_ROUNDS {
+                materialized = self.materialize(keys)?;
+            }
         }
+
+        Err(CaptureError::ExecutableClosureLimit {
+            rounds: MAX_EXECUTABLE_CLOSURE_ROUNDS,
+        })
     }
 
     #[cfg(test)]
@@ -549,7 +573,7 @@ impl CapturedFixture {
     ///
     /// Fails closed on I/O or JSON errors, an unsupported schema, a network or
     /// protocol mismatch, malformed XDR, changed canonical digests, inconsistent
-    /// Present/Absent coverage, or missing referenced WASM.
+    /// Present/Absent coverage, or incomplete executable dependencies.
     pub fn from_file(
         path: impl AsRef<Path>,
         expected_network_passphrase: &str,
@@ -1021,7 +1045,7 @@ fn validate_bundle_coverage(
     max_entry_ttl: u32,
 ) -> Result<(usize, usize), CaptureError> {
     if validate_coverage(coverage, ledger_sequence, max_entry_ttl).is_err()
-        || ensure_referenced_code_present(coverage).is_err()
+        || ensure_executable_closure_present(coverage).is_err()
     {
         return Err(CaptureError::CaptureBundleIntegrity);
     }
@@ -1132,8 +1156,14 @@ pub enum CaptureError {
     IncoherentLedger { attempts: usize },
     #[error("StateArchival config was absent from a coherent ledger")]
     MissingStateArchival,
-    #[error("captured contract instance references absent WASM code")]
+    #[error("captured contract instance references an absent executable reference")]
+    MissingExecutableReference,
+    #[error("captured executable reference does not contain a 32-byte WASM hash")]
+    MalformedExecutableReference,
+    #[error("captured contract executable references absent WASM code")]
     MissingReferencedCode,
+    #[error("executable closure did not reach a fixed point in {rounds} rounds")]
+    ExecutableClosureLimit { rounds: usize },
     #[error("scenario panicked after reaching a ledger-key fixed point")]
     ScenarioPanicked,
     #[error("scenario did not reach a ledger-key fixed point in {rounds} rounds")]
@@ -1718,7 +1748,7 @@ fn ensure_legacy_root_present(
     }
 }
 
-fn ensure_referenced_code_present(
+fn ensure_executable_closure_present(
     coverage: &BTreeMap<KeyId, LookupState>,
 ) -> Result<(), CaptureError> {
     for state in coverage.values() {
@@ -1731,17 +1761,72 @@ fn ensure_referenced_code_present(
         let ScVal::ContractInstance(instance) = &data.val else {
             continue;
         };
-        let ContractExecutable::Wasm(hash) = &instance.executable else {
-            continue;
-        };
-        let id = key_id(&LedgerKey::ContractCode(LedgerKeyContractCode {
-            hash: hash.clone(),
-        }))?;
-        if !matches!(coverage.get(&id), Some(LookupState::Present(_, _))) {
-            return Err(CaptureError::MissingReferencedCode);
+        match &instance.executable {
+            ContractExecutable::Wasm(hash) => ensure_code_present(coverage, hash)?,
+            ContractExecutable::ExternalRef(external_ref) => {
+                let Some(code_key) = external_ref_code_key(coverage, external_ref)? else {
+                    return Err(CaptureError::MissingExecutableReference);
+                };
+                let LedgerKey::ContractCode(code) = code_key else {
+                    return Err(CaptureError::InternalInvariant);
+                };
+                ensure_code_present(coverage, &code.hash)?;
+            }
+            ContractExecutable::StellarAsset => {}
         }
     }
     Ok(())
+}
+
+fn executable_ref_key(external_ref: &ContractExecutableExternalRef) -> LedgerKey {
+    LedgerKey::ContractData(LedgerKeyContractData {
+        contract: external_ref.executable_owner.clone(),
+        key: ScVal::ExecutableTag(external_ref.tag.clone()),
+        durability: ContractDataDurability::Persistent,
+    })
+}
+
+fn external_ref_code_key(
+    coverage: &BTreeMap<KeyId, LookupState>,
+    external_ref: &ContractExecutableExternalRef,
+) -> Result<Option<LedgerKey>, CaptureError> {
+    let reference_key = executable_ref_key(external_ref);
+    let reference_id = key_id(&reference_key)?;
+    let Some(state) = coverage.get(&reference_id) else {
+        return Ok(None);
+    };
+    let LookupState::Present(entry, _) = state else {
+        return Err(CaptureError::MissingExecutableReference);
+    };
+    let LedgerEntryData::ContractData(data) = &entry.data else {
+        return Err(CaptureError::MalformedExecutableReference);
+    };
+    let ScVal::Bytes(bytes) = &data.val else {
+        return Err(CaptureError::MalformedExecutableReference);
+    };
+    let bytes: &[u8] = bytes.as_ref();
+    let hash = Hash(
+        bytes
+            .try_into()
+            .map_err(|_| CaptureError::MalformedExecutableReference)?,
+    );
+    Ok(Some(LedgerKey::ContractCode(LedgerKeyContractCode {
+        hash,
+    })))
+}
+
+fn ensure_code_present(
+    coverage: &BTreeMap<KeyId, LookupState>,
+    hash: &Hash,
+) -> Result<(), CaptureError> {
+    let id = key_id(&LedgerKey::ContractCode(LedgerKeyContractCode {
+        hash: hash.clone(),
+    }))?;
+    if matches!(coverage.get(&id), Some(LookupState::Present(_, _))) {
+        Ok(())
+    } else {
+        Err(CaptureError::MissingReferencedCode)
+    }
 }
 
 fn snapshot_from_materialized(materialized: &Materialized) -> Result<LedgerSnapshot, CaptureError> {
@@ -2058,7 +2143,7 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
     output
 }
 
-#[cfg(all(test, kanatoko_protocol_27_fixtures))]
+#[cfg(all(test, kanatoko_local_wasm_fixtures))]
 mod tests {
     use std::{
         cell::{Cell, RefCell},
@@ -2067,9 +2152,9 @@ mod tests {
     };
 
     use soroban_env_host::xdr::{
-        ContractDataEntry, ExtensionPoint, LedgerEntryData, LedgerEntryExt, LedgerEntryExtensionV1,
-        LedgerEntryExtensionV1Ext, LedgerKeyContractData, ScAddress, ScVal, SponsorshipDescriptor,
-        StateArchivalSettings,
+        ContractDataEntry, ContractExecutableExternalRef, ExtensionPoint, LedgerEntryData,
+        LedgerEntryExt, LedgerEntryExtensionV1, LedgerEntryExtensionV1Ext, LedgerKeyContractData,
+        ScAddress, ScString, ScVal, SponsorshipDescriptor, StateArchivalSettings,
     };
     use soroban_ledger_snapshot::LedgerSnapshot;
     use soroban_sdk::{
@@ -2094,14 +2179,14 @@ mod tests {
 
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-            sha256 = "798c959e1e22093c49b4ec6636aafed14e889614fb243426abe5023b30c17520",
+            sha256 = "ef028ba492c063d163f44299148c1a32618e878da7b4fcea92af919f53d0ef4f",
         );
     }
 
     mod local_stateful {
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-            sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+            sha256 = "b9c70e82ed38f50e4f3dd95f19593e3bb87b9664dc312e576d5d3a05e80c400c",
         );
     }
 
@@ -2163,6 +2248,196 @@ mod tests {
             .iter()
             .any(|(key, _)| key_id(key).unwrap() == code_id));
         assert_eq!(captured.report().final_replay_rpc_reads(), 0);
+    }
+
+    #[test]
+    fn external_ref_closure_materializes_reference_and_wasm_code() {
+        let (fake, instance_key, reference_key, code_key) = external_ref_transport();
+        let expanded = expand_from_instance(&fake, instance_key).unwrap();
+
+        for required in [reference_key, code_key] {
+            assert!(matches!(
+                expanded.coverage.get(&key_id(&required).unwrap()),
+                Some(LookupState::Present(_, _))
+            ));
+        }
+
+        let source = Rc::new(TrackingSource::strict_with_local(
+            expanded.coverage.clone(),
+            Rc::new(LocalLedger::default()),
+        ));
+        let env = env_from_materialized(&expanded, source.clone());
+        let pool = Address::from_str(&env, POOL_ID);
+        assert_eq!(pool::Client::new(&env, &pool).get_tokens().len(), 2);
+        assert_eq!(source.rpc_reads(), 0);
+        assert!(source.unknown_keys().is_empty());
+    }
+
+    #[test]
+    fn external_ref_closure_rejects_an_absent_reference() {
+        let (mut fake, instance_key, reference_key, _) = external_ref_transport();
+        Rc::get_mut(&mut fake)
+            .unwrap()
+            .entries
+            .remove(&key_id(&reference_key).unwrap());
+
+        assert!(matches!(
+            expand_from_instance(&fake, instance_key),
+            Err(CaptureError::MissingExecutableReference)
+        ));
+    }
+
+    #[test]
+    fn external_ref_closure_rejects_a_malformed_reference() {
+        let (mut fake, instance_key, reference_key, _) = external_ref_transport();
+        let fake_mut = Rc::get_mut(&mut fake).unwrap();
+        let reference_id = key_id(&reference_key).unwrap();
+        let fetched = fake_mut.entries.get(&reference_id).unwrap();
+        let mut entry = fetched.entry.as_ref().clone();
+        let LedgerEntryData::ContractData(data) = &mut entry.data else {
+            panic!("reference must be contract data");
+        };
+        data.val = ScVal::Bytes(vec![0_u8; 31].try_into().unwrap());
+        fake_mut.entries.insert(
+            reference_id,
+            FetchedEntry {
+                entry: Rc::new(entry),
+                live_until: fetched.live_until,
+            },
+        );
+
+        assert!(matches!(
+            expand_from_instance(&fake, instance_key),
+            Err(CaptureError::MalformedExecutableReference)
+        ));
+    }
+
+    #[test]
+    fn external_ref_closure_rejects_absent_wasm_code() {
+        let (mut fake, instance_key, _, code_key) = external_ref_transport();
+        Rc::get_mut(&mut fake)
+            .unwrap()
+            .entries
+            .remove(&key_id(&code_key).unwrap());
+
+        assert!(matches!(
+            expand_from_instance(&fake, instance_key),
+            Err(CaptureError::MissingReferencedCode)
+        ));
+    }
+
+    #[test]
+    fn external_ref_refresh_follows_a_changed_wasm_hash() {
+        let (mut fake, instance_key, reference_key, old_code_key) = external_ref_transport();
+        let mut keys = BTreeMap::new();
+        keys.insert(key_id(&instance_key).unwrap(), instance_key);
+        {
+            let builder = builder(&fake);
+            let materialized = builder.materialize(&keys).unwrap();
+            builder
+                .expand_code_closure(&mut keys, materialized)
+                .unwrap();
+        }
+        assert!(keys.contains_key(&key_id(&old_code_key).unwrap()));
+
+        let fake_mut = Rc::get_mut(&mut fake).unwrap();
+        let replacement_code_key = fake_mut
+            .entries
+            .values()
+            .find_map(|fetched| match &fetched.entry.data {
+                LedgerEntryData::ContractCode(code) if code.hash != code_hash(&old_code_key) => {
+                    Some(LedgerKey::ContractCode(LedgerKeyContractCode {
+                        hash: code.hash.clone(),
+                    }))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let LedgerKey::ContractCode(replacement_code) = &replacement_code_key else {
+            unreachable!();
+        };
+        let reference_id = key_id(&reference_key).unwrap();
+        let fetched = fake_mut.entries.get(&reference_id).unwrap();
+        let mut reference_entry = fetched.entry.as_ref().clone();
+        let LedgerEntryData::ContractData(reference_data) = &mut reference_entry.data else {
+            panic!("reference must be contract data");
+        };
+        reference_data.val = ScVal::Bytes(replacement_code.hash.0.to_vec().try_into().unwrap());
+        fake_mut.entries.insert(
+            reference_id,
+            FetchedEntry {
+                entry: Rc::new(reference_entry),
+                live_until: fetched.live_until,
+            },
+        );
+        fake_mut.anchor.sequence += 1;
+        fake_mut.anchor.hash = "external-ref-new-hash".to_string();
+
+        let builder = builder(&fake);
+        let materialized = builder.materialize(&keys).unwrap();
+        let refreshed = builder
+            .expand_code_closure(&mut keys, materialized)
+            .unwrap();
+
+        assert!(matches!(
+            refreshed
+                .coverage
+                .get(&key_id(&replacement_code_key).unwrap()),
+            Some(LookupState::Present(_, _))
+        ));
+    }
+
+    #[test]
+    fn external_ref_closure_is_bounded_when_reference_never_stabilizes() {
+        let (fake, instance_key, reference_key, _) = external_ref_transport();
+        let transport = Rc::new(ChangingExternalRefTransport {
+            inner: fake,
+            reference_id: key_id(&reference_key).unwrap(),
+            generation: Cell::new(0),
+        });
+        let mut keys = BTreeMap::new();
+        keys.insert(key_id(&instance_key).unwrap(), instance_key);
+        let builder = CaptureBuilder::with_transport(transport.clone(), MAINNET_PASSPHRASE);
+        let materialized = builder.materialize(&keys).unwrap();
+
+        assert!(matches!(
+            builder.expand_code_closure(&mut keys, materialized),
+            Err(CaptureError::ExecutableClosureLimit { rounds })
+                if rounds == MAX_EXECUTABLE_CLOSURE_ROUNDS
+        ));
+        assert_eq!(transport.generation.get(), MAX_EXECUTABLE_CLOSURE_ROUNDS);
+    }
+
+    #[test]
+    fn bundle_validation_rejects_an_incomplete_external_ref_closure() {
+        let (fake, instance_key, reference_key, _) = external_ref_transport();
+        let mut materialized = expand_from_instance(&fake, instance_key).unwrap();
+        materialized
+            .coverage
+            .remove(&key_id(&reference_key).unwrap());
+        let present_entries = materialized
+            .coverage
+            .values()
+            .filter(|state| matches!(state, LookupState::Present(_, _)))
+            .count();
+        let report = BundleReport {
+            discovery_rounds: 1,
+            present_entries: u64::try_from(present_entries).unwrap(),
+            absent_entries: u64::try_from(materialized.coverage.len() - present_entries).unwrap(),
+            final_replay_rpc_reads: 0,
+        };
+        let digest = inventory_digest(&materialized.coverage).unwrap();
+
+        assert!(matches!(
+            validate_bundle_coverage(
+                &materialized.coverage,
+                &report,
+                &digest,
+                materialized.ledger_info.sequence_number,
+                materialized.ledger_info.max_entry_ttl,
+            ),
+            Err(CaptureError::CaptureBundleIntegrity)
+        ));
     }
 
     #[test]
@@ -3347,6 +3622,85 @@ mod tests {
         }
     }
 
+    fn external_ref_transport() -> (Rc<FakeTransport>, LedgerKey, LedgerKey, LedgerKey) {
+        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let fake_mut = Rc::get_mut(&mut fake).unwrap();
+        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let instance_key = contract_instance_key(contract);
+        let instance_id = key_id(&instance_key).unwrap();
+        let fetched = fake_mut.entries.get(&instance_id).unwrap();
+        let mut instance_entry = fetched.entry.as_ref().clone();
+        let LedgerEntryData::ContractData(instance_data) = &mut instance_entry.data else {
+            panic!("pool instance must be contract data");
+        };
+        let ScVal::ContractInstance(instance) = &mut instance_data.val else {
+            panic!("pool entry must contain a contract instance");
+        };
+        let ContractExecutable::Wasm(wasm_hash) = &instance.executable else {
+            panic!("pool fixture must use direct Wasm");
+        };
+        let wasm_hash = wasm_hash.clone();
+        let owner = ScAddress::Contract(Hash([0x91; 32]).into());
+        let tag = ScString(b"kanatoko-test".to_vec().try_into().unwrap());
+        let external_ref = ContractExecutableExternalRef {
+            executable_owner: owner.clone(),
+            tag: tag.clone(),
+        };
+        instance.executable = ContractExecutable::ExternalRef(external_ref);
+        fake_mut.entries.insert(
+            instance_id,
+            FetchedEntry {
+                entry: Rc::new(instance_entry),
+                live_until: fetched.live_until,
+            },
+        );
+
+        let reference_key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: owner.clone(),
+            key: ScVal::ExecutableTag(tag.clone()),
+            durability: ContractDataDurability::Persistent,
+        });
+        let reference_entry = LedgerEntry {
+            last_modified_ledger_seq: fake_mut.anchor.sequence,
+            data: LedgerEntryData::ContractData(ContractDataEntry {
+                ext: ExtensionPoint::V0,
+                contract: owner,
+                key: ScVal::ExecutableTag(tag),
+                durability: ContractDataDurability::Persistent,
+                val: ScVal::Bytes(wasm_hash.0.to_vec().try_into().unwrap()),
+            }),
+            ext: LedgerEntryExt::V0,
+        };
+        fake_mut.entries.insert(
+            key_id(&reference_key).unwrap(),
+            FetchedEntry {
+                entry: Rc::new(reference_entry),
+                live_until: Some(fake_mut.anchor.sequence + 100),
+            },
+        );
+        let code_key = LedgerKey::ContractCode(LedgerKeyContractCode { hash: wasm_hash });
+
+        (fake, instance_key, reference_key, code_key)
+    }
+
+    fn expand_from_instance(
+        fake: &Rc<FakeTransport>,
+        instance_key: LedgerKey,
+    ) -> Result<Materialized, CaptureError> {
+        let mut keys = BTreeMap::new();
+        keys.insert(key_id(&instance_key).unwrap(), instance_key);
+        let builder = builder(fake);
+        let materialized = builder.materialize(&keys).unwrap();
+        builder.expand_code_closure(&mut keys, materialized)
+    }
+
+    fn code_hash(key: &LedgerKey) -> Hash {
+        let LedgerKey::ContractCode(code) = key else {
+            panic!("expected contract code key");
+        };
+        code.hash.clone()
+    }
+
     fn assert_warm_refreshes_known_key(same_sequence: bool) {
         use crate::auto::{AutoRunner, CacheStatus};
 
@@ -3419,6 +3773,54 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    struct ChangingExternalRefTransport {
+        inner: Rc<FakeTransport>,
+        reference_id: KeyId,
+        generation: Cell<usize>,
+    }
+
+    impl Transport for ChangingExternalRefTransport {
+        fn network(&self) -> Result<Network, TransportFailure> {
+            self.inner.network()
+        }
+
+        fn latest_ledger(&self) -> Result<Anchor, TransportFailure> {
+            self.inner.latest_ledger()
+        }
+
+        fn ledger_entries(&self, keys: &[LedgerKey]) -> Result<EntryBatch, TransportFailure> {
+            let mut batch = self.inner.ledger_entries(keys)?;
+            if !keys
+                .iter()
+                .any(|key| key_id(key).unwrap() == self.reference_id)
+            {
+                return Ok(batch);
+            }
+
+            let generation = self.generation.get() + 1;
+            if generation > MAX_EXECUTABLE_CLOSURE_ROUNDS {
+                return Err(TransportFailure {
+                    operation: "getLedgerEntries",
+                });
+            }
+            self.generation.set(generation);
+            let mut hash = [0_u8; 32];
+            hash[..8].copy_from_slice(&(generation as u64).to_be_bytes());
+            for fetched in &mut batch.entries {
+                if key_id(&fetched.entry.to_key()).unwrap() != self.reference_id {
+                    continue;
+                }
+                let mut entry = fetched.entry.as_ref().clone();
+                let LedgerEntryData::ContractData(data) = &mut entry.data else {
+                    panic!("reference must be contract data");
+                };
+                data.val = ScVal::Bytes(hash.to_vec().try_into().unwrap());
+                fetched.entry = Rc::new(entry);
+            }
+            Ok(batch)
+        }
+    }
+
     struct FakeTransport {
         network: Network,
         anchor: Anchor,
@@ -3435,9 +3837,14 @@ mod tests {
 
     impl FakeTransport {
         fn from_aquarius_snapshot() -> Rc<Self> {
-            let snapshot =
+            let mut snapshot =
                 LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json")
                     .unwrap();
+            // The captured entries and finalized Protocol 27 WASM are useful
+            // deterministic unit inputs on newer Hosts too. Promote only the
+            // in-memory ledger header used by this fake transport; the
+            // committed capture remains exact Protocol 27 network evidence.
+            snapshot.protocol_version = SUPPORTED_PROTOCOL_VERSION;
             let mut entries = BTreeMap::new();
             for (_, (entry, live_until)) in &snapshot.ledger_entries {
                 entries.insert(

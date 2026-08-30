@@ -1,7 +1,7 @@
 # Soroban SDK 25 compatibility fixture
 
-This contract proves that Kanatoko's protocol-27 Host can execute candidate
-WASM built with Soroban SDK 25. Normal tests consume the committed artifact and
+This contract proves that a newer Kanatoko Host can execute candidate WASM
+built with Soroban SDK 25. Normal tests consume the committed artifact and
 never rebuild it.
 
 From the repository root:
@@ -11,6 +11,8 @@ rustup toolchain install 1.92.0 --profile minimal
 rustup target add wasm32v1-none --toolchain 1.92.0
 
 RUSTUP_TOOLCHAIN=1.92.0 \
+RUSTC_WRAPPER=sccache \
+CARGO_TARGET_DIR=target/fixture-contracts \
 stellar contract build \
   --manifest-path fixtures/contracts/legacy-v25/Cargo.toml \
   --out-dir fixtures/wasm \

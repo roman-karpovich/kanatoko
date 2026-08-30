@@ -54,8 +54,10 @@ jobs:
           set -euo pipefail
 
           tag="${RELEASE_TAG}"
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tags must have the form vMAJOR.MINOR.PATCH: ${tag}" >&2
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo \
+              "Release tags must have the form vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N: ${tag}" \
+              >&2
             exit 1
           fi
 
@@ -75,7 +77,7 @@ jobs:
           else
             sdk_major="${version%%.*}"
             case "${sdk_major}" in
-              25|26|27) ;;
+              25|26|27|28) ;;
               *)
                 echo "Unsupported Kanatoko release major: ${sdk_major}" >&2
                 exit 1
@@ -84,7 +86,13 @@ jobs:
             release_branch="sdk-${sdk_major}"
           fi
 
-          expected_requirement="^${sdk_major}"
+          prerelease=false
+          if [[ "${version}" == *-* ]]; then
+            prerelease=true
+          fi
+
+          sdk_requirement=""
+          snapshot_requirement=""
           for dependency in \
             soroban-env-host \
             soroban-ledger-snapshot \
@@ -103,13 +111,34 @@ jobs:
               echo "Expected one direct ${dependency} dependency" >&2
               exit 1
             fi
-            if [[ "${requirements[0]}" != "${expected_requirement}" ]]; then
+            requirement="${requirements[0]}"
+            if [[ "${prerelease}" == "true" ]]; then
+              if [[ ! "${requirement}" =~ ^=${sdk_major}\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+                echo \
+                  "Prerelease ${dependency} must use an exact major-${sdk_major} pin, found ${requirement}" \
+                  >&2
+                exit 1
+              fi
+              case "${dependency}" in
+                soroban-ledger-snapshot) snapshot_requirement="${requirement}" ;;
+                soroban-sdk) sdk_requirement="${requirement}" ;;
+              esac
+            elif [[ "${requirement}" != "^${sdk_major}" ]]; then
               echo \
-                "${dependency} must use broad major ${sdk_major}, found ${requirements[0]}" \
+                "${dependency} must use broad major ${sdk_major}, found ${requirement}" \
                 >&2
               exit 1
             fi
           done
+
+          if [[ "${prerelease}" == "true" && \
+            "${sdk_requirement}" != "${snapshot_requirement}" ]]
+          then
+            echo \
+              "Prerelease SDK and ledger snapshot pins differ: ${sdk_requirement} vs ${snapshot_requirement}" \
+              >&2
+            exit 1
+          fi
 
           locked_metadata="$(cargo metadata --locked --format-version 1)"
           for dependency in \
@@ -423,8 +452,30 @@ jobs:
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "GitHub release ${RELEASE_TAG} already exists"
           else
+            prerelease_args=()
+            if [[ "${RELEASE_TAG}" == *-* ]]; then
+              prerelease_args+=(--prerelease)
+            fi
             gh release create "${RELEASE_TAG}" \
               --verify-tag \
               --title "${RELEASE_TAG}" \
-              --generate-notes
+              --generate-notes \
+              "${prerelease_args[@]}"
+          fi
+
+          release_json="$(
+            gh release view "${RELEASE_TAG}" \
+              --json isDraft,isPrerelease,tagName
+          )"
+          expected_prerelease=false
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            expected_prerelease=true
+          fi
+          if [[ "$(jq -r '.tagName' <<<"${release_json}")" != "${RELEASE_TAG}" || \
+            "$(jq -r '.isDraft' <<<"${release_json}")" != "false" || \
+            "$(jq -r '.isPrerelease' <<<"${release_json}")" != "${expected_prerelease}" ]]
+          then
+            echo "GitHub release readback does not match ${RELEASE_TAG}" >&2
+            jq . <<<"${release_json}" >&2
+            exit 1
           fi

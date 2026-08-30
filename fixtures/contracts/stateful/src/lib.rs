@@ -58,4 +58,9 @@ impl StatefulFixture {
         Rejected { value: next }.publish(&env);
         Err(FixtureError::Rejected)
     }
+
+    pub fn estimate_swap(_env: Env, in_idx: u32, out_idx: u32, in_amount: u128) -> u128 {
+        assert_eq!((in_idx, out_idx), (1, 0));
+        in_amount + 7
+    }
 }

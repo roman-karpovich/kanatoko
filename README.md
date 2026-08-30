@@ -13,7 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "27", features = ["capture"] }
+kanatoko = { version = "=28.0.0-rc.1", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -25,8 +25,24 @@ an older one:
 | 25 | `kanatoko = "25"` | Protocol 25 or older |
 | 26 | `kanatoko = "26"` | Protocol 26 or older |
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
+| 28 | `kanatoko = "=28.0.0-rc.1"` | Protocol 28 or older |
+
+Protocol 28 support is a prerelease because the upstream Rust SDK is currently
+`28.0.0-rc.1`. Its SDK, ledger-snapshot, and Host dependencies are pinned
+exactly so this RC cannot silently float to a later breaking prerelease or the
+stable line. Use a Protocol 27 Kanatoko release for a network still running 27;
+the runner fails closed rather than replaying state under a different Host.
 
 ## Your contract against mainnet
+
+At this RC's release boundary, public Mainnet still reports Protocol 27. Run
+the mainnet examples in this section with the stable matching line until the
+network upgrades:
+
+```toml
+[dev-dependencies]
+kanatoko = { version = "27", features = ["capture"] }
+```
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -116,9 +132,9 @@ as an explicitly pinned snapshot with zero transport calls.
 
 ## Network and RPC
 
-On the Kanatoko line matching the public network's current protocol,
-`mainnet()` and `testnet()` are symmetric and immediately usable with their
-default RPC endpoints:
+`mainnet()` and `testnet()` expose the same API and default RPC endpoints, but
+each validates the selected network's exact live protocol. During a staggered
+network upgrade, use the Kanatoko major matching each network independently:
 
 ```rust,ignore
 use kanatoko::{mainnet, testnet};
@@ -166,6 +182,11 @@ of up to 200. This includes the complete inventory reused from an older ledger;
 only the keys are reused, never their old Present/Absent values. The first
 encounter with a newly discovered dynamic key remains a single read because
 the returned value may determine which key the contract touches next.
+
+Protocol 28 external executable references are closed transitively: Kanatoko
+captures the owner's persistent executable-tag entry, validates its exact
+32-byte WASM hash, and captures the referenced ContractCode. A missing or
+malformed reference fails closed during capture and bundle loading.
 
 For lower-level capture, use `CaptureBuilder::mainnet(url)` or
 `CaptureBuilder::testnet(url)` and apply the same `.rpc_rate_limit(...)`
@@ -291,9 +312,10 @@ Preview resources are the raw local Host estimate, not fee parity. Kanatoko
 keeps typed `ScError` and raw XDR evidence and does not derive stable behavior
 by parsing diagnostic or panic text.
 
-Each Kanatoko major selects the same major of the SDK, Host, and
-ledger-snapshot crates. Their broad major ranges let Cargo resolve one
-compatible runtime with the rest of the test harness. Use the re-exported
+Each stable Kanatoko major selects the same major of the SDK, Host, and
+ledger-snapshot crates. Stable lines use broad major ranges so Cargo can
+resolve one compatible runtime with the rest of the test harness. Prerelease
+lines use the exact pins documented above. Use the re-exported
 `kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
 `kanatoko::soroban_ledger_snapshot` instead of declaring a second runtime
 version when possible.

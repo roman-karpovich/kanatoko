@@ -6,7 +6,7 @@ const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015
 const PROTOCOL_27_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
 
 #[test]
-fn protocol_27_capture_fails_closed_on_an_older_host() {
+fn protocol_27_capture_fails_closed_on_a_different_protocol_host() {
     let error = CapturedFixture::from_file(PROTOCOL_27_CAPTURE, MAINNET_PASSPHRASE).unwrap_err();
 
     assert!(matches!(

@@ -747,12 +747,13 @@ impl<'a> ScenarioFork<'a> {
     /// Replaces an existing captured contract's WASM without changing its
     /// address or storage.
     ///
-    /// The replacement code is installed locally, then only the executable
-    /// hash in the existing contract instance is changed. Instance,
+    /// The replacement code is installed locally, then only the executable in
+    /// the existing contract instance is changed to direct WASM. Instance,
     /// persistent, and temporary storage remain intact, the instance TTL is
-    /// preserved, and the replacement constructor is not called. Calls from
-    /// other captured contracts to the same address therefore execute the
-    /// replacement code.
+    /// preserved, and the replacement constructor is not called. An external
+    /// executable reference is left in storage but is no longer followed by
+    /// that locally overridden instance. Calls from other captured contracts
+    /// to the same address therefore execute the replacement code.
     ///
     /// This is a test-only code override. It does not invoke the production
     /// contract's upgrade entrypoint or emulate upgrade authorization,
@@ -786,7 +787,7 @@ impl<'a> ScenarioFork<'a> {
             panic!("contract instance key must contain a contract instance");
         };
         assert!(
-            matches!(instance.executable, ContractExecutable::Wasm(_)),
+            !matches!(instance.executable, ContractExecutable::StellarAsset),
             "WASM cannot replace a Stellar Asset Contract"
         );
 
@@ -1057,7 +1058,10 @@ pub enum AutoRunError {
 
 #[cfg(test)]
 mod tests {
-    use soroban_env_host::xdr::ScError;
+    use soroban_env_host::xdr::{
+        ContractDataDurability, ContractDataEntry, ContractExecutableExternalRef, ExtensionPoint,
+        LedgerKeyContractData, ScError, ScString,
+    };
     use soroban_sdk::testutils::{EnvTestConfig, Ledger as _};
 
     use super::*;
@@ -1065,7 +1069,7 @@ mod tests {
     mod stateful {
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-            sha256 = "6f6f469798b686cc485ad207f32e3f77009c4b69ab2437d9bdca97f149b54ba8",
+            sha256 = "b9c70e82ed38f50e4f3dd95f19593e3bb87b9664dc312e576d5d3a05e80c400c",
         );
     }
 
@@ -1191,6 +1195,84 @@ mod tests {
         let after = env.host().get_ledger_entry(&instance_key).unwrap().unwrap();
         assert_eq!(after, before);
         assert_eq!(stateful::Client::new(&env, &contract).get(), 41);
+    }
+
+    #[test]
+    fn replace_wasm_detaches_an_external_ref_without_changing_storage_or_reference() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let contract = env.register(stateful::WASM, (41_i64,));
+        let contract_xdr = ScAddress::from(&contract);
+        let instance_key = Rc::new(contract_instance_key(contract_xdr.clone()));
+        let (instance_entry, live_until) =
+            env.host().get_ledger_entry(&instance_key).unwrap().unwrap();
+        let mut external_instance = instance_entry.as_ref().clone();
+        let LedgerEntryData::ContractData(instance_data) = &mut external_instance.data else {
+            panic!("instance must be contract data");
+        };
+        let ScVal::ContractInstance(instance) = &mut instance_data.val else {
+            panic!("instance key must contain a contract instance");
+        };
+        let original_storage = instance.storage.clone();
+        let tag = ScString(b"kanatoko-replace".to_vec().try_into().unwrap());
+        instance.executable = ContractExecutable::ExternalRef(ContractExecutableExternalRef {
+            executable_owner: contract_xdr.clone(),
+            tag: tag.clone(),
+        });
+        env.host()
+            .add_ledger_entry(&instance_key, &Rc::new(external_instance), live_until)
+            .unwrap();
+
+        let reference_key = Rc::new(LedgerKey::ContractData(LedgerKeyContractData {
+            contract: contract_xdr.clone(),
+            key: ScVal::ExecutableTag(tag.clone()),
+            durability: ContractDataDurability::Persistent,
+        }));
+        let reference_entry = Rc::new(LedgerEntry {
+            last_modified_ledger_seq: 0,
+            data: LedgerEntryData::ContractData(ContractDataEntry {
+                ext: ExtensionPoint::V0,
+                contract: contract_xdr,
+                key: ScVal::ExecutableTag(tag),
+                durability: ContractDataDurability::Persistent,
+                val: ScVal::Bytes(
+                    <[u8; 32]>::from(Sha256::digest(stateful::WASM))
+                        .to_vec()
+                        .try_into()
+                        .unwrap(),
+                ),
+            }),
+            ext: LedgerEntryExt::V0,
+        });
+        env.host()
+            .add_ledger_entry(&reference_key, &reference_entry, live_until)
+            .unwrap();
+        let reference_before = env.host().get_ledger_entry(&reference_key).unwrap();
+
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        let replacement_hash = fork.replace_wasm(&contract, legacy_v25::WASM);
+
+        assert_eq!(legacy_v25::Client::new(&env, &contract).sdk_major(), 25);
+        let (after, after_live_until) =
+            env.host().get_ledger_entry(&instance_key).unwrap().unwrap();
+        let LedgerEntryData::ContractData(after_data) = &after.data else {
+            panic!("instance must remain contract data");
+        };
+        let ScVal::ContractInstance(after_instance) = &after_data.val else {
+            panic!("instance must remain a contract instance");
+        };
+        assert_eq!(
+            after_instance.executable,
+            ContractExecutable::Wasm(Hash(replacement_hash))
+        );
+        assert_eq!(after_instance.storage, original_storage);
+        assert_eq!(after_live_until, live_until);
+        assert_eq!(
+            env.host().get_ledger_entry(&reference_key).unwrap(),
+            reference_before
+        );
     }
 
     #[test]

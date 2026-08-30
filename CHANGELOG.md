@@ -2,6 +2,23 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 28.0.0-rc.1 - 2026-08-30
+
+- Add prerelease Protocol 28 support with exact `soroban-sdk` and
+  `soroban-ledger-snapshot` 28.0.0-rc.1 plus `soroban-env-host` 28.0.2 pins.
+- Capture and validate the complete CAP-85 external-executable closure from
+  contract instance through the owner's executable tag to referenced WASM.
+- Fail closed on absent or malformed executable references and on absent
+  referenced ContractCode, including after a changed-ledger refresh.
+- Allow `replace_wasm` to detach an external reference locally while preserving
+  instance storage, TTL, and the untouched reference entry.
+- Add exact frozen Protocol 28 testnet evidence for the native XLM Stellar
+  Asset Contract and rebuild local candidate fixtures against SDK 28 RC.
+- Keep Protocol 27 mainnet captures unchanged and retain their explicit
+  cross-protocol rejection test while Mainnet remains on Protocol 27.
+- Teach release automation to verify and publish an `-rc.N` tag as a GitHub
+  prerelease on the `sdk-28` release line.
+
 ## 27.0.2 - 2026-07-23
 
 - Bind cached state values to the complete captured ledger anchor and probe the
