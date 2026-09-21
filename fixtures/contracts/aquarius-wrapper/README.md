@@ -25,8 +25,9 @@ stellar contract build \
 
 Artifact: `fixtures/wasm/kanatoko_aquarius_wrapper.wasm`
 
-SHA-256: `ef028ba492c063d163f44299148c1a32618e878da7b4fcea92af919f53d0ef4f`
+SHA-256: `e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f`
 
-The committed artifact is 4,518 bytes and was built with Stellar CLI 27.0.0
+The committed artifact is 4,510 bytes and was built from `soroban-sdk 28.0.0`
+(`48d506712f964094d14176e2f0b02afcd1054567`) with Stellar CLI 27.0.0
 (`5a7c5fe76530bf4248477ac812fc757146b98cc4`) and rustc 1.92.0 for
 `wasm32v1-none`, with `RUSTC_WRAPPER=sccache`.

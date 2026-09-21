@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
 
 use std::collections::BTreeMap;
 
@@ -21,14 +21,14 @@ mod pool_abi {
     // network pool address and execute the captured network pool WASM.
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-        sha256 = "ef028ba492c063d163f44299148c1a32618e878da7b4fcea92af919f53d0ef4f",
+        sha256 = "e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f",
     );
 }
 
 mod incompatible_abi {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-        sha256 = "b9c70e82ed38f50e4f3dd95f19593e3bb87b9664dc312e576d5d3a05e80c400c",
+        sha256 = "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea",
     );
 }
 
@@ -63,6 +63,24 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
         <[u8; 32]>::from(Sha256::digest(ABI_WASM)),
         "the ABI source WASM must not replace the captured network executable",
     );
+    assert_captured_real_account_state(run.fixture());
+}
+
+#[test]
+#[ignore = "manual read-only Protocol 28 mainnet fixture refresh"]
+fn refresh_protocol_28_mainnet_fixture() {
+    let run = mainnet()
+        .cache(CAPTURE)
+        .refresh()
+        .run(full_scenario)
+        .unwrap();
+
+    assert!(matches!(
+        run.cache_status(),
+        CacheStatus::Created | CacheStatus::Refreshed
+    ));
+    assert_eq!(run.fixture().provenance().protocol_version(), 28);
+    assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_captured_real_account_state(run.fixture());
 }
 

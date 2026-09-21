@@ -13,7 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "=28.0.0-rc.1", features = ["capture"] }
+kanatoko = { version = "28", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -25,24 +25,18 @@ an older one:
 | 25 | `kanatoko = "25"` | Protocol 25 or older |
 | 26 | `kanatoko = "26"` | Protocol 26 or older |
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
-| 28 | `kanatoko = "=28.0.0-rc.1"` | Protocol 28 or older |
+| 28 | `kanatoko = "28"` | Protocol 28 or older |
 
-Protocol 28 support is a prerelease because the upstream Rust SDK is currently
-`28.0.0-rc.1`. Its SDK, ledger-snapshot, and Host dependencies are pinned
-exactly so this RC cannot silently float to a later breaking prerelease or the
-stable line. Use a Protocol 27 Kanatoko release for a network still running 27;
-the runner fails closed rather than replaying state under a different Host.
+The 28 line uses the stable Soroban Rust SDK and ledger snapshot 28 with the
+compatible Host 28 runtime. Use the Kanatoko major matching the network
+protocol being captured; the runner fails closed rather than replaying state
+under a different Host.
 
 ## Your contract against mainnet
 
-At this RC's release boundary, public Mainnet still reports Protocol 27. Run
-the mainnet examples in this section with the stable matching line until the
-network upgrades:
-
-```toml
-[dev-dependencies]
-kanatoko = { version = "27", features = ["capture"] }
-```
+Kanatoko 28 captures and replays Protocol 28 Mainnet state. The committed CLI
+fixture is a Protocol 28 capture; its historical Protocol 27 predecessor is
+retained separately only to test fail-closed cross-protocol loading.
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -315,7 +309,7 @@ by parsing diagnostic or panic text.
 Each stable Kanatoko major selects the same major of the SDK, Host, and
 ledger-snapshot crates. Stable lines use broad major ranges so Cargo can
 resolve one compatible runtime with the rest of the test harness. Prerelease
-lines use the exact pins documented above. Use the re-exported
+lines use exact compatible pins. Use the re-exported
 `kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
 `kanatoko::soroban_ledger_snapshot` instead of declaring a second runtime
 version when possible.

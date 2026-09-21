@@ -13,14 +13,14 @@ const XLM: &str = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 mod stateful {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-        sha256 = "b9c70e82ed38f50e4f3dd95f19593e3bb87b9664dc312e576d5d3a05e80c400c",
+        sha256 = "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea",
     );
 }
 
 mod aquarius_wrapper {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-        sha256 = "ef028ba492c063d163f44299148c1a32618e878da7b4fcea92af919f53d0ef4f",
+        sha256 = "e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f",
     );
 }
 

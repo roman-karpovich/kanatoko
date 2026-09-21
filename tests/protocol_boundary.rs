@@ -3,7 +3,7 @@
 use kanatoko::{CaptureError, CapturedFixture, FixtureError, SUPPORTED_PROTOCOL_VERSION};
 
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
-const PROTOCOL_27_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
+const PROTOCOL_27_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture-p27.json";
 
 #[test]
 fn protocol_27_capture_fails_closed_on_a_different_protocol_host() {

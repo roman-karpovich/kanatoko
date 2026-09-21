@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
 
 use kanatoko::{
     AppliedAuthMode, AuthMode, CandidateInstallMode, CapturedFixture, ExecutionMode, InvokeOutcome,
@@ -19,8 +19,8 @@ const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const ONE_USDC: u64 = 10_000_000;
 const STATEFUL_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
 const STATEFUL_WASM_SHA256: [u8; 32] = [
-    0xb9, 0xc7, 0x0e, 0x82, 0xed, 0x38, 0xf5, 0x0e, 0x4f, 0x3d, 0xd9, 0x5f, 0x19, 0x59, 0x3e, 0x3b,
-    0xb8, 0x7b, 0x96, 0x64, 0xdc, 0x31, 0x2e, 0x57, 0x6d, 0x5d, 0x3a, 0x05, 0xe8, 0x0c, 0x40, 0x0c,
+    0x01, 0x56, 0xa9, 0xa8, 0x40, 0xe4, 0x14, 0x77, 0x32, 0xfc, 0xf0, 0x47, 0x98, 0x46, 0x22, 0x08,
+    0x40, 0xae, 0x4b, 0x42, 0x81, 0xc5, 0x83, 0x54, 0xaa, 0x31, 0xcf, 0x70, 0xda, 0xf6, 0xb2, 0xea,
 ];
 
 #[test]
@@ -315,6 +315,7 @@ fn repeated_mocked_auth_applies_for_one_address_do_not_commit_nonce_scaffolding(
 #[test]
 fn malformed_enforce_auth_is_typed_and_atomic() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let signature_expiration_ledger = captured.provenance().ledger_sequence() + 100;
     let mut fork = captured.fork();
     let candidate = ScAddress::Contract(ContractId(Hash([0x6e; 32])));
     fork.register_candidate(
@@ -329,7 +330,12 @@ fn malformed_enforce_auth_is_typed_and_atomic() {
         function: symbol("authorized_increment"),
         args: vec![ScVal::Address(candidate.clone()), ScVal::I64(1)],
     };
-    let entry = authorization_entry(&request, candidate, ScVal::LedgerKeyContractInstance);
+    let entry = authorization_entry(
+        &request,
+        candidate,
+        ScVal::LedgerKeyContractInstance,
+        signature_expiration_ledger,
+    );
     let before = fork.ledger_digest().unwrap();
 
     let error = fork
@@ -377,12 +383,13 @@ fn authorization_entry(
     request: &InvokeRequest,
     address: ScAddress,
     signature: ScVal,
+    signature_expiration_ledger: u32,
 ) -> SorobanAuthorizationEntry {
     SorobanAuthorizationEntry {
         credentials: SorobanCredentials::AddressV2(SorobanAddressCredentials {
             address,
             nonce: 7,
-            signature_expiration_ledger: 63_600_396,
+            signature_expiration_ledger,
             signature,
         }),
         root_invocation: SorobanAuthorizedInvocation {

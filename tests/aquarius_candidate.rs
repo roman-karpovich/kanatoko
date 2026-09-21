@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
 
 use kanatoko::{
     AuthMode, AuthorizationTree, CandidateInstallMode, CapturedFixture, ExecutionMode,
@@ -18,15 +18,15 @@ const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const ONE_USDC: u128 = 10_000_000;
 const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapper.wasm");
 const WRAPPER_SHA256: [u8; 32] = [
-    0xef, 0x02, 0x8b, 0xa4, 0x92, 0xc0, 0x63, 0xd1, 0x63, 0xf4, 0x42, 0x99, 0x14, 0x8c, 0x1a, 0x32,
-    0x61, 0x8e, 0x87, 0x8d, 0xa7, 0xb4, 0xfc, 0xea, 0x92, 0xaf, 0x91, 0x9f, 0x53, 0xd0, 0xef, 0x4f,
+    0xe4, 0xd6, 0x26, 0xc4, 0x96, 0x0b, 0xc8, 0x79, 0xdd, 0x44, 0xc8, 0x24, 0x3c, 0x04, 0xb8, 0x90,
+    0xa9, 0xbb, 0x0d, 0xdb, 0x7e, 0x13, 0x92, 0xd8, 0x4a, 0x5b, 0x65, 0x1c, 0x15, 0xaa, 0xab, 0x4f,
 ];
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 63_600_296);
+    assert_eq!(captured.provenance().ledger_sequence(), 64_542_759);
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
     let mut fork = captured.fork();
     let pool = address(POOL);

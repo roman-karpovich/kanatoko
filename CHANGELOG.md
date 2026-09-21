@@ -2,6 +2,18 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 28.0.0 - 2026-09-21
+
+- Move the Protocol 28 line to stable `soroban-sdk` and
+  `soroban-ledger-snapshot` 28.0.0 with the compatible Host 28.0.2 runtime.
+- Rebuild the committed Protocol 28 candidate fixtures with stable SDK
+  metadata and update every pinned artifact hash.
+- Refresh the execution-driven Aquarius Mainnet captures on Protocol 28,
+  restore their offline acceptance coverage, and retain the prior Protocol 27
+  bundle as explicit cross-protocol rejection evidence.
+- Keep the frozen Protocol 28 testnet fixture unchanged and verify its local
+  stable-SDK candidates against the same captured ledger.
+
 ## 28.0.0-rc.1 - 2026-08-30
 
 - Add prerelease Protocol 28 support with exact `soroban-sdk` and

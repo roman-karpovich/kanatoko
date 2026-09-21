@@ -1,9 +1,10 @@
 # Aquarius XLM/USDC constant-product fixture
 
-This directory contains the frozen `ledger.json`/`manifest.json` compatibility
-fixture, the legacy lower-level `capture.json` bundle, and the rootless
-one-scenario `auto-capture.json` cache. Local WASM artifacts generate client
-ABIs only; the normal test suite never contacts a network.
+This directory contains the frozen Protocol 27 `ledger.json`/`manifest.json`
+compatibility fixture, its legacy `capture-p27.json` bundle, and the current
+Protocol 28 `capture.json` and `auto-capture.json` execution-driven caches.
+Local WASM artifacts generate client ABIs only; the normal test suite never
+contacts a network.
 
 The scenario's primary contract is Aquarius pool
 `CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE`. Executing its real
@@ -14,7 +15,7 @@ hash from its instance before each capture, then verified the final instance
 still referenced the same code. Automatic Host-driven discovery belongs to the
 capture-bundle path documented below.
 
-## Captured state
+## Historical frozen state
 
 - Mainnet ledger: `63599433`
 - Ledger hash: `3bdfb799014cb4d0efe0b2b8e53ef2664a805f704046f485f903472b2a94c4ed`
@@ -73,20 +74,25 @@ mint -> swap -> requote without RPC access. `pool.wasm` supplies only the
 compile-time ABI; executable network WASM comes from captured `ContractCode`
 entries.
 
-The committed `capture.json` is a schema-v1 compatibility artifact. Its root
-field is validated only as part of that legacy envelope and is discarded from
-the runtime model. It was captured at mainnet ledger `63600296` (hash
-`63aa87f14ca20f1761fd5b055359eb864db3555a33bece46a68df8fb673ece94`).
+The committed `capture.json` is a rootless schema-v2 Protocol 28 bundle. It was
+captured read-only from `https://mainnet.sorobanrpc.com` at mainnet ledger
+`64542759` (hash
+`f4bc0672191ed75576d7c170726382f3b89372dfece92665bf10b7455cb00034`).
 It reached a fixed point in two rounds with 12 present and six RPC-confirmed
 absent entries, and recorded zero RPC reads during final replay. Host-driven
 discovery found the pool plane, both SACs, the USDC issuer account, and the
 USDC admin contract plus all three referenced WASM entries without supplying
 those dependency IDs to the tool.
 
-- Canonical ledger digest: `eb0e7c7805f62c8362ee8a46de6dd89bc9a6568e8c490eab96ea70fbc8d19824`
-- Inventory digest: `e765558e1a8bb31adf20084862984c2e5d5b9f0c0d5d20fc30197b6a0dd062f3`
-- Canonical bundle digest: `07163128f427a183a7e6563cdcaf0796019b458da6e6a3ca8c572a6b5f8aa9d2`
-- `capture.json` SHA-256: `6e75474f2583e0f44bf4f962cfd1b1436d7927fc1e357f6f1d97c797e20eb6c1`
+- Canonical ledger digest: `a1bcc3ff56afa730cea0ebbf748c0b23d4b95bc62c5248becfb2719d4232de00`
+- Inventory digest: `9e2ec9771fd0fdc711b828b9305c3d7cfe00676f41a7f31635e30ed6c8b05347`
+- Canonical bundle digest: `26ae4f8c1a880671408ef6ffd2cae4628d43611e463b5b0c70ee69ba91ee8d90`
+- `capture.json` SHA-256: `6be663eb9d010f6c3acf49dadeb8b2edee0e1f73e0c2aa93e4a894eb4afc2ceb`
+
+The preceding schema-v1 Protocol 27 bundle remains byte-for-byte preserved as
+`capture-p27.json` (SHA-256
+`6e75474f2583e0f44bf4f962cfd1b1436d7927fc1e357f6f1d97c797e20eb6c1`).
+It is loaded only by the cross-protocol rejection test.
 
 Capture from `https://mainnet.sorobanrpc.com` with:
 
@@ -117,19 +123,20 @@ The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
 
 - Bundle schema: `2` (no root address)
-- Mainnet ledger: `63609576`
+- Mainnet ledger: `64542793`
 - Ledger hash:
-  `4882f2284f73308f7d0cb985f346d64b9d9dcfe50aeb6c711fa6c0de8da70d9f`
-- Discovery: 2 rounds, 14 present, 8 confirmed absent
+  `0903cf35148ea360b9505af96bc09beec7eaf355fe403224cc246b5112c12006`
+- Protocol: `28`
+- Discovery: 2 rounds, 14 present, 4 confirmed absent
 - Final replay RPC reads: `0`
 - Canonical ledger digest:
-  `dd370b89cb3acb52f052e46b4ce29ca97eae3114a6a21f04ce68b942888ebefc`
+  `28c83efcc17fd37785c73aa72f37ff4b1909167038814e82c0b121b798ff0a91`
 - Inventory digest:
-  `d16e37f68eddadd89bc016ee0a7e678aaefd87b9945b34e319bc5d60b17914c8`
+  `dca2d1fdce95a1174691fa3fdb93cd7c9e3c47d647c7806b4a67f81330e29ae7`
 - Canonical bundle digest:
-  `137e90f12126e38fe6d2148f9eddf4570695a1cdb43954f66a8b8674b4d9a8ec`
+  `df20befe0434233ef37ac7c087e04a038752f6f8b1f4a08d503e44b1069a19af`
 - `auto-capture.json` SHA-256:
-  `1c65ce976f6ec82da983c484207d0cbe9ae8731a2bf10ba816687080ce06bcac`
+  `b320b0a61603301d4fc0ccaa51466093e57b9a35a04f5b2c672b5c103e4fe68a`
 
 The typed client is deliberately generated from the different
 `kanatoko_aquarius_wrapper.wasm` artifact. The test asserts that its hash is
@@ -142,14 +149,14 @@ with all HTTP proxies pointed at
 
 ## Strict mutable candidate workflow
 
-The strict fork loads this schema-v1 capture without collapsing Unknown into
-confirmed Absent. It locally injects the committed hash-pinned Aquarius wrapper
+The strict fork loads the schema-v2 Protocol 28 capture without collapsing
+Unknown into confirmed Absent. It locally injects the committed hash-pinned Aquarius wrapper
 candidate, whose production WASM calls the captured pool WASM. The acceptance
 estimates 1 USDC -> XLM, mints a synthetic user 10% of the captured USDC
 reserve, previews and exact-gates a wrapper swap, then proves the quote
-decreased from `53354881` to `44100959` in the mutated session.
+decreased from `48281703` to `39907678` in the mutated session.
 
-Checkpoint/revert restores the first quote (`53354881`), an uncaptured contract
+Checkpoint/revert restores the first quote (`48281703`), an uncaptured contract
 key fails closed after the mutations and after revert, and every receipt plus
 the fork reports zero upstream reads. JSON output exposes detached XDR for
 results, exact auth trees, events, diagnostics, and ledger diffs.
@@ -163,12 +170,14 @@ Host-generated recording nonces are treated as mocked-auth scaffolding and are
 not committed. The nonce exception is not active in enforce mode, where an
 uncaptured anti-replay key remains Unknown and fails closed.
 
-Frozen snapshot toolchain at capture:
+Historical frozen Protocol 27 snapshot toolchain:
 
 - `stellar 27.0.0` (`5a7c5fe76530bf4248477ac812fc757146b98cc4`)
 - `stellar-xdr 27.0.0` (`5262803470be965e42f80023d12fba12808c774a`)
 - `rustc 1.94.0-nightly (e29fcf45e 2026-01-04)`
 - `cargo 1.94.0-nightly (b54051b15 2025-12-30)`
 
-The frozen snapshot files remain unchanged unless intentionally regenerated by
-a separate compatibility workflow.
+The historical `ledger.json`, `manifest.json`, `pool.wasm`, and
+`capture-p27.json` files remain unchanged unless intentionally regenerated by a
+separate compatibility workflow. The two Protocol 28 caches can be refreshed
+with the documented read-only capture commands and ignored refresh test.

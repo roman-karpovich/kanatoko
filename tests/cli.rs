@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_27_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
 
 use std::process::Command;
 
