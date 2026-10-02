@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
 
 use std::collections::BTreeMap;
 
@@ -67,8 +67,8 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
 }
 
 #[test]
-#[ignore = "manual read-only Protocol 28 mainnet fixture refresh"]
-fn refresh_protocol_28_mainnet_fixture() {
+#[ignore = "manual read-only Protocol 29 mainnet fixture refresh"]
+fn refresh_protocol_29_mainnet_fixture() {
     let run = mainnet()
         .cache(CAPTURE)
         .refresh()
@@ -79,7 +79,7 @@ fn refresh_protocol_28_mainnet_fixture() {
         run.cache_status(),
         CacheStatus::Created | CacheStatus::Refreshed
     ));
-    assert_eq!(run.fixture().provenance().protocol_version(), 28);
+    assert_eq!(run.fixture().provenance().protocol_version(), 29);
     assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_captured_real_account_state(run.fixture());
 }

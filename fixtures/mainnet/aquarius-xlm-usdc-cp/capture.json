@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "ledger_snapshot": {
-    "protocol_version": 28,
-    "sequence_number": 64542759,
-    "timestamp": 1789999573,
+    "protocol_version": 29,
+    "sequence_number": 64731471,
+    "timestamp": 1790943137,
     "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
     "base_reserve": 5000000,
     "min_persistent_entry_ttl": 2073600,
@@ -12,11 +12,11 @@
     "ledger_entries": [
       {
         "entry": {
-          "last_modified_ledger_seq": 64530296,
+          "last_modified_ledger_seq": 64720013,
           "data": {
             "account": {
               "account_id": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-              "balance": "261807607440",
+              "balance": "261807687456",
               "seq_num": "144373126631784461",
               "num_sub_entries": 6,
               "inflation_dest": null,
@@ -76,7 +76,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 64542759,
+          "last_modified_ledger_seq": 64731468,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -99,7 +99,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "88419997610042"
+                      "i128": "85023308714234"
                     }
                   },
                   {
@@ -124,7 +124,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65046260
+        "live_until": 65236500
       },
       {
         "entry": {
@@ -195,11 +195,11 @@
           },
           "ext": "v0"
         },
-        "live_until": 64658782
+        "live_until": 64848936
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 64542759,
+          "last_modified_ledger_seq": 64731468,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -321,7 +321,7 @@
                         ]
                       },
                       "val": {
-                        "bytes": "ae0da5a84b15805c5c7931ac567a8d1b34be3f26b483993d9ff80cb2c3de9852"
+                        "bytes": "d691135aade93ff0f7c229e009cde042130a05124cf7202b03d11246b4f9b473"
                       }
                     },
                     {
@@ -333,7 +333,7 @@
                         ]
                       },
                       "val": {
-                        "bytes": "f7937f8e8c06d8cfd23833aa612ed0745ab6ee6adf66ad3bf7bbaf59fd61ae19"
+                        "bytes": "802127e382da37aa26d0be2ef16c053c0606ecceed9daea603d826ead3e168c7"
                       }
                     },
                     {
@@ -411,7 +411,7 @@
                               "symbol": "expired_at"
                             },
                             "val": {
-                              "u64": "1790007035"
+                              "u64": "1790957721"
                             }
                           },
                           {
@@ -419,7 +419,7 @@
                               "symbol": "tps"
                             },
                             "val": {
-                              "u128": "4001490"
+                              "u128": "3683350"
                             }
                           }
                         ]
@@ -440,7 +440,7 @@
                               "symbol": "accumulated"
                             },
                             "val": {
-                              "u128": "2185653189294227"
+                              "u128": "2188848053100952"
                             }
                           },
                           {
@@ -448,7 +448,7 @@
                               "symbol": "block"
                             },
                             "val": {
-                              "u64": "27779"
+                              "u64": "27918"
                             }
                           },
                           {
@@ -456,7 +456,7 @@
                               "symbol": "claimed"
                             },
                             "val": {
-                              "u128": "1272077929099230"
+                              "u128": "1272186635189503"
                             }
                           },
                           {
@@ -464,7 +464,7 @@
                               "symbol": "last_time"
                             },
                             "val": {
-                              "u64": "1789974623"
+                              "u64": "1790941607"
                             }
                           }
                         ]
@@ -479,7 +479,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "42913846622"
+                        "u128": "18159098662"
                       }
                     },
                     {
@@ -491,7 +491,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "8928209270"
+                        "u128": "4098543713"
                       }
                     },
                     {
@@ -515,7 +515,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "88377083763420"
+                        "u128": "85005149615572"
                       }
                     },
                     {
@@ -527,7 +527,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "18286152154023"
+                        "u128": "19027864124838"
                       }
                     },
                     {
@@ -539,7 +539,7 @@
                         ]
                       },
                       "val": {
-                        "u32": 64542759
+                        "u32": 64731468
                       }
                     },
                     {
@@ -656,7 +656,7 @@
                         ]
                       },
                       "val": {
-                        "bytes": "07bab30eb93f9d194b079a3f02ba86821ae82b9d4770a38c6b7b8524df9e284f"
+                        "bytes": "72eb5d52c532e78ccc6c8a7f8523c458e03764074717172f69c2539e754ce624"
                       }
                     },
                     {
@@ -680,7 +680,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "36517789904573"
+                        "u128": "36477671661822"
                       }
                     },
                     {
@@ -692,7 +692,7 @@
                         ]
                       },
                       "val": {
-                        "u64": "0"
+                        "u64": "1790954821"
                       }
                     },
                     {
@@ -704,7 +704,7 @@
                         ]
                       },
                       "val": {
-                        "u128": "44748046762356"
+                        "u128": "44706325390275"
                       }
                     }
                   ]
@@ -718,7 +718,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 64542759,
+          "last_modified_ledger_seq": 64731468,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -763,10 +763,10 @@
                     "val": {
                       "vec": [
                         {
-                          "u128": "88377083763420"
+                          "u128": "85005149615572"
                         },
                         {
-                          "u128": "18286152154023"
+                          "u128": "19027864124838"
                         }
                       ]
                     }
@@ -781,7 +781,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 62338132,
+          "last_modified_ledger_seq": 64681963,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -851,7 +851,7 @@
                         ]
                       },
                       "val": {
-                        "bytes": "57e51099494c8c87313ddb86da34c855d642313877cf4222415e7f7844721878"
+                        "bytes": "bca81fb667f18e8a6dfbb6c247ed6d2e9a723c6af1857c55cd3b202b85711b08"
                       }
                     },
                     {
@@ -863,7 +863,7 @@
                         ]
                       },
                       "val": {
-                        "u64": "0"
+                        "u64": "1790954796"
                       }
                     }
                   ]
@@ -873,7 +873,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65376328
+        "live_until": 67792362
       },
       {
         "entry": {
@@ -1008,7 +1008,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 64542759,
+          "last_modified_ledger_seq": 64731468,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -1031,7 +1031,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "18295080363293"
+                      "i128": "19031962668551"
                     }
                   },
                   {
@@ -1056,7 +1056,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65048550
+        "live_until": 65238818
       },
       {
         "entry": {
@@ -1190,7 +1190,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 66381328
+        "live_until": 67688100
       },
       {
         "entry": {
@@ -1273,11 +1273,11 @@
   "provenance": {
     "rpc_origin": "https://mainnet.sorobanrpc.com",
     "network_passphrase": "Public Global Stellar Network ; September 2015",
-    "ledger_sequence": 64542759,
-    "ledger_hash": "f4bc0672191ed75576d7c170726382f3b89372dfece92665bf10b7455cb00034",
-    "protocol_version": 28
+    "ledger_sequence": 64731471,
+    "ledger_hash": "1a8181f06788ff2db2d2099b487376c82d580e39691105abef2822154a0a023d",
+    "protocol_version": 29
   },
-  "ledger_digest": "a1bcc3ff56afa730cea0ebbf748c0b23d4b95bc62c5248becfb2719d4232de00",
-  "inventory_digest": "9e2ec9771fd0fdc711b828b9305c3d7cfe00676f41a7f31635e30ed6c8b05347",
-  "canonical_digest": "26ae4f8c1a880671408ef6ffd2cae4628d43611e463b5b0c70ee69ba91ee8d90"
+  "ledger_digest": "7ff8b3606ec09f7c8c2937bcf493928dadbba455d1a8fcf78da9bc6d174d8c6d",
+  "inventory_digest": "f669b78b2823ac59874e204e00bf979252ba5a8db5c8894bd5329d5273ad9ef4",
+  "canonical_digest": "a1f6cd183948092ee5cbe4e61b071f74e40e8d39084d5c7f166dbf79c3f16292"
 }

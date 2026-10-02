@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       commit_sha: ${{ steps.release.outputs.commit_sha }}
+      crates_io: ${{ steps.release.outputs.crates_io }}
       version: ${{ steps.release.outputs.version }}
     steps:
       - name: Check out the tag
@@ -54,11 +55,18 @@ jobs:
           set -euo pipefail
 
           tag="${RELEASE_TAG}"
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha)\.[0-9]+)?$ ]]; then
             echo \
-              "Release tags must have the form vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N: ${tag}" \
+              "Release tags must have the form vMAJOR.MINOR.PATCH, vMAJOR.MINOR.PATCH-rc.N, or vMAJOR.MINOR.PATCH-alpha.N: ${tag}" \
               >&2
             exit 1
+          fi
+
+          # Alpha releases are GitHub prereleases only. They may depend on
+          # unpublished git crates, so they never reach crates.io.
+          crates_io=true
+          if [[ "${tag}" == *-alpha.* ]]; then
+            crates_io=false
           fi
 
           package_metadata="$(cargo metadata --locked --no-deps --format-version 1)"
@@ -77,7 +85,7 @@ jobs:
           else
             sdk_major="${version%%.*}"
             case "${sdk_major}" in
-              25|26|27|28) ;;
+              25|26|27|28|29) ;;
               *)
                 echo "Unsupported Kanatoko release major: ${sdk_major}" >&2
                 exit 1
@@ -184,10 +192,12 @@ jobs:
 
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "commit_sha=${tag_commit}" >> "${GITHUB_OUTPUT}"
+          echo "crates_io=${crates_io}" >> "${GITHUB_OUTPUT}"
           echo "sdk_major=${sdk_major}" >> "${GITHUB_OUTPUT}"
           echo "release_branch=${release_branch}" >> "${GITHUB_OUTPUT}"
 
       - name: Check a fresh same-major resolution
+        if: steps.release.outputs.crates_io == 'true'
         shell: bash
         env:
           SDK_MAJOR: ${{ steps.release.outputs.sdk_major }}
@@ -264,11 +274,16 @@ jobs:
         run: cargo doc --locked --all-features --no-deps
 
       - name: Verify the crates.io package
+        if: steps.release.outputs.crates_io == 'true'
         run: cargo publish --locked --dry-run
 
   publish:
     name: Publish to crates.io
     needs: verify
+    # Alpha tags are GitHub-only prereleases and must never reach crates.io.
+    if: >-
+      needs.verify.outputs.crates_io == 'true' &&
+      !contains(inputs.tag || github.ref_name, '-alpha')
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -277,6 +292,14 @@ jobs:
     outputs:
       crate_checksum: ${{ steps.registry_readback.outputs.crate_checksum }}
     steps:
+      - name: Refuse alpha releases
+        shell: bash
+        run: |
+          if [[ "${RELEASE_TAG}" == *-alpha* ]]; then
+            echo "Alpha release ${RELEASE_TAG} must not be published to crates.io" >&2
+            exit 1
+          fi
+
       - name: Select crates.io authentication mode
         id: auth_mode
         shell: bash
@@ -421,6 +444,13 @@ jobs:
     needs:
       - verify
       - publish
+    # Alpha releases skip crates.io, so publish is expected to be skipped.
+    if: >-
+      !cancelled() &&
+      needs.verify.result == 'success' &&
+      (needs.publish.result == 'success' ||
+        (needs.publish.result == 'skipped' &&
+          needs.verify.outputs.crates_io == 'false'))
     runs-on: ubuntu-latest
     permissions:
       contents: write

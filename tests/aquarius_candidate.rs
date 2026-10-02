@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_28_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
 
 use kanatoko::{
     AuthMode, AuthorizationTree, CandidateInstallMode, CapturedFixture, ExecutionMode,
@@ -26,7 +26,7 @@ const WRAPPER_SHA256: [u8; 32] = [
 #[allow(clippy::too_many_lines)]
 fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 64_542_759);
+    assert_eq!(captured.provenance().ledger_sequence(), 64_731_471);
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
     let mut fork = captured.fork();
     let pool = address(POOL);

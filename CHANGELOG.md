@@ -2,6 +2,27 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 29.0.0-alpha.1 - 2026-10-02
+
+- Add alpha Protocol 29 support on the published `soroban-env-host` 29.0.0
+  Host. This release is a GitHub prerelease only and is not published on
+  crates.io; depend on it by git tag `v29.0.0-alpha.1`.
+- No official `soroban-sdk` 29 exists yet, so take `soroban-sdk` and
+  `soroban-ledger-snapshot` from a temporary fork of `soroban-sdk` 28.0.0
+  (`roman-karpovich/rs-soroban-sdk`, tag `v29.0.0-kanatoko.1`) that only moves
+  the env crates to 29.0.0. The 29 line returns to crates.io dependencies once
+  the official SDK 29 ships.
+- Refresh the execution-driven Aquarius Mainnet captures on Protocol 29 and
+  retain the prior Protocol 28 bundle as `capture-p28.json`, next to
+  `capture-p27.json`, as explicit cross-protocol rejection evidence.
+- Add frozen Protocol 29 testnet evidence for the native XLM Stellar Asset
+  Contract and keep the Protocol 28 testnet capture as rejection evidence.
+- Keep the committed candidate fixtures built with `soroban-sdk` 28; the
+  Protocol 29 Host executes them unchanged.
+- Teach release automation to verify `-alpha.N` tags, accept the `sdk-29`
+  release line, and publish alphas only as GitHub prereleases, never to
+  crates.io.
+
 ## 28.0.0 - 2026-09-21
 
 - Move the Protocol 28 line to stable `soroban-sdk` and

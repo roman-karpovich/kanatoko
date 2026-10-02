@@ -17,3 +17,38 @@ fn protocol_27_capture_fails_closed_on_a_different_protocol_host() {
         }) if supported == SUPPORTED_PROTOCOL_VERSION
     ));
 }
+
+#[cfg(not(kanatoko_protocol_28_fixtures))]
+mod protocol_28 {
+    use super::{
+        CaptureError, CapturedFixture, FixtureError, MAINNET_PASSPHRASE, SUPPORTED_PROTOCOL_VERSION,
+    };
+
+    const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    const MAINNET_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture-p28.json";
+    const TESTNET_CAPTURE: &str = "fixtures/testnet/native-xlm-p28/auto-capture.json";
+
+    #[test]
+    fn protocol_28_mainnet_capture_fails_closed_on_a_different_protocol_host() {
+        assert_rejected_as_protocol_28(
+            &CapturedFixture::from_file(MAINNET_CAPTURE, MAINNET_PASSPHRASE).unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn protocol_28_testnet_capture_fails_closed_on_a_different_protocol_host() {
+        assert_rejected_as_protocol_28(
+            &CapturedFixture::from_file(TESTNET_CAPTURE, TESTNET_PASSPHRASE).unwrap_err(),
+        );
+    }
+
+    fn assert_rejected_as_protocol_28(error: &CaptureError) {
+        assert!(matches!(
+            error,
+            CaptureError::Fixture(FixtureError::UnsupportedProtocol {
+                found: 28,
+                supported,
+            }) if *supported == SUPPORTED_PROTOCOL_VERSION
+        ));
+    }
+}

@@ -18,6 +18,10 @@ replays with zero RPC reads. It also deploys and executes the committed
 Protocol 28 stateful and Aquarius-wrapper fixtures only inside Kanatoko's
 local Host; no contract is uploaded or deployed to testnet.
 
+On the Kanatoko 29 line this bundle is historical: `tests/protocol_boundary.rs`
+loads it only to prove that a Protocol 28 capture fails closed on the Protocol
+29 Host. The commands below apply to the Kanatoko 28 line.
+
 Refresh is an explicit read-only operation. It never builds, signs, or submits
 a transaction:
 

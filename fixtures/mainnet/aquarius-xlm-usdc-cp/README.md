@@ -1,8 +1,9 @@
 # Aquarius XLM/USDC constant-product fixture
 
 This directory contains the frozen Protocol 27 `ledger.json`/`manifest.json`
-compatibility fixture, its legacy `capture-p27.json` bundle, and the current
-Protocol 28 `capture.json` and `auto-capture.json` execution-driven caches.
+compatibility fixture, its legacy `capture-p27.json` bundle, the preceding
+Protocol 28 `capture-p28.json` bundle, and the current Protocol 29
+`capture.json` and `auto-capture.json` execution-driven caches.
 Local WASM artifacts generate client ABIs only; the normal test suite never
 contacts a network.
 
@@ -74,25 +75,27 @@ mint -> swap -> requote without RPC access. `pool.wasm` supplies only the
 compile-time ABI; executable network WASM comes from captured `ContractCode`
 entries.
 
-The committed `capture.json` is a rootless schema-v2 Protocol 28 bundle. It was
+The committed `capture.json` is a rootless schema-v2 Protocol 29 bundle. It was
 captured read-only from `https://mainnet.sorobanrpc.com` at mainnet ledger
-`64542759` (hash
-`f4bc0672191ed75576d7c170726382f3b89372dfece92665bf10b7455cb00034`).
+`64731471` (hash
+`1a8181f06788ff2db2d2099b487376c82d580e39691105abef2822154a0a023d`).
 It reached a fixed point in two rounds with 12 present and six RPC-confirmed
 absent entries, and recorded zero RPC reads during final replay. Host-driven
 discovery found the pool plane, both SACs, the USDC issuer account, and the
 USDC admin contract plus all three referenced WASM entries without supplying
 those dependency IDs to the tool.
 
-- Canonical ledger digest: `a1bcc3ff56afa730cea0ebbf748c0b23d4b95bc62c5248becfb2719d4232de00`
-- Inventory digest: `9e2ec9771fd0fdc711b828b9305c3d7cfe00676f41a7f31635e30ed6c8b05347`
-- Canonical bundle digest: `26ae4f8c1a880671408ef6ffd2cae4628d43611e463b5b0c70ee69ba91ee8d90`
-- `capture.json` SHA-256: `6be663eb9d010f6c3acf49dadeb8b2edee0e1f73e0c2aa93e4a894eb4afc2ceb`
+- Canonical ledger digest: `7ff8b3606ec09f7c8c2937bcf493928dadbba455d1a8fcf78da9bc6d174d8c6d`
+- Inventory digest: `f669b78b2823ac59874e204e00bf979252ba5a8db5c8894bd5329d5273ad9ef4`
+- Canonical bundle digest: `a1f6cd183948092ee5cbe4e61b071f74e40e8d39084d5c7f166dbf79c3f16292`
+- `capture.json` SHA-256: `8a4546aa123fb20ffb188c8c4c732a6780ad19be78f03453803462c68523253f`
 
-The preceding schema-v1 Protocol 27 bundle remains byte-for-byte preserved as
-`capture-p27.json` (SHA-256
+The preceding schema-v2 Protocol 28 bundle (mainnet ledger `64542759`) remains
+byte-for-byte preserved as `capture-p28.json` (SHA-256
+`6be663eb9d010f6c3acf49dadeb8b2edee0e1f73e0c2aa93e4a894eb4afc2ceb`), and the
+schema-v1 Protocol 27 bundle as `capture-p27.json` (SHA-256
 `6e75474f2583e0f44bf4f962cfd1b1436d7927fc1e357f6f1d97c797e20eb6c1`).
-It is loaded only by the cross-protocol rejection test.
+They are loaded only by the cross-protocol rejection tests.
 
 Capture from `https://mainnet.sorobanrpc.com` with:
 
@@ -123,20 +126,27 @@ The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
 
 - Bundle schema: `2` (no root address)
-- Mainnet ledger: `64542793`
+- Mainnet ledger: `64731476`
 - Ledger hash:
-  `0903cf35148ea360b9505af96bc09beec7eaf355fe403224cc246b5112c12006`
-- Protocol: `28`
+  `34959e05803f638574875901ffb119fd647ea4c00f1c15b8eef3c6077cc79d87`
+- Protocol: `29`
 - Discovery: 2 rounds, 14 present, 4 confirmed absent
 - Final replay RPC reads: `0`
 - Canonical ledger digest:
-  `28c83efcc17fd37785c73aa72f37ff4b1909167038814e82c0b121b798ff0a91`
+  `5d736aab69d77c3b6e5737cc2b38f81399fead7cd976223183e8a9a950c39f86`
 - Inventory digest:
-  `dca2d1fdce95a1174691fa3fdb93cd7c9e3c47d647c7806b4a67f81330e29ae7`
+  `608239a0904a77a30c2b9e3c9e46e3a0007e941d3ee6d23a0f3b41287cba44bb`
 - Canonical bundle digest:
-  `df20befe0434233ef37ac7c087e04a038752f6f8b1f4a08d503e44b1069a19af`
+  `f76eba07497de8ccf6f8fc7aa2acb8bde73f5352fea4c9d9a0a17c306aa58d2b`
 - `auto-capture.json` SHA-256:
-  `b320b0a61603301d4fc0ccaa51466093e57b9a35a04f5b2c672b5c103e4fe68a`
+  `fa35dc3c495ebbe3899a5bafee3c0ca908708d1d1df8974eee6b144fcfe6b0aa`
+
+Refresh it with the ignored read-only test:
+
+```sh
+cargo test --locked --all-features --test auto_runner \
+  refresh_protocol_29_mainnet_fixture -- --exact --ignored
+```
 
 The typed client is deliberately generated from the different
 `kanatoko_aquarius_wrapper.wasm` artifact. The test asserts that its hash is
@@ -149,14 +159,14 @@ with all HTTP proxies pointed at
 
 ## Strict mutable candidate workflow
 
-The strict fork loads the schema-v2 Protocol 28 capture without collapsing
+The strict fork loads the schema-v2 Protocol 29 capture without collapsing
 Unknown into confirmed Absent. It locally injects the committed hash-pinned Aquarius wrapper
 candidate, whose production WASM calls the captured pool WASM. The acceptance
 estimates 1 USDC -> XLM, mints a synthetic user 10% of the captured USDC
 reserve, previews and exact-gates a wrapper swap, then proves the quote
-decreased from `48281703` to `39907678` in the mutated session.
+decreased from `44629339` to `36888783` in the mutated session.
 
-Checkpoint/revert restores the first quote (`48281703`), an uncaptured contract
+Checkpoint/revert restores the first quote (`44629339`), an uncaptured contract
 key fails closed after the mutations and after revert, and every receipt plus
 the fork reports zero upstream reads. JSON output exposes detached XDR for
 results, exact auth trees, events, diagnostics, and ledger diffs.
@@ -177,7 +187,8 @@ Historical frozen Protocol 27 snapshot toolchain:
 - `rustc 1.94.0-nightly (e29fcf45e 2026-01-04)`
 - `cargo 1.94.0-nightly (b54051b15 2025-12-30)`
 
-The historical `ledger.json`, `manifest.json`, `pool.wasm`, and
-`capture-p27.json` files remain unchanged unless intentionally regenerated by a
-separate compatibility workflow. The two Protocol 28 caches can be refreshed
-with the documented read-only capture commands and ignored refresh test.
+The historical `ledger.json`, `manifest.json`, `pool.wasm`, `capture-p27.json`,
+and `capture-p28.json` files remain unchanged unless intentionally regenerated
+by a separate compatibility workflow. The two Protocol 29 caches can be
+refreshed with the documented read-only capture commands and ignored refresh
+test.
