@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "kanatoko"
-version = "29.0.0-alpha.1"
+version = "29.0.0"
 dependencies = [
  "base64",
  "serde",
@@ -1641,8 +1641,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-ledger-snapshot"
-version = "29.0.0-kanatoko.1"
-source = "git+https://github.com/roman-karpovich/rs-soroban-sdk?tag=v29.0.0-kanatoko.1#f4bebe329483033f8a15b3193ee8d1462b3624f7"
+version = "29.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42448999406cfd5fcf887f0fb957e332e64448a26e6b6bacd88b6055953408ab"
 dependencies = [
  "serde",
  "serde_json",
@@ -1654,8 +1655,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-sdk"
-version = "29.0.0-kanatoko.1"
-source = "git+https://github.com/roman-karpovich/rs-soroban-sdk?tag=v29.0.0-kanatoko.1#f4bebe329483033f8a15b3193ee8d1462b3624f7"
+version = "29.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ce21fc5a87d8b4cd17df555c63c5baaac44d1ef58ad85189108decc5b752db"
 dependencies = [
  "arbitrary",
  "bytes-lit",
@@ -1677,8 +1679,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-sdk-macros"
-version = "29.0.0-kanatoko.1"
-source = "git+https://github.com/roman-karpovich/rs-soroban-sdk?tag=v29.0.0-kanatoko.1#f4bebe329483033f8a15b3193ee8d1462b3624f7"
+version = "29.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0990001e6770626c6c54218859332f83adcba6f753a5e2735aeca63d6b7ac223"
 dependencies = [
  "darling 0.20.11",
  "heck",
@@ -1696,8 +1699,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-spec"
-version = "29.0.0-kanatoko.1"
-source = "git+https://github.com/roman-karpovich/rs-soroban-sdk?tag=v29.0.0-kanatoko.1#f4bebe329483033f8a15b3193ee8d1462b3624f7"
+version = "29.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a667172dd4ed090642034fc6b8d5e45fc34a7d30c539e2e3b4499b3837324be1"
 dependencies = [
  "base64",
  "sha2",
@@ -1708,8 +1712,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-spec-rust"
-version = "29.0.0-kanatoko.1"
-source = "git+https://github.com/roman-karpovich/rs-soroban-sdk?tag=v29.0.0-kanatoko.1#f4bebe329483033f8a15b3193ee8d1462b3624f7"
+version = "29.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f89c0a18c6119dcd7df4d99446f9aa980b15c5bf770b1c59b7ec274b83a0fa8"
 dependencies = [
  "prettyplease",
  "proc-macro2",

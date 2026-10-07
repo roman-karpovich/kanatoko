@@ -13,7 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { git = "https://github.com/roman-karpovich/kanatoko", tag = "v29.0.0-alpha.1", features = ["capture"] }
+kanatoko = { version = "29", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -26,28 +26,14 @@ an older one:
 | 26 | `kanatoko = "26"` | Protocol 26 or older |
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
-| 29 | git tag `v29.0.0-alpha.1` (see below) | Protocol 29 or older |
+| 29 | `kanatoko = "29"` | Protocol 29 or older |
 
-Use the Kanatoko major matching the network protocol being captured; the
-runner fails closed rather than replaying state under a different Host. Until a
-matching line exists, a network exactly one protocol ahead can be captured and
-replayed through an explicit opt-in; see
+The 29 line uses the stable Soroban Rust SDK and ledger snapshot 29 with the
+compatible Host 29 runtime. Use the Kanatoko major matching the network
+protocol being captured; the runner fails closed rather than replaying state
+under a different Host. Until a matching line exists, a network exactly one
+protocol ahead can be captured and replayed through an explicit opt-in; see
 [A network one protocol ahead](#a-network-one-protocol-ahead).
-
-### Protocol 29 alpha
-
-`29.0.0-alpha.1` is a GitHub-only prerelease; it is not published on
-crates.io. No official `soroban-sdk` 29 exists yet, so this line runs the
-published `soroban-env-host` 29.0.0 Host through a temporary fork of
-`soroban-sdk` 28.0.0
-([`roman-karpovich/rs-soroban-sdk`](https://github.com/roman-karpovich/rs-soroban-sdk),
-tag `v29.0.0-kanatoko.1`) that only moves the env crates to 29.0.0. Depend on
-the alpha by git tag, as in the snippet at the top of this file. Cargo follows
-Kanatoko's own git dependency on the forked SDK, so the test crate needs no
-`[patch]` section. Use the re-exported `kanatoko::soroban_sdk` there instead of
-a second `soroban-sdk` dependency. Once the official `soroban-sdk` 29 ships, the
-29 line moves back to crates.io dependencies and a regular `kanatoko = "29"`
-release.
 
 ## Your contract against mainnet
 
@@ -395,8 +381,7 @@ by parsing diagnostic or panic text.
 Each stable Kanatoko major selects the same major of the SDK, Host, and
 ledger-snapshot crates. Stable lines use broad major ranges so Cargo can
 resolve one compatible runtime with the rest of the test harness. Prerelease
-lines use exact compatible pins; the 29 alpha takes the SDK and ledger snapshot
-from the temporary fork's exact git tag. Use the re-exported
+lines use exact compatible pins. Use the re-exported
 `kanatoko::soroban_sdk`, `kanatoko::soroban_env_host`, and
 `kanatoko::soroban_ledger_snapshot` instead of declaring a second runtime
 version when possible.

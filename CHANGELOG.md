@@ -2,6 +2,30 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 29.0.0 - 2026-10-07
+
+- Add Protocol 29 support on the official `soroban-sdk` and
+  `soroban-ledger-snapshot` 29.0.0 with the compatible Host 29.0.0 runtime.
+  The 29 line is published on crates.io as `kanatoko = "29"`.
+- Drop the temporary `soroban-sdk` fork used by `29.0.0-alpha.1`. Every
+  dependency comes from crates.io again, with the same broad major ranges as
+  the other stable lines. No Kanatoko API changes; SDK 29 has no migration
+  steps from SDK 28.
+- Carry over the opt-in newer-protocol mode from 28.1.0. It is defined
+  relative to the Host protocol, so on the 29 Host it accepts exactly
+  Protocol 30 and executes it as Protocol 29. Protocol 31 and Protocols 28
+  and older still fail closed with `UnsupportedProtocol`, also with the
+  opt-in. No Protocol 30 network exists yet, so acceptance is covered by
+  synthetic in-memory Protocol 30 ledgers and captures.
+- Keep the fixtures of the alpha: the Protocol 29 Mainnet `capture.json` and
+  `auto-capture.json` and the `native-xlm-p29` testnet capture are primary.
+  `capture-p27.json`, `capture-p28.json`, and the Protocol 28 testnet capture
+  remain cross-protocol rejection evidence. The 28.1.0 copies
+  `capture-p29.json` and `auto-capture-p29.json` are not carried over: they
+  are byte-identical to the primaries on this line.
+- Keep the committed candidate fixtures built with `soroban-sdk` 28; the
+  Protocol 29 Host executes them unchanged.
+
 ## 29.0.0-alpha.1 - 2026-10-02
 
 - Add alpha Protocol 29 support on the published `soroban-env-host` 29.0.0

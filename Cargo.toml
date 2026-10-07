@@ -1,6 +1,6 @@
 [package]
 name = "kanatoko"
-version = "29.0.0-alpha.1"
+version = "29.0.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Test Soroban contracts against captured Stellar network state"
@@ -23,13 +23,9 @@ serde_json = { version = "=1.0.151", optional = true }
 sha2 = "=0.10.9"
 # Keep these major ranges aligned with the Kanatoko release major. soroban-sdk
 # pins its compatible Host patch, so Cargo resolves one shared runtime.
-soroban-env-host = "=29.0.0"
-# TEMPORARY: no official soroban-sdk 29 exists yet. Until it ships, take the SDK
-# and ledger snapshot from a fork of soroban-sdk 28.0.0 that only moves the env
-# crates to the published 29.0.0 Host. Return to crates.io ranges ("29") when
-# the official release is available.
-soroban-ledger-snapshot = { git = "https://github.com/roman-karpovich/rs-soroban-sdk", tag = "v29.0.0-kanatoko.1", version = "=29.0.0-kanatoko.1" }
-soroban-sdk = { git = "https://github.com/roman-karpovich/rs-soroban-sdk", tag = "v29.0.0-kanatoko.1", version = "=29.0.0-kanatoko.1", features = ["testutils"] }
+soroban-env-host = "29"
+soroban-ledger-snapshot = "29"
+soroban-sdk = { version = "29", features = ["testutils"] }
 thiserror = "2"
 ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
 
