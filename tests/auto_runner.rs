@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use kanatoko::{mainnet, CacheStatus, ScenarioFork};
+use kanatoko::{mainnet, CacheStatus, PreviewAuth, ScenarioFork, SUPPORTED_PROTOCOL_VERSION};
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     AlphaNum4, AssetCode4, ContractEventBody, ContractExecutable, Hash, LedgerEntry,
@@ -63,6 +63,46 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
         <[u8; 32]>::from(Sha256::digest(ABI_WASM)),
         "the ABI source WASM must not replace the captured network executable",
     );
+    assert_captured_real_account_state(run.fixture());
+}
+
+/// On a cache recorded at the Host's own protocol the newer-protocol opt-in
+/// changes nothing: the network and executed protocols are both the Host's.
+/// Acceptance of a ledger one protocol ahead is covered by the synthetic
+/// in-memory tests in the library and in `tests/fixture_runtime.rs`.
+#[test]
+fn newer_protocol_opt_in_replays_the_current_protocol_cache_unchanged() {
+    let run = mainnet()
+        .cache(CAPTURE)
+        .offline()
+        .allow_newer_protocol()
+        .run(|fork| {
+            assert_eq!(fork.network_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+            assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+            let pool = fork.contract(POOL);
+            let report = fork
+                .preview(&pool, "get_tokens", (), PreviewAuth::Record)
+                .unwrap();
+            assert!(report.receipt().outcome.is_success());
+            assert_eq!(report.receipt().upstream_reads, 0);
+            assert_eq!(
+                report.network_protocol_version(),
+                SUPPORTED_PROTOCOL_VERSION
+            );
+            assert_eq!(
+                report.executed_protocol_version(),
+                SUPPORTED_PROTOCOL_VERSION
+            );
+            full_scenario(fork);
+        })
+        .unwrap();
+
+    assert_eq!(run.cache_status(), CacheStatus::Hit);
+    let provenance = run.fixture().provenance();
+    assert_eq!(provenance.ledger_sequence(), 64_731_476);
+    assert_eq!(provenance.protocol_version(), 29);
+    assert_eq!(provenance.executed_protocol_version(), 29);
+    assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_captured_real_account_state(run.fixture());
 }
 

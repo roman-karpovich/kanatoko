@@ -12,6 +12,7 @@ XLM Stellar Asset Contract on public testnet:
 - ledger digest: `d28f50e6342075951ba9b082afc5e892eb42fc901ea0b44bfa7dc7cf55443c4a`
 - inventory digest: `66c7b6670b560c5a64731db2b0c1d99705c0a46c01313676ad99319073219967`
 - canonical bundle digest: `3b72a2481bb1656a126c2a5c7216b8d9c2e3857fb07b6eaef592a71f04ee6145`
+- SHA-256: `b7213fd1a3e48ac9013a7531146429d39d63d529984148ff4971e11343e250c5`
 
 The normal test is strictly offline and proves that the committed bundle
 replays with zero RPC reads. It also deploys and executes the committed

@@ -23,6 +23,33 @@ All notable changes to Kanatoko are documented in this file.
   release line, and publish alphas only as GitHub prereleases, never to
   crates.io.
 
+## 28.1.0 - 2026-10-07
+
+- Add an opt-in newer-protocol mode that captures and replays a ledger exactly
+  one protocol ahead of the Host (Protocol 29 on the 28 line) while no
+  matching Kanatoko line exists: `AutoRunner::allow_newer_protocol`,
+  `CaptureBuilder::allow_newer_protocol`,
+  `CapturedFixture::from_file_allowing_newer_protocol`,
+  `FrozenFixture::from_file_allowing_newer_protocol`,
+  `FrozenFixture::from_snapshot_allowing_newer_protocol`, and
+  `--allow-newer-protocol` on the CLI `capture` and `run` commands.
+- Keep captures truthful: bundles, provenance, the bundled ledger snapshot, and
+  every digest record the real network protocol. Only the ledger protocol
+  handed to the Host is downgraded, in one place for every `Env`.
+- Expose the network and executed protocols through
+  `network_protocol_version` and `executed_protocol_version` on `Fork`,
+  `StrictFork`, `ScenarioFork`, and `InvocationReport`, plus
+  `CaptureProvenance::executed_protocol_version` and
+  `FrozenFixture::executed_protocol_version`. The CLI prints a one-line warning
+  and adds both protocols to its report and receipts in this mode.
+- Keep rejecting older protocols and protocols two or more ahead with the
+  existing `UnsupportedProtocol` errors. Without the opt-in, behaviour, errors,
+  output, and the bundle format are unchanged.
+- Add the Protocol 29 Mainnet and testnet captures from the 29 line as
+  `capture-p29.json`, `auto-capture-p29.json`, and `native-xlm-p29`, with
+  offline acceptance on the Protocol 28 Host. The strict Aquarius workflow
+  returns the same quotes as on a Protocol 29 Host.
+
 ## 28.0.0 - 2026-09-21
 
 - Move the Protocol 28 line to stable `soroban-sdk` and

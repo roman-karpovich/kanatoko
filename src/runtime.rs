@@ -1,13 +1,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
-    testutils::{EnvTestConfig, Snapshot},
+    testutils::{EnvTestConfig, Snapshot, SnapshotSourceInput},
     Address, ConstructorArgs, Env,
 };
 use thiserror::Error;
 
-use crate::{canonical_ledger_digest, FixtureError, FrozenFixture};
+use crate::{
+    canonical_ledger_digest, fixture::executed_protocol_version, FixtureError, FrozenFixture,
+};
 
 static NEXT_FORK_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -25,6 +28,7 @@ pub struct Checkpoint {
 pub struct Fork {
     id: u64,
     env: Env,
+    network_protocol_version: u32,
 }
 
 impl Fork {
@@ -37,10 +41,27 @@ impl Fork {
     pub fn from_fixture(fixture: &FrozenFixture) -> Self {
         let id = NEXT_FORK_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, 0, "Kanatoko fork ID space exhausted");
+        let snapshot = fixture.ledger_snapshot().clone();
         Self {
             id,
-            env: env_from_ledger_snapshot(fixture.ledger_snapshot().clone()),
+            network_protocol_version: snapshot.protocol_version,
+            env: fork_env(ForkEnvSeed::Ledger(snapshot.into())),
         }
+    }
+
+    /// Ledger protocol of the network the fixture was recorded on.
+    #[must_use]
+    pub const fn network_protocol_version(&self) -> u32 {
+        self.network_protocol_version
+    }
+
+    /// Ledger protocol the Host executes in this fork.
+    ///
+    /// It differs from [`Self::network_protocol_version`] only for a fixture
+    /// accepted through the opt-in newer-protocol mode.
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.network_protocol_version)
     }
 
     /// Provides the `Env` required by generated Soroban clients.
@@ -75,9 +96,14 @@ impl Fork {
     /// Captures ledger state plus SDK deterministic generators.
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {
+        let mut snapshot = self.env.to_snapshot();
+        restore_network_protocol(
+            &mut snapshot.ledger.protocol_version,
+            self.network_protocol_version,
+        );
         Checkpoint {
             fork_id: self.id,
-            snapshot: self.env.to_snapshot(),
+            snapshot,
         }
     }
 
@@ -95,31 +121,78 @@ impl Fork {
             return Err(RuntimeError::CheckpointMismatch);
         }
 
-        self.env = env_from_snapshot(checkpoint.snapshot);
+        self.env = fork_env(ForkEnvSeed::Snapshot(checkpoint.snapshot));
         Ok(())
     }
 
     /// Computes the canonical digest of the current ledger state.
+    ///
+    /// The digest covers the network ledger protocol, so a fresh fork's digest
+    /// equals [`FrozenFixture::ledger_digest`] also in the newer-protocol mode.
     ///
     /// # Errors
     ///
     /// Returns a fixture integrity or XDR error if the Host exposes invalid
     /// ledger entries.
     pub fn ledger_digest(&self) -> Result<[u8; 32], FixtureError> {
-        canonical_ledger_digest(&self.env.to_ledger_snapshot())
+        canonical_ledger_digest(&network_ledger_snapshot(
+            &self.env,
+            self.network_protocol_version,
+        ))
     }
 }
 
-fn env_from_ledger_snapshot(snapshot: soroban_ledger_snapshot::LedgerSnapshot) -> Env {
-    let mut env = Env::from_ledger_snapshot(snapshot);
+/// What a fork `Env` is created from.
+pub(crate) enum ForkEnvSeed {
+    /// Ledger info, state source, and base snapshot; fresh SDK generators.
+    Ledger(SnapshotSourceInput),
+    /// A complete SDK snapshot, keeping its address/nonce generators.
+    Snapshot(Snapshot),
+}
+
+/// Creates every Kanatoko `Env` from captured or checkpointed ledger state.
+///
+/// This is the single place where the ledger protocol given to the Host is
+/// chosen: a ledger accepted by the opt-in newer-protocol mode (exactly one
+/// protocol ahead) executes as [`crate::SUPPORTED_PROTOCOL_VERSION`]; every
+/// other protocol is handed over unchanged. Callers keep the network protocol
+/// in their own snapshots and digests and read state back through
+/// [`network_ledger_snapshot`].
+pub(crate) fn fork_env(seed: ForkEnvSeed) -> Env {
+    let mut env = match seed {
+        ForkEnvSeed::Ledger(mut input) => {
+            if let Some(ledger_info) = input.ledger_info.as_mut() {
+                ledger_info.protocol_version =
+                    executed_protocol_version(ledger_info.protocol_version);
+            }
+            Env::from_ledger_snapshot(input)
+        }
+        ForkEnvSeed::Snapshot(mut snapshot) => {
+            snapshot.ledger.protocol_version =
+                executed_protocol_version(snapshot.ledger.protocol_version);
+            Env::from_snapshot(snapshot)
+        }
+    };
     configure_fork_env(&mut env);
     env
 }
 
-fn env_from_snapshot(snapshot: Snapshot) -> Env {
-    let mut env = Env::from_snapshot(snapshot);
-    configure_fork_env(&mut env);
-    env
+/// Reads an `Env`'s current ledger snapshot with the network ledger protocol
+/// restored, undoing the execution-only downgrade made by [`fork_env`].
+pub(crate) fn network_ledger_snapshot(env: &Env, network_protocol_version: u32) -> LedgerSnapshot {
+    let mut snapshot = env.to_ledger_snapshot();
+    restore_network_protocol(&mut snapshot.protocol_version, network_protocol_version);
+    snapshot
+}
+
+/// Maps the protocol an `Env` executes back to the network protocol.
+///
+/// Only the exact downgrade made by [`fork_env`] is undone; any other value is
+/// reported unchanged.
+pub(crate) fn restore_network_protocol(protocol_version: &mut u32, network_protocol_version: u32) {
+    if *protocol_version == executed_protocol_version(network_protocol_version) {
+        *protocol_version = network_protocol_version;
+    }
 }
 
 pub(crate) fn configure_fork_env(env: &mut Env) {

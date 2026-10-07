@@ -180,6 +180,17 @@ Host-generated recording nonces are treated as mocked-auth scaffolding and are
 not committed. The nonce exception is not active in enforce mode, where an
 uncaptured anti-replay key remains Unknown and fails closed.
 
+## Newer-protocol mode on this line
+
+Kanatoko 28.1.0 introduced an opt-in mode that runs a ledger one protocol ahead
+on the older Host. On that line, `capture.json` above (copied there as
+`capture-p29.json`) produced the same strict-workflow quotes on the Protocol 28
+Host as here on the Protocol 29 Host: `44629339`, `36888783`, and `44629339`
+after revert. On this line the same mode accepts exactly Protocol 30 and
+executes it on the Protocol 29 Host. No Protocol 30 network exists yet, so no
+Protocol 30 capture is committed; the mode is tested with synthetic in-memory
+Protocol 30 snapshots.
+
 Historical frozen Protocol 27 snapshot toolchain:
 
 - `stellar 27.0.0` (`5a7c5fe76530bf4248477ac812fc757146b98cc4`)

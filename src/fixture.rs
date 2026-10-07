@@ -6,7 +6,77 @@ use soroban_ledger_snapshot::{Error as SnapshotError, LedgerSnapshot};
 use thiserror::Error;
 
 /// The only ledger protocol accepted by the selected Soroban Host.
+///
+/// Fixture loading and capture accept exactly this protocol by default. The
+/// explicit newer-protocol mode (for example
+/// [`FrozenFixture::from_snapshot_allowing_newer_protocol`]) additionally
+/// accepts exactly one protocol above it, which the Host then executes as this
+/// protocol.
 pub const SUPPORTED_PROTOCOL_VERSION: u32 = soroban_env_host::VERSION.interface.protocol;
+
+/// The one ledger protocol above the Host's own that the opt-in newer-protocol
+/// mode accepts.
+const NEWER_PROTOCOL_VERSION: u32 = SUPPORTED_PROTOCOL_VERSION + 1;
+
+/// Which ledger protocols a loader or capture accepts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ProtocolPolicy {
+    /// Only [`SUPPORTED_PROTOCOL_VERSION`]; the default without the opt-in.
+    #[default]
+    Exact,
+    /// [`SUPPORTED_PROTOCOL_VERSION`] or exactly one protocol above it.
+    AllowNewer,
+}
+
+impl ProtocolPolicy {
+    /// Fails closed with the existing `UnsupportedProtocol` shape when `found`
+    /// is outside the policy. Older protocols are always rejected.
+    pub(crate) const fn check(self, found: u32) -> Result<(), UnsupportedProtocol> {
+        let accepted = found == SUPPORTED_PROTOCOL_VERSION
+            || (matches!(self, Self::AllowNewer) && found == NEWER_PROTOCOL_VERSION);
+        if accepted {
+            Ok(())
+        } else {
+            Err(UnsupportedProtocol {
+                found,
+                supported: SUPPORTED_PROTOCOL_VERSION,
+            })
+        }
+    }
+}
+
+/// Crate-internal carrier for the fields of the public `UnsupportedProtocol`
+/// error variants.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UnsupportedProtocol {
+    pub(crate) found: u32,
+    pub(crate) supported: u32,
+}
+
+impl From<UnsupportedProtocol> for FixtureError {
+    fn from(error: UnsupportedProtocol) -> Self {
+        Self::UnsupportedProtocol {
+            found: error.found,
+            supported: error.supported,
+        }
+    }
+}
+
+/// Ledger protocol handed to the selected Host for a validated network ledger
+/// protocol.
+///
+/// Only a ledger exactly one protocol ahead, which is accepted solely through
+/// the opt-in newer-protocol mode, is executed as
+/// [`SUPPORTED_PROTOCOL_VERSION`]. Every other value is passed through
+/// unchanged, so an unvalidated newer ledger still reaches the Host's own
+/// fail-closed protocol check instead of being silently downgraded.
+pub(crate) const fn executed_protocol_version(network_protocol_version: u32) -> u32 {
+    if network_protocol_version == NEWER_PROTOCOL_VERSION {
+        SUPPORTED_PROTOCOL_VERSION
+    } else {
+        network_protocol_version
+    }
+}
 
 const LEDGER_DIGEST_DOMAIN_V1: &[u8] = b"KANATOKO\0LEDGER-SNAPSHOT\0V1\0";
 
@@ -28,6 +98,36 @@ impl FrozenFixture {
         path: impl AsRef<Path>,
         expected_network_passphrase: &str,
     ) -> Result<Self, FixtureError> {
+        Self::from_file_with_policy(path, expected_network_passphrase, ProtocolPolicy::Exact)
+    }
+
+    /// Like [`Self::from_file`], but also accepts a ledger exactly one
+    /// protocol newer than [`SUPPORTED_PROTOCOL_VERSION`].
+    ///
+    /// See [`Self::from_snapshot_allowing_newer_protocol`] for what this mode
+    /// changes and what it keeps.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::from_file`]. Protocols older
+    /// than [`SUPPORTED_PROTOCOL_VERSION`] and protocols two or more above it
+    /// are still rejected with [`FixtureError::UnsupportedProtocol`].
+    pub fn from_file_allowing_newer_protocol(
+        path: impl AsRef<Path>,
+        expected_network_passphrase: &str,
+    ) -> Result<Self, FixtureError> {
+        Self::from_file_with_policy(
+            path,
+            expected_network_passphrase,
+            ProtocolPolicy::AllowNewer,
+        )
+    }
+
+    fn from_file_with_policy(
+        path: impl AsRef<Path>,
+        expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
+    ) -> Result<Self, FixtureError> {
         let path = path.as_ref();
         let snapshot = LedgerSnapshot::read_file(path).map_err(|source| match source {
             source @ SnapshotError::Io(_) => FixtureError::Read {
@@ -43,7 +143,7 @@ impl FrozenFixture {
                 source: SnapshotError::Serde(error),
             },
         })?;
-        Self::from_snapshot(snapshot, expected_network_passphrase)
+        Self::from_snapshot_with_policy(snapshot, expected_network_passphrase, policy)
     }
 
     /// Validates protocol, network, key integrity, and canonical digest.
@@ -56,12 +156,47 @@ impl FrozenFixture {
         snapshot: LedgerSnapshot,
         expected_network_passphrase: &str,
     ) -> Result<Self, FixtureError> {
-        if snapshot.protocol_version != SUPPORTED_PROTOCOL_VERSION {
-            return Err(FixtureError::UnsupportedProtocol {
-                found: snapshot.protocol_version,
-                supported: SUPPORTED_PROTOCOL_VERSION,
-            });
-        }
+        Self::from_snapshot_with_policy(
+            snapshot,
+            expected_network_passphrase,
+            ProtocolPolicy::Exact,
+        )
+    }
+
+    /// Like [`Self::from_snapshot`], but also accepts a ledger exactly one
+    /// protocol newer than [`SUPPORTED_PROTOCOL_VERSION`].
+    ///
+    /// The fixture stays truthful: its snapshot, protocol field, and
+    /// [`Self::ledger_digest`] keep the real network protocol. Only execution
+    /// is downgraded: every `Env` created from it gives the Host
+    /// [`SUPPORTED_PROTOCOL_VERSION`] as the ledger protocol, reported by
+    /// [`Self::executed_protocol_version`]. Host behaviour that changed in the
+    /// newer protocol without an XDR change, such as metering, therefore
+    /// follows the older Host. Entries the older XDR cannot decode, and
+    /// contracts built for a newer interface version, still fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::from_snapshot`]. Protocols
+    /// older than [`SUPPORTED_PROTOCOL_VERSION`] and protocols two or more
+    /// above it are still rejected with [`FixtureError::UnsupportedProtocol`].
+    pub fn from_snapshot_allowing_newer_protocol(
+        snapshot: LedgerSnapshot,
+        expected_network_passphrase: &str,
+    ) -> Result<Self, FixtureError> {
+        Self::from_snapshot_with_policy(
+            snapshot,
+            expected_network_passphrase,
+            ProtocolPolicy::AllowNewer,
+        )
+    }
+
+    pub(crate) fn from_snapshot_with_policy(
+        snapshot: LedgerSnapshot,
+        expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
+    ) -> Result<Self, FixtureError> {
+        policy.check(snapshot.protocol_version)?;
 
         let expected_network_id: [u8; 32] =
             Sha256::digest(expected_network_passphrase.as_bytes()).into();
@@ -86,9 +221,24 @@ impl FrozenFixture {
     }
 
     /// Validated source snapshot used to initialize each isolated fork.
+    ///
+    /// Its `protocol_version` is always the network protocol the ledger was
+    /// recorded at, also under the newer-protocol mode.
     #[must_use]
     pub const fn ledger_snapshot(&self) -> &LedgerSnapshot {
         &self.snapshot
+    }
+
+    /// Ledger protocol the Host executes for this fixture.
+    ///
+    /// Equals the snapshot's network protocol, except for a ledger one
+    /// protocol newer than [`SUPPORTED_PROTOCOL_VERSION`] accepted through
+    /// [`Self::from_snapshot_allowing_newer_protocol`] or
+    /// [`Self::from_file_allowing_newer_protocol`], which executes as
+    /// [`SUPPORTED_PROTOCOL_VERSION`].
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.snapshot.protocol_version)
     }
 }
 

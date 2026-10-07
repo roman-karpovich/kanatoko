@@ -3,6 +3,7 @@
 use kanatoko::{
     AuthMode, AuthorizationTree, CandidateInstallMode, CapturedFixture, ExecutionMode,
     InvokeOutcome, InvokeRequest, Receipt, ReceiptDisposition, StrictFork, StrictForkError,
+    SUPPORTED_PROTOCOL_VERSION,
 };
 use soroban_env_host::xdr::{
     ContractId, Hash, Int128Parts, InvokeContractArgs, ScAddress, ScSymbol, ScVal,
@@ -21,14 +22,71 @@ const WRAPPER_SHA256: [u8; 32] = [
     0xe4, 0xd6, 0x26, 0xc4, 0x96, 0x0b, 0xc8, 0x79, 0xdd, 0x44, 0xc8, 0x24, 0x3c, 0x04, 0xb8, 0x90,
     0xa9, 0xbb, 0x0d, 0xdb, 0x7e, 0x13, 0x92, 0xd8, 0x4a, 0x5b, 0x65, 0x1c, 0x15, 0xaa, 0xab, 0x4f,
 ];
+/// Quotes of the committed Protocol 29 capture on the Protocol 29 Host. Kanatoko
+/// 28.1.0 returns the same quotes for this capture on the Protocol 28 Host
+/// through the newer-protocol opt-in.
+const PROTOCOL_29_QUOTES: Quotes = Quotes {
+    before: 44_629_339,
+    after: 36_888_783,
+    restored: 44_629_339,
+};
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
     assert_eq!(captured.provenance().ledger_sequence(), 64_731_471);
+    assert_eq!(captured.provenance().protocol_version(), 29);
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
+
+    assert_eq!(candidate_scenario(&captured), PROTOCOL_29_QUOTES);
+}
+
+/// On a capture at the Host's own protocol the newer-protocol opt-in changes
+/// nothing: same protocols, same digest, same quotes.
+#[test]
+fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
+    let captured =
+        CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    assert_eq!(captured.provenance().ledger_sequence(), 64_731_471);
+    assert_eq!(
+        captured.provenance().protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        captured.provenance().executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        hex(captured.frozen_fixture().ledger_digest()),
+        "7ff8b3606ec09f7c8c2937bcf493928dadbba455d1a8fcf78da9bc6d174d8c6d"
+    );
+    assert_eq!(captured.report().final_replay_rpc_reads(), 0);
+
+    assert_eq!(candidate_scenario(&captured), PROTOCOL_29_QUOTES);
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Quotes {
+    before: u128,
+    after: u128,
+    restored: u128,
+}
+
+#[allow(clippy::too_many_lines)]
+fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
     let mut fork = captured.fork();
+    assert_eq!(
+        fork.network_protocol_version(),
+        captured.provenance().protocol_version()
+    );
+    assert_eq!(
+        fork.executed_protocol_version(),
+        captured.provenance().executed_protocol_version()
+    );
+    assert_eq!(
+        fork.ledger_digest().unwrap(),
+        captured.frozen_fixture().ledger_digest()
+    );
     let pool = address(POOL);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
     let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
@@ -151,7 +209,8 @@ fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert()
     assert!(quote_after < quote_before);
 
     fork.revert(checkpoint).unwrap();
-    assert_eq!(quote(&mut fork, &candidate), quote_before);
+    let quote_restored = quote(&mut fork, &candidate);
+    assert_eq!(quote_restored, quote_before);
     assert_eq!(token_balance(&mut fork, USDC, &user), 0);
     assert_eq!(token_balance(&mut fork, XLM, &user), 0);
     assert_unknown(&mut fork);
@@ -160,6 +219,30 @@ fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert()
         .receipts()
         .iter()
         .all(|receipt| receipt.upstream_reads == 0));
+    assert_eq!(
+        fork.network_protocol_version(),
+        captured.provenance().protocol_version()
+    );
+    assert_eq!(
+        fork.executed_protocol_version(),
+        captured.provenance().executed_protocol_version()
+    );
+
+    Quotes {
+        before: quote_before,
+        after: quote_after,
+        restored: quote_restored,
+    }
+}
+
+fn hex(bytes: [u8; 32]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        write!(&mut output, "{byte:02x}").unwrap();
+    }
+    output
 }
 
 fn quote(fork: &mut StrictFork, candidate: &ScAddress) -> u128 {

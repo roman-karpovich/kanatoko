@@ -29,7 +29,8 @@ use crate::{
     capture::{
         contract_instance_key, LocalLedger, TrackingSource, MAINNET_PASSPHRASE, TESTNET_PASSPHRASE,
     },
-    runtime::configure_fork_env,
+    fixture::{executed_protocol_version, ProtocolPolicy},
+    runtime::{fork_env, network_ledger_snapshot, restore_network_protocol, ForkEnvSeed},
     strict::{
         detached_diagnostics, detached_snapshot_evidence, invocation_values, invoke_once,
         invoke_outcome, is_nonce_data, state_diff, strip_new_mock_nonces,
@@ -158,6 +159,7 @@ pub struct AutoRunner {
     source: CaptureSource,
     network_passphrase: String,
     rpc_rate_limit: u32,
+    protocol_policy: ProtocolPolicy,
     cache: Option<PathBuf>,
     offline: bool,
     refresh: bool,
@@ -179,6 +181,7 @@ impl AutoRunner {
             },
             network_passphrase: network_passphrase.into(),
             rpc_rate_limit: 0,
+            protocol_policy: ProtocolPolicy::Exact,
             cache: None,
             offline: false,
             refresh: false,
@@ -194,6 +197,7 @@ impl AutoRunner {
             source: CaptureSource::Builder(builder),
             network_passphrase: network_passphrase.into(),
             rpc_rate_limit: 0,
+            protocol_policy: ProtocolPolicy::Exact,
             cache: None,
             offline: false,
             refresh: false,
@@ -220,6 +224,33 @@ impl AutoRunner {
     #[must_use]
     pub const fn rpc_rate_limit(mut self, max_requests_per_second: u32) -> Self {
         self.rpc_rate_limit = max_requests_per_second;
+        self
+    }
+
+    /// Opts into capturing and replaying a network exactly one ledger protocol
+    /// newer than [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    ///
+    /// Applies to online capture and to loading the cache, also with
+    /// [`Self::offline`]. Captures stay truthful: the cache bundle, its
+    /// provenance, and every digest keep the real network protocol. Only
+    /// execution is downgraded: the scenario's `Env` gives the Host
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`] as the ledger protocol, so the
+    /// scenario `Env`'s ledger info reports the executed protocol.
+    /// [`ScenarioFork::network_protocol_version`],
+    /// [`ScenarioFork::executed_protocol_version`], and
+    /// [`crate::CaptureProvenance::executed_protocol_version`] expose both.
+    /// See [`CaptureBuilder::allow_newer_protocol`] for what can differ from
+    /// the network.
+    ///
+    /// Older protocols and protocols two or more above the Host are still
+    /// rejected with the usual `UnsupportedProtocol` errors.
+    #[must_use]
+    pub fn allow_newer_protocol(mut self) -> Self {
+        self.protocol_policy = ProtocolPolicy::AllowNewer;
+        #[cfg(test)]
+        if let CaptureSource::Builder(builder) = self.source {
+            self.source = CaptureSource::Builder(builder.allow_newer_protocol());
+        }
         self
     }
 
@@ -281,7 +312,11 @@ impl AutoRunner {
         if self.offline {
             if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
                 if path.exists() {
-                    let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
+                    let cached = CapturedFixture::from_file_with_policy(
+                        path,
+                        &self.network_passphrase,
+                        self.protocol_policy,
+                    )?;
                     replay(&cached, &scenario)?;
                     return Ok(AutoRun {
                         fixture: cached,
@@ -299,9 +334,12 @@ impl AutoRunner {
 
         match &self.source {
             CaptureSource::Http { rpc_url } => {
-                let builder =
+                let mut builder =
                     CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?
                         .rpc_rate_limit(self.rpc_rate_limit);
+                if self.protocol_policy == ProtocolPolicy::AllowNewer {
+                    builder = builder.allow_newer_protocol();
+                }
                 self.run_online(&builder, &scenario)
             }
             #[cfg(test)]
@@ -316,7 +354,11 @@ impl AutoRunner {
         let cache_existed = self.cache.as_deref().is_some_and(Path::exists);
         let captured = if let Some(path) = self.cache.as_deref().filter(|_| !self.refresh) {
             if path.exists() {
-                let cached = CapturedFixture::from_file(path, &self.network_passphrase)?;
+                let cached = CapturedFixture::from_file_with_policy(
+                    path,
+                    &self.network_passphrase,
+                    self.protocol_policy,
+                )?;
                 if builder.cached_anchor_is_current(&cached)? {
                     match replay(&cached, scenario) {
                         Ok(()) => {
@@ -400,9 +442,27 @@ pub enum PreviewAuth {
 pub struct InvocationReport {
     receipt: Receipt,
     resources: Option<InvocationResources>,
+    network_protocol_version: u32,
 }
 
 impl InvocationReport {
+    /// Ledger protocol of the captured network. The receipt's digests refer
+    /// to ledger state at this protocol.
+    #[must_use]
+    pub const fn network_protocol_version(&self) -> u32 {
+        self.network_protocol_version
+    }
+
+    /// Ledger protocol the Host executed this preview with.
+    ///
+    /// It differs from [`Self::network_protocol_version`] only under the
+    /// opt-in newer-protocol mode; resources are then estimates of the older
+    /// Host.
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.network_protocol_version)
+    }
+
     #[must_use]
     pub const fn receipt(&self) -> &Receipt {
         &self.receipt
@@ -478,6 +538,7 @@ pub struct ScenarioFork<'a> {
     local_accounts: RefCell<BTreeSet<[u8; 32]>>,
     local_ledger: Rc<LocalLedger>,
     tracking_source: Option<Rc<TrackingSource>>,
+    network_protocol_version: u32,
 }
 
 impl<'a> ScenarioFork<'a> {
@@ -486,18 +547,47 @@ impl<'a> ScenarioFork<'a> {
         local_ledger: Rc<LocalLedger>,
         tracking_source: Option<Rc<TrackingSource>>,
     ) -> Self {
+        // Every runner pass has a tracking source that knows the network
+        // protocol. Without one, the Env executes its own network protocol.
+        let network_protocol_version = tracking_source.as_ref().map_or_else(
+            || {
+                env.host()
+                    .with_ledger_info(|ledger| Ok(ledger.protocol_version))
+                    .expect("the scenario environment must have ledger metadata")
+            },
+            |source| source.network_protocol_version(),
+        );
         Self {
             env,
             local_accounts: RefCell::new(BTreeSet::new()),
             local_ledger,
             tracking_source,
+            network_protocol_version,
         }
     }
 
     /// Current pass environment for generated Soroban clients.
+    ///
+    /// Its ledger protocol is [`Self::executed_protocol_version`].
     #[must_use]
     pub const fn env(&self) -> &'a Env {
         self.env
+    }
+
+    /// Ledger protocol of the network this pass's state was captured from.
+    #[must_use]
+    pub const fn network_protocol_version(&self) -> u32 {
+        self.network_protocol_version
+    }
+
+    /// Ledger protocol the Host executes this pass with.
+    ///
+    /// It differs from [`Self::network_protocol_version`] only under
+    /// [`AutoRunner::allow_newer_protocol`], where it is
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.network_protocol_version)
     }
 
     /// Parses a contract C-address in the current pass environment.
@@ -940,10 +1030,14 @@ impl<'a> ScenarioFork<'a> {
             args,
         };
 
-        let before = self.env.to_ledger_snapshot();
+        let before = network_ledger_snapshot(self.env, self.network_protocol_version);
         let before_digest = crate::canonical_ledger_digest(&before)?;
-        let mut child = Env::from_snapshot(self.env.to_snapshot());
-        configure_fork_env(&mut child);
+        let mut snapshot = self.env.to_snapshot();
+        restore_network_protocol(
+            &mut snapshot.ledger.protocol_version,
+            self.network_protocol_version,
+        );
+        let child = fork_env(ForkEnvSeed::Snapshot(snapshot));
         child.mock_all_auths();
         let (contract, function, args) = invocation_values(&child, &request)?;
         let outcome = invoke_outcome(&child, &contract, &function, args);
@@ -961,7 +1055,7 @@ impl<'a> ScenarioFork<'a> {
             return Err(StrictForkError::AuthTreeMismatch);
         }
 
-        let mut after = child.to_ledger_snapshot();
+        let mut after = network_ledger_snapshot(&child, self.network_protocol_version);
         strip_new_mock_nonces(&before, &mut after)?;
         let after_digest = crate::canonical_ledger_digest(&after)?;
         let state_changes = state_diff(&before, &after)?;
@@ -981,6 +1075,7 @@ impl<'a> ScenarioFork<'a> {
                 upstream_reads,
             },
             resources,
+            network_protocol_version: self.network_protocol_version,
         })
     }
 

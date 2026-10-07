@@ -9,6 +9,13 @@
 //!
 //! Kanatoko does not emulate transactions or claim network-faithful execution.
 //!
+//! Loaders and capture accept exactly [`SUPPORTED_PROTOCOL_VERSION`] by
+//! default. An explicit newer-protocol opt-in (for example
+//! `AutoRunner::allow_newer_protocol` with the `capture` feature, or
+//! [`FrozenFixture::from_snapshot_allowing_newer_protocol`]) also accepts a
+//! ledger exactly one protocol ahead. Captures keep the real network protocol;
+//! only the ledger protocol given to the Host is downgraded.
+//!
 //! Capture discovery suppresses panic-hook output and returns scenario panics
 //! as opaque errors. Strict replay still uses Rust's standard panic hook, so
 //! scenario panic messages must never contain credentials or other secrets.

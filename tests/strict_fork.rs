@@ -2,7 +2,7 @@
 
 use kanatoko::{
     AppliedAuthMode, AuthMode, CandidateInstallMode, CapturedFixture, ExecutionMode, InvokeOutcome,
-    InvokeRequest, ReceiptDisposition, StrictForkError,
+    InvokeRequest, ReceiptDisposition, StrictForkError, SUPPORTED_PROTOCOL_VERSION,
 };
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
@@ -261,6 +261,49 @@ fn candidate_production_wasm_hash_constructor_and_local_injection_are_atomic() {
     assert_unknown(&mut fork, 0xee);
 }
 
+/// A contract built for a newer interface version than the Host's is refused,
+/// with and without the newer-protocol opt-in. The same guard under a
+/// downgraded synthetic newer-protocol ledger is covered by the library's unit
+/// tests.
+#[test]
+fn newer_interface_contract_still_fails_closed_under_the_newer_protocol_opt_in() {
+    let newer_interface = with_interface_protocol(STATEFUL_WASM, SUPPORTED_PROTOCOL_VERSION + 1);
+    let newer_interface_sha256: [u8; 32] = Sha256::digest(&newer_interface).into();
+
+    for captured in [
+        CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE),
+        CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, MAINNET_PASSPHRASE),
+    ] {
+        let mut fork = captured.unwrap().fork();
+        let before = fork.ledger_digest().unwrap();
+        let candidate = ScAddress::Contract(ContractId(Hash([0x6f; 32])));
+
+        let error = fork
+            .register_candidate(
+                candidate.clone(),
+                &newer_interface,
+                newer_interface_sha256,
+                vec![ScVal::I64(41)],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            StrictForkError::CandidateRegistrationFailed
+        ));
+        assert_eq!(fork.ledger_digest().unwrap(), before);
+
+        // The unpatched contract, built for an interface version the Host
+        // supports, installs.
+        fork.register_candidate(
+            candidate,
+            STATEFUL_WASM,
+            STATEFUL_WASM_SHA256,
+            vec![ScVal::I64(41)],
+        )
+        .unwrap();
+    }
+}
+
 #[test]
 fn repeated_mocked_auth_applies_for_one_address_do_not_commit_nonce_scaffolding() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
@@ -370,6 +413,23 @@ fn assert_unknown(fork: &mut kanatoko::StrictFork, byte: u8) {
         StrictForkError::UnknownLedgerKeys { count, .. } if count >= 1
     ));
     assert_eq!(fork.ledger_digest().unwrap(), before);
+}
+
+/// Rewrites the `contractenvmetav0` interface protocol of a Soroban WASM.
+fn with_interface_protocol(wasm: &[u8], protocol: u32) -> Vec<u8> {
+    const SECTION: &[u8] = b"contractenvmetav0";
+    let start = wasm
+        .windows(SECTION.len())
+        .position(|window| window == SECTION)
+        .expect("Soroban WASM must carry contract env metadata")
+        + SECTION.len();
+    // ScEnvMetaEntry::ScEnvMetaKindInterfaceVersion { protocol, pre_release }.
+    assert_eq!(&wasm[start..start + 4], &[0; 4]);
+    let current = u32::from_be_bytes(wasm[start + 4..start + 8].try_into().unwrap());
+    assert!(current <= SUPPORTED_PROTOCOL_VERSION);
+    let mut patched = wasm.to_vec();
+    patched[start + 4..start + 8].copy_from_slice(&protocol.to_be_bytes());
+    patched
 }
 
 fn is_nonce_change(change: &kanatoko::StateChange) -> bool {
