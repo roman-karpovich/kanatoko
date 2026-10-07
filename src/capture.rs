@@ -36,8 +36,9 @@ use soroban_sdk::{
 use thiserror::Error;
 
 use crate::{
-    runtime::configure_fork_env, FixtureError, FrozenFixture, StrictFork,
-    SUPPORTED_PROTOCOL_VERSION,
+    fixture::{executed_protocol_version, ProtocolPolicy, UnsupportedProtocol},
+    runtime::{configure_fork_env, fork_env, ForkEnvSeed},
+    FixtureError, FrozenFixture, StrictFork,
 };
 
 pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
@@ -108,6 +109,7 @@ pub struct CaptureBuilder {
     rpc_origin: String,
     transport: Rc<dyn Transport>,
     rpc_rate_limiter: Option<Rc<RequestRateLimiter>>,
+    protocol_policy: ProtocolPolicy,
     max_coherence_attempts: usize,
     max_discovery_rounds: usize,
 }
@@ -149,6 +151,7 @@ impl CaptureBuilder {
             rpc_origin,
             transport,
             rpc_rate_limiter: Some(rpc_rate_limiter),
+            protocol_policy: ProtocolPolicy::Exact,
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         })
@@ -162,6 +165,25 @@ impl CaptureBuilder {
         if let Some(limiter) = &self.rpc_rate_limiter {
             limiter.set_requests_per_second(max_requests_per_second);
         }
+        self
+    }
+
+    /// Opts into capturing a network exactly one ledger protocol newer than
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    ///
+    /// The capture stays truthful: provenance, the ledger snapshot, written
+    /// bundles, and every digest keep the real network protocol. Only
+    /// execution is downgraded: each discovery and replay `Env` gives the Host
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`] as the ledger protocol, reported
+    /// by [`CaptureProvenance::executed_protocol_version`]. Host behaviour that
+    /// changed without an XDR change, such as metering, follows the older
+    /// Host. Ledger entries the older XDR cannot decode and contracts built for
+    /// a newer interface version still fail closed. Older protocols and
+    /// protocols two or more above the Host are still rejected with
+    /// [`CaptureError::UnsupportedProtocol`].
+    #[must_use]
+    pub const fn allow_newer_protocol(mut self) -> Self {
+        self.protocol_policy = ProtocolPolicy::AllowNewer;
         self
     }
 
@@ -238,6 +260,7 @@ impl CaptureBuilder {
                 materialized.coverage.clone(),
                 self.transport.clone(),
                 local.clone(),
+                materialized.ledger_info.protocol_version,
             ));
             let env = env_from_materialized(&materialized, source.clone());
             let outcome = call_with_suppressed_panic_hook(AssertUnwindSafe(|| {
@@ -286,7 +309,11 @@ impl CaptureBuilder {
             }
 
             let snapshot = snapshot_from_materialized(&materialized)?;
-            let fixture = FrozenFixture::from_snapshot(snapshot, &self.network_passphrase)?;
+            let fixture = FrozenFixture::from_snapshot_with_policy(
+                snapshot,
+                &self.network_passphrase,
+                self.protocol_policy,
+            )?;
             let inventory_digest = inventory_digest(&materialized.coverage)?;
             let present_entries = materialized
                 .coverage
@@ -329,12 +356,7 @@ impl CaptureBuilder {
         if network.passphrase != self.network_passphrase {
             return Err(CaptureError::NetworkMismatch);
         }
-        if network.protocol_version != SUPPORTED_PROTOCOL_VERSION {
-            return Err(CaptureError::UnsupportedProtocol {
-                found: network.protocol_version,
-                supported: SUPPORTED_PROTOCOL_VERSION,
-            });
-        }
+        self.protocol_policy.check(network.protocol_version)?;
         Ok(())
     }
 
@@ -343,12 +365,7 @@ impl CaptureBuilder {
             .transport
             .latest_ledger()
             .map_err(|failure| transport_error(failure.operation))?;
-        if anchor.protocol_version != SUPPORTED_PROTOCOL_VERSION {
-            return Err(CaptureError::UnsupportedProtocol {
-                found: anchor.protocol_version,
-                supported: SUPPORTED_PROTOCOL_VERSION,
-            });
-        }
+        self.protocol_policy.check(anchor.protocol_version)?;
         Ok(anchor)
     }
 
@@ -364,12 +381,7 @@ impl CaptureBuilder {
                 .transport
                 .latest_ledger()
                 .map_err(|failure| transport_error(failure.operation))?;
-            if before.protocol_version != SUPPORTED_PROTOCOL_VERSION {
-                return Err(CaptureError::UnsupportedProtocol {
-                    found: before.protocol_version,
-                    supported: SUPPORTED_PROTOCOL_VERSION,
-                });
-            }
+            self.protocol_policy.check(before.protocol_version)?;
 
             let mut coverage = BTreeMap::new();
             let mut archival = None;
@@ -495,6 +507,7 @@ impl CaptureBuilder {
             rpc_origin: "https://fake.invalid".to_string(),
             transport,
             rpc_rate_limiter: None,
+            protocol_policy: ProtocolPolicy::Exact,
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         }
@@ -578,11 +591,43 @@ impl CapturedFixture {
         path: impl AsRef<Path>,
         expected_network_passphrase: &str,
     ) -> Result<Self, CaptureError> {
+        Self::from_file_with_policy(path, expected_network_passphrase, ProtocolPolicy::Exact)
+    }
+
+    /// Like [`Self::from_file`], but also accepts a bundle captured exactly
+    /// one ledger protocol newer than [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    ///
+    /// The bundle is validated exactly as recorded, including its network
+    /// protocol and digests. Replays and forks execute it on the Host as
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`]; see
+    /// [`CaptureBuilder::allow_newer_protocol`] for what can differ.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::from_file`]. Protocols older
+    /// than [`crate::SUPPORTED_PROTOCOL_VERSION`] and protocols two or more
+    /// above it are still rejected with [`FixtureError::UnsupportedProtocol`].
+    pub fn from_file_allowing_newer_protocol(
+        path: impl AsRef<Path>,
+        expected_network_passphrase: &str,
+    ) -> Result<Self, CaptureError> {
+        Self::from_file_with_policy(
+            path,
+            expected_network_passphrase,
+            ProtocolPolicy::AllowNewer,
+        )
+    }
+
+    pub(crate) fn from_file_with_policy(
+        path: impl AsRef<Path>,
+        expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
+    ) -> Result<Self, CaptureError> {
         let bytes = fs::read(path.as_ref()).map_err(|source| CaptureError::CaptureBundleIo {
             operation: "read",
             source,
         })?;
-        Self::from_bundle_bytes(&bytes, expected_network_passphrase)
+        Self::from_bundle_bytes(&bytes, expected_network_passphrase, policy)
     }
 
     /// Replays once with strict unknown-key rejection and no RPC transport.
@@ -620,6 +665,7 @@ impl CapturedFixture {
         let source = Rc::new(TrackingSource::strict_with_local(
             self.coverage.clone(),
             local.clone(),
+            materialized.ledger_info.protocol_version,
         ));
         let env = env_from_materialized(&materialized, source.clone());
         let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -728,10 +774,14 @@ impl CapturedFixture {
     fn from_bundle(
         bundle: CaptureBundleV2,
         expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
     ) -> Result<Self, CaptureError> {
         let digests = validate_bundle_envelope(&bundle, expected_network_passphrase)?;
-        let fixture =
-            FrozenFixture::from_snapshot(bundle.ledger_snapshot, expected_network_passphrase)?;
+        let fixture = FrozenFixture::from_snapshot_with_policy(
+            bundle.ledger_snapshot,
+            expected_network_passphrase,
+            policy,
+        )?;
         if fixture.ledger_digest() != digests.ledger {
             return Err(CaptureError::CaptureBundleIntegrity);
         }
@@ -771,6 +821,7 @@ impl CapturedFixture {
     fn from_bundle_bytes(
         bytes: &[u8],
         expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
     ) -> Result<Self, CaptureError> {
         let version: BundleVersion =
             serde_json::from_slice(bytes).map_err(|_| CaptureError::MalformedCaptureBundle)?;
@@ -778,12 +829,12 @@ impl CapturedFixture {
             CAPTURE_BUNDLE_SCHEMA_VERSION => {
                 let bundle: CaptureBundleV2 = serde_json::from_slice(bytes)
                     .map_err(|_| CaptureError::MalformedCaptureBundle)?;
-                Self::from_bundle(bundle, expected_network_passphrase)
+                Self::from_bundle(bundle, expected_network_passphrase, policy)
             }
             1 => {
                 let bundle: LegacyCaptureBundleV1 = serde_json::from_slice(bytes)
                     .map_err(|_| CaptureError::MalformedCaptureBundle)?;
-                Self::from_legacy_bundle(bundle, expected_network_passphrase)
+                Self::from_legacy_bundle(bundle, expected_network_passphrase, policy)
             }
             found => Err(CaptureError::UnsupportedCaptureBundleSchema {
                 found,
@@ -795,10 +846,14 @@ impl CapturedFixture {
     fn from_legacy_bundle(
         bundle: LegacyCaptureBundleV1,
         expected_network_passphrase: &str,
+        policy: ProtocolPolicy,
     ) -> Result<Self, CaptureError> {
         let digests = validate_legacy_bundle_envelope(&bundle, expected_network_passphrase)?;
-        let fixture =
-            FrozenFixture::from_snapshot(bundle.ledger_snapshot, expected_network_passphrase)?;
+        let fixture = FrozenFixture::from_snapshot_with_policy(
+            bundle.ledger_snapshot,
+            expected_network_passphrase,
+            policy,
+        )?;
         if fixture.ledger_digest() != digests.ledger {
             return Err(CaptureError::CaptureBundleIntegrity);
         }
@@ -1133,9 +1188,25 @@ impl CaptureProvenance {
         &self.ledger_hash
     }
 
+    /// Ledger protocol of the network at the captured ledger.
+    ///
+    /// This is always the real network protocol, also under the opt-in
+    /// newer-protocol mode.
     #[must_use]
     pub const fn protocol_version(&self) -> u32 {
         self.protocol_version
+    }
+
+    /// Ledger protocol the Host executes this capture with.
+    ///
+    /// It equals [`Self::protocol_version`] except for a capture exactly one
+    /// protocol newer than [`crate::SUPPORTED_PROTOCOL_VERSION`], accepted
+    /// through [`CaptureBuilder::allow_newer_protocol`] or
+    /// [`CapturedFixture::from_file_allowing_newer_protocol`], which executes
+    /// as [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.protocol_version)
     }
 }
 
@@ -1190,6 +1261,15 @@ pub enum CaptureError {
     Fixture(#[from] FixtureError),
     #[error("ledger XDR encoding failed")]
     Xdr,
+}
+
+impl From<UnsupportedProtocol> for CaptureError {
+    fn from(error: UnsupportedProtocol) -> Self {
+        Self::UnsupportedProtocol {
+            found: error.found,
+            supported: error.supported,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1248,6 +1328,7 @@ pub(crate) struct TrackingSource {
     unknown: RefCell<BTreeSet<KeyId>>,
     transport: Option<Rc<dyn Transport>>,
     local: Rc<LocalLedger>,
+    network_protocol_version: u32,
     rpc_reads: Cell<u64>,
     failure: Cell<Option<&'static str>>,
 }
@@ -1257,18 +1338,24 @@ impl TrackingSource {
         cache: BTreeMap<KeyId, LookupState>,
         transport: Rc<dyn Transport>,
         local: Rc<LocalLedger>,
+        network_protocol_version: u32,
     ) -> Self {
-        Self::new(cache, Some(transport), local)
+        Self::new(cache, Some(transport), local, network_protocol_version)
     }
 
-    fn strict_with_local(cache: BTreeMap<KeyId, LookupState>, local: Rc<LocalLedger>) -> Self {
-        Self::new(cache, None, local)
+    fn strict_with_local(
+        cache: BTreeMap<KeyId, LookupState>,
+        local: Rc<LocalLedger>,
+        network_protocol_version: u32,
+    ) -> Self {
+        Self::new(cache, None, local, network_protocol_version)
     }
 
     fn new(
         cache: BTreeMap<KeyId, LookupState>,
         transport: Option<Rc<dyn Transport>>,
         local: Rc<LocalLedger>,
+        network_protocol_version: u32,
     ) -> Self {
         Self {
             cache: RefCell::new(cache),
@@ -1276,9 +1363,15 @@ impl TrackingSource {
             unknown: RefCell::new(BTreeSet::new()),
             transport,
             local,
+            network_protocol_version,
             rpc_reads: Cell::new(0),
             failure: Cell::new(None),
         }
+    }
+
+    /// Ledger protocol of the network state this source serves.
+    pub(crate) const fn network_protocol_version(&self) -> u32 {
+        self.network_protocol_version
     }
 
     fn requested_keys(&self) -> BTreeMap<KeyId, LedgerKey> {
@@ -1856,13 +1949,11 @@ fn snapshot_from_materialized(materialized: &Materialized) -> Result<LedgerSnaps
 
 fn env_from_materialized(materialized: &Materialized, source: Rc<TrackingSource>) -> Env {
     let snapshot = snapshot_from_materialized(materialized).expect("validated materialization");
-    let mut env = Env::from_ledger_snapshot(SnapshotSourceInput {
+    fork_env(ForkEnvSeed::Ledger(SnapshotSourceInput {
         source,
         ledger_info: Some(materialized.ledger_info.clone()),
         snapshot: Some(Rc::new(snapshot)),
-    });
-    configure_fork_env(&mut env);
-    env
+    }))
 }
 
 fn inventory_digest(coverage: &BTreeMap<KeyId, LookupState>) -> Result<[u8; 32], CaptureError> {
@@ -2164,6 +2255,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::SUPPORTED_PROTOCOL_VERSION;
 
     mod pool {
         #![allow(clippy::ref_option, clippy::too_many_arguments)]
@@ -2265,6 +2357,7 @@ mod tests {
         let source = Rc::new(TrackingSource::strict_with_local(
             expanded.coverage.clone(),
             Rc::new(LocalLedger::default()),
+            expanded.ledger_info.protocol_version,
         ));
         let env = env_from_materialized(&expanded, source.clone());
         let pool = Address::from_str(&env, POOL_ID);
@@ -3003,7 +3096,7 @@ mod tests {
         *live_until = None;
         refresh_bundle_digests(&mut bundle);
         assert!(matches!(
-            CapturedFixture::from_bundle(bundle, MAINNET_PASSPHRASE),
+            CapturedFixture::from_bundle(bundle, MAINNET_PASSPHRASE, ProtocolPolicy::Exact),
             Err(CaptureError::CaptureBundleIntegrity)
         ));
     }
@@ -3031,7 +3124,9 @@ mod tests {
         account_entry.ext = extension.clone();
         refresh_bundle_digests(&mut bundle);
 
-        let loaded = CapturedFixture::from_bundle(bundle, MAINNET_PASSPHRASE).unwrap();
+        let loaded =
+            CapturedFixture::from_bundle(bundle, MAINNET_PASSPHRASE, ProtocolPolicy::Exact)
+                .unwrap();
         let loaded_extension = loaded
             .frozen_fixture()
             .ledger_snapshot()
@@ -3303,6 +3398,7 @@ mod tests {
             BTreeMap::new(),
             fake.clone(),
             Rc::new(LocalLedger::default()),
+            SUPPORTED_PROTOCOL_VERSION,
         );
         let failed_key = Rc::new(failed_key);
 
@@ -3352,6 +3448,225 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, CaptureError::NetworkMismatch));
+    }
+
+    #[test]
+    fn newer_protocol_capture_requires_the_opt_in_and_keeps_the_network_protocol() {
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let fake = FakeTransport::from_aquarius_snapshot_at(newer);
+
+        let error = builder(&fake).capture(aquarius_scenario).unwrap_err();
+        assert!(is_unsupported_capture(&error, newer));
+        assert_eq!(fake.ledger_entry_reads(), 0);
+
+        let captured = builder(&fake)
+            .allow_newer_protocol()
+            .capture(|env| {
+                assert_eq!(host_protocol(env), SUPPORTED_PROTOCOL_VERSION);
+                aquarius_scenario(env);
+            })
+            .unwrap();
+        assert_eq!(captured.provenance().protocol_version(), newer);
+        assert_eq!(
+            captured.provenance().executed_protocol_version(),
+            SUPPORTED_PROTOCOL_VERSION
+        );
+        let fixture = captured.frozen_fixture();
+        assert_eq!(fixture.ledger_snapshot().protocol_version, newer);
+        assert_eq!(
+            fixture.executed_protocol_version(),
+            SUPPORTED_PROTOCOL_VERSION
+        );
+        let mut executed_header = fixture.ledger_snapshot().clone();
+        executed_header.protocol_version = SUPPORTED_PROTOCOL_VERSION;
+        assert_ne!(
+            fixture.ledger_digest(),
+            crate::canonical_ledger_digest(&executed_header).unwrap(),
+            "the ledger digest must cover the real network protocol"
+        );
+
+        let path = test_bundle_path("newer-protocol");
+        captured.write_file(&path).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["ledger_snapshot"]["protocol_version"], newer);
+        assert_eq!(document["provenance"]["protocol_version"], newer);
+
+        let error = CapturedFixture::from_file(&path, MAINNET_PASSPHRASE).unwrap_err();
+        assert!(is_unsupported_fixture(&error, newer));
+        let loaded =
+            CapturedFixture::from_file_allowing_newer_protocol(&path, MAINNET_PASSPHRASE).unwrap();
+        assert_eq!(loaded.provenance(), captured.provenance());
+        assert_eq!(loaded.report(), captured.report());
+        assert_eq!(
+            fixture.ledger_digest(),
+            loaded.frozen_fixture().ledger_digest()
+        );
+
+        let reads_before = fake.ledger_entry_reads();
+        let executed = loaded
+            .replay(|env| {
+                aquarius_scenario(env);
+                host_protocol(env)
+            })
+            .unwrap();
+        assert_eq!(executed, SUPPORTED_PROTOCOL_VERSION);
+        assert_eq!(fake.ledger_entry_reads(), reads_before);
+
+        let fork = loaded.fork();
+        assert_eq!(fork.network_protocol_version(), newer);
+        assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+        assert_eq!(fork.ledger_digest().unwrap(), fixture.ledger_digest());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn newer_protocol_opt_in_still_rejects_older_and_two_ahead_networks() {
+        for found in [
+            SUPPORTED_PROTOCOL_VERSION - 1,
+            SUPPORTED_PROTOCOL_VERSION + 2,
+        ] {
+            let fake = FakeTransport::from_aquarius_snapshot_at(found);
+            let error = builder(&fake)
+                .allow_newer_protocol()
+                .capture(|_| {})
+                .unwrap_err();
+            assert!(is_unsupported_capture(&error, found));
+            assert_eq!(fake.ledger_entry_reads(), 0);
+        }
+
+        // The anchor of a coherent materialization is checked independently
+        // of getNetwork.
+        let mut fake = FakeTransport::from_aquarius_snapshot_at(SUPPORTED_PROTOCOL_VERSION + 1);
+        Rc::get_mut(&mut fake).unwrap().anchor.protocol_version = SUPPORTED_PROTOCOL_VERSION + 2;
+        let error = builder(&fake)
+            .allow_newer_protocol()
+            .capture(|_| {})
+            .unwrap_err();
+        assert!(is_unsupported_capture(
+            &error,
+            SUPPORTED_PROTOCOL_VERSION + 2
+        ));
+        assert_eq!(fake.ledger_entry_reads(), 0);
+    }
+
+    #[test]
+    fn newer_protocol_bundle_two_ahead_is_rejected_even_with_the_opt_in() {
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let captured = builder(&fake)
+            .allow_newer_protocol()
+            .capture(aquarius_scenario)
+            .unwrap();
+        let mut bundle = captured.to_bundle().unwrap();
+        let two_ahead = SUPPORTED_PROTOCOL_VERSION + 2;
+        bundle.ledger_snapshot.protocol_version = two_ahead;
+        bundle.provenance.protocol_version = two_ahead;
+        refresh_bundle_digests(&mut bundle);
+        let path = test_bundle_path("newer-protocol-two-ahead");
+        fs::write(&path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+
+        for loaded in [
+            CapturedFixture::from_file(&path, MAINNET_PASSPHRASE),
+            CapturedFixture::from_file_allowing_newer_protocol(&path, MAINNET_PASSPHRASE),
+        ] {
+            assert!(is_unsupported_fixture(&loaded.unwrap_err(), two_ahead));
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auto_runner_newer_protocol_opt_in_covers_capture_cache_and_anchor_probe() {
+        use crate::{
+            auto::{AutoRunError, AutoRunner, CacheStatus, PreviewAuth},
+            AppliedAuthMode,
+        };
+
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let mut fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let path = test_bundle_path("auto-runner-newer-protocol");
+        let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
+            assert_eq!(fork.network_protocol_version(), newer);
+            assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+            assert_eq!(host_protocol(fork.env()), SUPPORTED_PROTOCOL_VERSION);
+            let pool = fork.contract(POOL_ID);
+            let report = fork
+                .preview(&pool, "get_tokens", (), PreviewAuth::Record)
+                .unwrap();
+            assert_eq!(
+                report.receipt().auth_mode,
+                AppliedAuthMode::RecordMockSatisfied
+            );
+            assert_eq!(report.network_protocol_version(), newer);
+            assert_eq!(
+                report.executed_protocol_version(),
+                SUPPORTED_PROTOCOL_VERSION
+            );
+            mixed_auto_scenario(fork);
+        };
+
+        let error = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(scenario)
+            .err()
+            .expect("the runner must fail closed");
+        assert!(
+            matches!(&error, AutoRunError::Capture(error) if is_unsupported_capture(error, newer))
+        );
+        assert!(!path.exists());
+
+        let created = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .allow_newer_protocol()
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        assert_eq!(created.cache_status(), CacheStatus::Created);
+        assert_eq!(created.fixture().provenance().protocol_version(), newer);
+        assert_eq!(
+            created.fixture().provenance().executed_protocol_version(),
+            SUPPORTED_PROTOCOL_VERSION
+        );
+
+        let error = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .offline()
+            .run(scenario)
+            .err()
+            .expect("the runner must fail closed");
+        assert!(
+            matches!(&error, AutoRunError::Capture(error) if is_unsupported_fixture(error, newer))
+        );
+        let reads_before = fake.ledger_entry_reads();
+        let hit = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .allow_newer_protocol()
+            .cache(&path)
+            .offline()
+            .run(scenario)
+            .unwrap();
+        assert_eq!(hit.cache_status(), CacheStatus::Hit);
+        let online_hit = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .allow_newer_protocol()
+            .cache(&path)
+            .run(scenario)
+            .unwrap();
+        assert_eq!(online_hit.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads_before);
+
+        // The online cache-hit probe still rejects an anchor two ahead.
+        Rc::get_mut(&mut fake).unwrap().anchor.protocol_version = SUPPORTED_PROTOCOL_VERSION + 2;
+        let error = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .allow_newer_protocol()
+            .cache(&path)
+            .run(scenario)
+            .err()
+            .expect("the runner must fail closed");
+        assert!(matches!(
+            &error,
+            AutoRunError::Capture(error)
+                if is_unsupported_capture(error, SUPPORTED_PROTOCOL_VERSION + 2)
+        ));
+        assert_eq!(fake.ledger_entry_reads(), reads_before);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3577,23 +3892,43 @@ mod tests {
     }
 
     fn refresh_bundle_digests(bundle: &mut CaptureBundleV2) {
-        let fixture = FrozenFixture::from_snapshot(
-            bundle.ledger_snapshot.clone(),
-            &bundle.provenance.network_passphrase,
-        )
-        .unwrap();
+        // Digest the snapshot directly so tests can also seal bundles at
+        // protocols the selected Host rejects.
+        let ledger = crate::canonical_ledger_digest(&bundle.ledger_snapshot).unwrap();
         let coverage = bundle_coverage(&bundle.ledger_snapshot, &bundle.known_absent).unwrap();
         let inventory = inventory_digest(&coverage).unwrap();
-        bundle.ledger_digest = hex(fixture.ledger_digest());
+        bundle.ledger_digest = hex(ledger);
         bundle.inventory_digest = hex(inventory);
         bundle.canonical_digest = hex(canonical_bundle_digest(
             &bundle.known_absent,
             &bundle.report,
             &bundle.provenance,
-            &fixture.ledger_digest(),
+            &ledger,
             &inventory,
         )
         .unwrap());
+    }
+
+    fn host_protocol(env: &Env) -> u32 {
+        env.host()
+            .with_ledger_info(|ledger| Ok(ledger.protocol_version))
+            .unwrap()
+    }
+
+    fn is_unsupported_capture(error: &CaptureError, expected: u32) -> bool {
+        matches!(
+            error,
+            CaptureError::UnsupportedProtocol { found, supported }
+                if *found == expected && *supported == SUPPORTED_PROTOCOL_VERSION
+        )
+    }
+
+    fn is_unsupported_fixture(error: &CaptureError, expected: u32) -> bool {
+        matches!(
+            error,
+            CaptureError::Fixture(FixtureError::UnsupportedProtocol { found, supported })
+                if *found == expected && *supported == SUPPORTED_PROTOCOL_VERSION
+        )
     }
 
     fn builder(fake: &Rc<FakeTransport>) -> CaptureBuilder {
@@ -3837,6 +4172,10 @@ mod tests {
 
     impl FakeTransport {
         fn from_aquarius_snapshot() -> Rc<Self> {
+            Self::from_aquarius_snapshot_at(SUPPORTED_PROTOCOL_VERSION)
+        }
+
+        fn from_aquarius_snapshot_at(protocol_version: u32) -> Rc<Self> {
             let mut snapshot =
                 LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json")
                     .unwrap();
@@ -3844,7 +4183,7 @@ mod tests {
             // deterministic unit inputs on newer Hosts too. Promote only the
             // in-memory ledger header used by this fake transport; the
             // committed snapshot remains exact Protocol 27 network evidence.
-            snapshot.protocol_version = SUPPORTED_PROTOCOL_VERSION;
+            snapshot.protocol_version = protocol_version;
             let mut entries = BTreeMap::new();
             for (_, (entry, live_until)) in &snapshot.ledger_entries {
                 entries.insert(

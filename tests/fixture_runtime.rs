@@ -118,6 +118,120 @@ fn rejects_protocol_mismatch() {
 }
 
 #[test]
+fn newer_protocol_opt_in_accepts_exactly_one_protocol_ahead() {
+    let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+    for rejected in [
+        SUPPORTED_PROTOCOL_VERSION - 1,
+        SUPPORTED_PROTOCOL_VERSION + 2,
+    ] {
+        let mut snapshot = empty_snapshot();
+        snapshot.protocol_version = rejected;
+        let error =
+            FrozenFixture::from_snapshot_allowing_newer_protocol(snapshot, NETWORK_PASSPHRASE)
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            FixtureError::UnsupportedProtocol { found, supported }
+                if found == rejected && supported == SUPPORTED_PROTOCOL_VERSION
+        ));
+    }
+
+    let mut snapshot = empty_snapshot();
+    snapshot.protocol_version = newer;
+    let error = FrozenFixture::from_snapshot(snapshot.clone(), NETWORK_PASSPHRASE).unwrap_err();
+    assert!(matches!(
+        error,
+        FixtureError::UnsupportedProtocol { found, supported }
+            if found == newer && supported == SUPPORTED_PROTOCOL_VERSION
+    ));
+
+    let fixture =
+        FrozenFixture::from_snapshot_allowing_newer_protocol(snapshot.clone(), NETWORK_PASSPHRASE)
+            .unwrap();
+    assert_eq!(fixture.ledger_snapshot(), &snapshot);
+    assert_eq!(
+        fixture.executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        fixture.ledger_digest(),
+        kanatoko::canonical_ledger_digest(&snapshot).unwrap()
+    );
+    assert_ne!(
+        fixture.ledger_digest(),
+        kanatoko::canonical_ledger_digest(&empty_snapshot()).unwrap()
+    );
+    let supported =
+        FrozenFixture::from_snapshot_allowing_newer_protocol(empty_snapshot(), NETWORK_PASSPHRASE)
+            .unwrap();
+    assert_eq!(
+        supported.executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+
+    let temp = TestDir::new("newer-protocol-fixture");
+    let path = temp.path().join("ledger.json");
+    snapshot.write_file(&path).unwrap();
+    assert!(matches!(
+        FrozenFixture::from_file(&path, NETWORK_PASSPHRASE).unwrap_err(),
+        FixtureError::UnsupportedProtocol { found, .. } if found == newer
+    ));
+    let loaded =
+        FrozenFixture::from_file_allowing_newer_protocol(&path, NETWORK_PASSPHRASE).unwrap();
+    assert_eq!(loaded.ledger_digest(), fixture.ledger_digest());
+}
+
+#[test]
+fn newer_protocol_fork_executes_on_the_selected_host_and_keeps_network_digests() {
+    let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+    let mut snapshot = empty_snapshot();
+    snapshot.protocol_version = newer;
+    let fixture =
+        FrozenFixture::from_snapshot_allowing_newer_protocol(snapshot, NETWORK_PASSPHRASE).unwrap();
+    let mut fork = Fork::from_fixture(&fixture);
+
+    assert_eq!(fork.network_protocol_version(), newer);
+    assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+    assert_eq!(host_protocol(&fork), SUPPORTED_PROTOCOL_VERSION);
+    assert_eq!(fork.ledger_digest().unwrap(), fixture.ledger_digest());
+
+    let contract = fork
+        .register_wasm(STATEFUL_WASM, STATEFUL_WASM_SHA256, (10_i64,))
+        .unwrap();
+    let contract_xdr: ScAddress = (&contract).into();
+    let checkpoint = fork.checkpoint();
+    let checkpoint_digest = fork.ledger_digest().unwrap();
+    assert_eq!(
+        stateful::Client::new(fork.env(), &contract).increment(&2),
+        12
+    );
+    assert_ne!(fork.ledger_digest().unwrap(), checkpoint_digest);
+
+    fork.revert(checkpoint).unwrap();
+    assert_eq!(host_protocol(&fork), SUPPORTED_PROTOCOL_VERSION);
+    assert_eq!(fork.ledger_digest().unwrap(), checkpoint_digest);
+    let contract = Address::try_from_val(fork.env(), &contract_xdr).unwrap();
+    assert_eq!(stateful::Client::new(fork.env(), &contract).get(), 10);
+
+    let default = registered_fork(0).0;
+    assert_eq!(
+        default.network_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        default.executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+}
+
+fn host_protocol(fork: &Fork) -> u32 {
+    fork.env()
+        .host()
+        .with_ledger_info(|ledger| Ok(ledger.protocol_version))
+        .unwrap()
+}
+
+#[test]
 fn rejects_network_mismatch() {
     let snapshot = empty_snapshot();
 

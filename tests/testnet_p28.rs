@@ -2,11 +2,13 @@
 
 use std::fmt::Write as _;
 
-use kanatoko::{testnet, CacheStatus, ScenarioFork};
+use kanatoko::{testnet, CacheStatus, ScenarioFork, SUPPORTED_PROTOCOL_VERSION};
 use soroban_env_host::xdr::{ContractExecutable, LedgerEntryData, ScAddress, ScVal};
 use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
 const CAPTURE: &str = "fixtures/testnet/native-xlm-p28/auto-capture.json";
+// Protocol 29 testnet cache, byte-identical to the 29 line's fixture.
+const CAPTURE_P29: &str = "fixtures/testnet/native-xlm-p29/auto-capture.json";
 const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const XLM: &str = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 
@@ -55,6 +57,36 @@ fn frozen_protocol_28_testnet_replays_offline() {
 }
 
 #[test]
+fn frozen_protocol_29_testnet_replays_offline_with_the_newer_protocol_opt_in() {
+    let run = testnet()
+        .cache(CAPTURE_P29)
+        .offline()
+        .allow_newer_protocol()
+        .run(|fork| {
+            assert_eq!(fork.network_protocol_version(), 29);
+            assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+            // The Protocol 29 capture recorded these local-account labels.
+            scenario_with_labels(fork, "protocol-29-sender", "protocol-29-receiver");
+        })
+        .unwrap();
+    let fixture = run.fixture();
+
+    assert_eq!(run.cache_status(), CacheStatus::Hit);
+    assert_eq!(fixture.provenance().protocol_version(), 29);
+    assert_eq!(
+        fixture.provenance().executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(fixture.provenance().ledger_sequence(), 4_983_918);
+    assert_eq!(fixture.report().final_replay_rpc_reads(), 0);
+    assert_eq!(
+        hex(fixture.frozen_fixture().ledger_digest()),
+        "d28f50e6342075951ba9b082afc5e892eb42fc901ea0b44bfa7dc7cf55443c4a"
+    );
+    assert_native_xlm_is_a_stellar_asset_contract(fixture);
+}
+
+#[test]
 #[ignore = "manual read-only Protocol 28 testnet fixture refresh"]
 fn refresh_protocol_28_testnet_fixture() {
     let run = testnet().cache(CAPTURE).refresh().run(scenario).unwrap();
@@ -68,11 +100,15 @@ fn refresh_protocol_28_testnet_fixture() {
 }
 
 fn scenario(fork: &ScenarioFork<'_>) {
+    scenario_with_labels(fork, "protocol-28-sender", "protocol-28-receiver");
+}
+
+fn scenario_with_labels(fork: &ScenarioFork<'_>, sender_label: &str, receiver_label: &str) {
     let xlm = fork.contract(XLM);
     assert_eq!(fork.invoke::<u32>(&xlm, "decimals", ()), 7);
 
-    let sender = fork.local_account("protocol-28-sender");
-    let receiver = fork.local_account("protocol-28-receiver");
+    let sender = fork.local_account(sender_label);
+    let receiver = fork.local_account(receiver_label);
     fork.fund_local_account(&sender, 100_000_000);
     fork.fund_local_account(&receiver, 100_000_000);
     let sender_before = fork.invoke::<i128>(&xlm, "balance", (sender.clone(),));

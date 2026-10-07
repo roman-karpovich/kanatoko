@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use kanatoko::{CaptureBuilder, CapturedFixture};
+use kanatoko::{CaptureBuilder, CaptureProvenance, CapturedFixture};
 use soroban_env_host::xdr::{Hash, ScAddress};
 use soroban_sdk::{
     testutils::{AuthorizedFunction, AuthorizedInvocation, MockAuth, MockAuthInvoke},
@@ -35,16 +35,21 @@ const DEFAULT_POOL_ID: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQP
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    match Options::parse()?.mode {
+    let options = Options::parse()?;
+    match options.mode {
         Mode::Capture {
             rpc_url,
             bundle_path,
-        } => capture(&rpc_url, &bundle_path),
-        Mode::Replay { bundle_path } => replay(&bundle_path),
+        } => capture(&rpc_url, &bundle_path, options.allow_newer_protocol),
+        Mode::Replay { bundle_path } => replay(&bundle_path, options.allow_newer_protocol),
     }
 }
 
-pub(crate) fn capture(rpc_url: &str, bundle_path: &Path) -> Result<(), Box<dyn Error>> {
+pub(crate) fn capture(
+    rpc_url: &str,
+    bundle_path: &Path,
+    allow_newer_protocol: bool,
+) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = bundle_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -52,15 +57,23 @@ pub(crate) fn capture(rpc_url: &str, bundle_path: &Path) -> Result<(), Box<dyn E
         fs::create_dir_all(parent)?;
     }
 
-    let captured = CaptureBuilder::mainnet(rpc_url)?.capture(aquarius_scenario)?;
+    let mut builder = CaptureBuilder::mainnet(rpc_url)?;
+    if allow_newer_protocol {
+        builder = builder.allow_newer_protocol();
+    }
+    let captured = builder.capture(aquarius_scenario)?;
+    warn_if_newer_protocol(captured.provenance());
     captured.write_file(bundle_path)?;
 
     // Read back through the public fail-closed loader and prove that the exact
     // saved artifact, rather than the in-memory capture, replays offline.
-    let loaded = CapturedFixture::from_file(bundle_path, MAINNET_PASSPHRASE)?;
+    let loaded = load(bundle_path, allow_newer_protocol)?;
     loaded.replay(aquarius_scenario)?;
 
     println!("captured ledger {}", loaded.provenance().ledger_sequence());
+    if allow_newer_protocol {
+        print_protocols(loaded.provenance());
+    }
     println!("source origin: {}", loaded.provenance().rpc_origin());
     println!("scenario pool: {DEFAULT_POOL_ID}");
     println!("present entries: {}", loaded.report().present_entries());
@@ -73,17 +86,49 @@ pub(crate) fn capture(rpc_url: &str, bundle_path: &Path) -> Result<(), Box<dyn E
     Ok(())
 }
 
-fn replay(bundle_path: &Path) -> Result<(), Box<dyn Error>> {
-    let captured = CapturedFixture::from_file(bundle_path, MAINNET_PASSPHRASE)?;
+fn replay(bundle_path: &Path, allow_newer_protocol: bool) -> Result<(), Box<dyn Error>> {
+    let captured = load(bundle_path, allow_newer_protocol)?;
+    warn_if_newer_protocol(captured.provenance());
     captured.replay(aquarius_scenario)?;
     println!(
         "replayed ledger {}",
         captured.provenance().ledger_sequence()
     );
+    if allow_newer_protocol {
+        print_protocols(captured.provenance());
+    }
     println!("scenario pool: {DEFAULT_POOL_ID}");
     println!("bundle: {}", bundle_path.display());
     println!("offline replay: ok");
     Ok(())
+}
+
+fn load(bundle_path: &Path, allow_newer_protocol: bool) -> Result<CapturedFixture, Box<dyn Error>> {
+    Ok(if allow_newer_protocol {
+        CapturedFixture::from_file_allowing_newer_protocol(bundle_path, MAINNET_PASSPHRASE)?
+    } else {
+        CapturedFixture::from_file(bundle_path, MAINNET_PASSPHRASE)?
+    })
+}
+
+/// Prints one stderr line when a newer-protocol ledger runs on the older Host.
+pub(crate) fn warn_if_newer_protocol(provenance: &CaptureProvenance) {
+    if provenance.protocol_version() != provenance.executed_protocol_version() {
+        eprintln!(
+            "warning: --allow-newer-protocol: executing Protocol {} ledger {} on the Protocol {} Host; Host behaviour may differ from the network",
+            provenance.protocol_version(),
+            provenance.ledger_sequence(),
+            provenance.executed_protocol_version(),
+        );
+    }
+}
+
+fn print_protocols(provenance: &CaptureProvenance) {
+    println!("network protocol: {}", provenance.protocol_version());
+    println!(
+        "executed protocol: {}",
+        provenance.executed_protocol_version()
+    );
 }
 
 fn aquarius_scenario(env: &Env) {
@@ -183,6 +228,7 @@ fn deterministic_contract_user(env: &Env) -> Address {
 
 struct Options {
     mode: Mode,
+    allow_newer_protocol: bool,
 }
 
 enum Mode {
@@ -200,9 +246,11 @@ impl Options {
         let mut rpc_url = DEFAULT_RPC_URL.to_string();
         let mut bundle_path = PathBuf::from(DEFAULT_OUTPUT_DIR).join("capture.json");
         let mut replay_path = None;
+        let mut allow_newer_protocol = false;
         let mut args = std::env::args().skip(1);
         while let Some(argument) = args.next() {
             match argument.as_str() {
+                "--allow-newer-protocol" => allow_newer_protocol = true,
                 "--rpc-url" => rpc_url = next_value(&mut args, "--rpc-url")?,
                 "--bundle" => bundle_path = PathBuf::from(next_value(&mut args, "--bundle")?),
                 "--out-dir" => {
@@ -222,7 +270,10 @@ impl Options {
             },
             |bundle_path| Mode::Replay { bundle_path },
         );
-        Ok(Self { mode })
+        Ok(Self {
+            mode,
+            allow_newer_protocol,
+        })
     }
 }
 

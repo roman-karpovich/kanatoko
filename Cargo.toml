@@ -1,6 +1,6 @@
 [package]
 name = "kanatoko"
-version = "28.0.0"
+version = "28.1.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Test Soroban contracts against captured Stellar network state"

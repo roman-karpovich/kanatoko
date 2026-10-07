@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use kanatoko::{mainnet, CacheStatus, ScenarioFork};
+use kanatoko::{mainnet, CacheStatus, PreviewAuth, ScenarioFork, SUPPORTED_PROTOCOL_VERSION};
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     AlphaNum4, AssetCode4, ContractEventBody, ContractExecutable, Hash, LedgerEntry,
@@ -40,6 +40,8 @@ mod replacement {
 }
 
 const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/auto-capture.json";
+// Protocol 29 Mainnet cache, byte-identical to the 29 line's `auto-capture.json`.
+const CAPTURE_P29: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/auto-capture-p29.json";
 const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const USDC_ISSUER: &str = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -63,6 +65,42 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
         <[u8; 32]>::from(Sha256::digest(ABI_WASM)),
         "the ABI source WASM must not replace the captured network executable",
     );
+    assert_captured_real_account_state(run.fixture());
+}
+
+#[test]
+fn protocol_29_cache_replays_the_same_scenario_offline_with_the_newer_protocol_opt_in() {
+    let run = mainnet()
+        .cache(CAPTURE_P29)
+        .offline()
+        .allow_newer_protocol()
+        .run(|fork| {
+            assert_eq!(fork.network_protocol_version(), 29);
+            assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
+            let pool = fork.contract(POOL);
+            let report = fork
+                .preview(&pool, "get_tokens", (), PreviewAuth::Record)
+                .unwrap();
+            assert!(report.receipt().outcome.is_success());
+            assert_eq!(report.receipt().upstream_reads, 0);
+            assert_eq!(report.network_protocol_version(), 29);
+            assert_eq!(
+                report.executed_protocol_version(),
+                SUPPORTED_PROTOCOL_VERSION
+            );
+            full_scenario(fork);
+        })
+        .unwrap();
+
+    assert_eq!(run.cache_status(), CacheStatus::Hit);
+    let provenance = run.fixture().provenance();
+    assert_eq!(provenance.ledger_sequence(), 64_731_476);
+    assert_eq!(provenance.protocol_version(), 29);
+    assert_eq!(
+        provenance.executed_protocol_version(),
+        SUPPORTED_PROTOCOL_VERSION
+    );
+    assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_captured_real_account_state(run.fixture());
 }
 

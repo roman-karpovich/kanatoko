@@ -24,7 +24,8 @@ use thiserror::Error;
 use crate::{
     canonical_ledger_digest,
     capture::{KeyId, LookupState},
-    runtime::configure_fork_env,
+    fixture::executed_protocol_version,
+    runtime::{fork_env, network_ledger_snapshot, ForkEnvSeed},
     FixtureError,
 };
 
@@ -191,6 +192,7 @@ pub struct StrictCheckpoint {
 pub struct StrictFork {
     id: u64,
     env: Env,
+    network_protocol_version: u32,
     coverage: BTreeMap<KeyId, LookupState>,
     local_contracts: BTreeSet<ScAddress>,
     local_code_hashes: BTreeSet<[u8; 32]>,
@@ -214,6 +216,7 @@ impl StrictFork {
         Self {
             id,
             env,
+            network_protocol_version: snapshot.protocol_version,
             coverage,
             local_contracts: BTreeSet::new(),
             local_code_hashes: BTreeSet::new(),
@@ -227,6 +230,29 @@ impl StrictFork {
         0
     }
 
+    /// Ledger protocol of the network the fixture was captured on.
+    ///
+    /// Every [`Receipt`] of this fork, its digests, and its checkpoints refer
+    /// to this protocol.
+    #[must_use]
+    pub const fn network_protocol_version(&self) -> u32 {
+        self.network_protocol_version
+    }
+
+    /// Ledger protocol the Host executes every invocation of this fork with.
+    ///
+    /// It differs from [`Self::network_protocol_version`] only for a capture
+    /// accepted through the opt-in newer-protocol mode, where it is
+    /// [`crate::SUPPORTED_PROTOCOL_VERSION`].
+    #[must_use]
+    pub const fn executed_protocol_version(&self) -> u32 {
+        executed_protocol_version(self.network_protocol_version)
+    }
+
+    fn ledger_snapshot(&self) -> LedgerSnapshot {
+        network_ledger_snapshot(&self.env, self.network_protocol_version)
+    }
+
     /// Canonical digest of current ledger state.
     ///
     /// # Errors
@@ -234,7 +260,7 @@ impl StrictFork {
     /// Returns [`FixtureError`] if the Host snapshot cannot be encoded into
     /// the canonical detached digest.
     pub fn ledger_digest(&self) -> Result<[u8; 32], FixtureError> {
-        canonical_ledger_digest(&self.env.to_ledger_snapshot())
+        canonical_ledger_digest(&self.ledger_snapshot())
     }
 
     /// Receipts remain detached from every replaced `Env`.
@@ -250,7 +276,7 @@ impl StrictFork {
     pub fn checkpoint(&self) -> StrictCheckpoint {
         StrictCheckpoint {
             fork_id: self.id,
-            snapshot: self.env.to_ledger_snapshot(),
+            snapshot: self.ledger_snapshot(),
             coverage: self.coverage.clone(),
             local_contracts: self.local_contracts.clone(),
             local_code_hashes: self.local_code_hashes.clone(),
@@ -319,7 +345,7 @@ impl StrictFork {
             return Err(StrictForkError::CandidateAddressOccupied);
         }
 
-        let before = self.env.to_ledger_snapshot();
+        let before = self.ledger_snapshot();
         let before_digest = canonical_ledger_digest(&before)?;
         let mut local_contracts = self.local_contracts.clone();
         local_contracts.insert(address.clone());
@@ -364,7 +390,7 @@ impl StrictFork {
             return Err(StrictForkError::CandidateRegistrationFailed);
         }
 
-        let after = child.to_ledger_snapshot();
+        let after = network_ledger_snapshot(&child, self.network_protocol_version);
         let after_digest = canonical_ledger_digest(&after)?;
         let state_changes = state_diff(&before, &after)?;
         update_coverage(&mut self.coverage, &state_changes)?;
@@ -396,7 +422,7 @@ impl StrictFork {
         execution: ExecutionMode,
         auth: AuthMode,
     ) -> Result<Receipt, StrictForkError> {
-        let before = self.env.to_ledger_snapshot();
+        let before = self.ledger_snapshot();
         let before_digest = canonical_ledger_digest(&before)?;
         let allow_mock_nonces = matches!(&auth, AuthMode::Record | AuthMode::MockExact(_));
         let (child, source) = strict_env(
@@ -449,7 +475,7 @@ impl StrictFork {
             return Err(StrictForkError::AuthTreeMismatch);
         }
 
-        let mut after = child.to_ledger_snapshot();
+        let mut after = network_ledger_snapshot(&child, self.network_protocol_version);
         if allow_mock_nonces {
             strip_new_mock_nonces(&before, &mut after)?;
         }
@@ -664,12 +690,11 @@ fn strict_env(
         allow_mock_nonces,
         unknown: Rc::new(RefCell::new(BTreeSet::new())),
     });
-    let mut env = Env::from_ledger_snapshot(SnapshotSourceInput {
+    let env = fork_env(ForkEnvSeed::Ledger(SnapshotSourceInput {
         source: source.clone(),
         ledger_info: Some(snapshot.ledger_info()),
         snapshot: Some(Rc::new(snapshot.clone())),
-    });
-    configure_fork_env(&mut env);
+    }));
     (env, source)
 }
 

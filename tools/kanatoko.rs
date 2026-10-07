@@ -34,12 +34,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_help();
             Ok(())
         }
-        Options::Capture { rpc_url, bundle } => aquarius_capture::capture(&rpc_url, &bundle),
+        Options::Capture {
+            rpc_url,
+            bundle,
+            allow_newer_protocol,
+        } => aquarius_capture::capture(&rpc_url, &bundle, allow_newer_protocol),
         Options::Run {
             fixture,
             candidate,
             format,
-        } => run(&fixture, &candidate, format),
+            allow_newer_protocol,
+        } => run(&fixture, &candidate, format, allow_newer_protocol),
     }
 }
 
@@ -48,8 +53,14 @@ fn run(
     fixture_path: &PathBuf,
     candidate_artifact: &CandidateArtifact,
     format: OutputFormat,
+    allow_newer_protocol: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let captured = CapturedFixture::from_file(fixture_path, MAINNET_PASSPHRASE)?;
+    let captured = if allow_newer_protocol {
+        CapturedFixture::from_file_allowing_newer_protocol(fixture_path, MAINNET_PASSPHRASE)?
+    } else {
+        CapturedFixture::from_file(fixture_path, MAINNET_PASSPHRASE)?
+    };
+    aquarius_capture::warn_if_newer_protocol(captured.provenance());
     let mut fork = captured.fork();
     let pool = address(DEFAULT_POOL);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
@@ -156,7 +167,10 @@ fn run(
         return Err("strict offline run reported an upstream read".into());
     }
 
-    let report = json!({
+    // Protocol traceability is added only in the opt-in mode, so default
+    // output stays identical to earlier releases.
+    let protocols = allow_newer_protocol.then(|| Protocols::of(&fork));
+    let mut report = json!({
         "evidence": ["contract-functional", "state-reproducible"],
         "transactionFaithfulDeploy": false,
         "fixture": fixture_path,
@@ -170,13 +184,23 @@ fn run(
         "restoredQuote": restored_quote.to_string(),
         "unknownFailClosed": unknown_fail_closed,
         "upstreamReads": fork.upstream_reads(),
-        "receipts": receipts.iter().map(receipt_json).collect::<Vec<_>>(),
+        "receipts": receipts
+            .iter()
+            .map(|receipt| receipt_json(receipt, protocols))
+            .collect::<Vec<_>>(),
     });
+    if let Some(protocols) = protocols {
+        protocols.insert_into(&mut report);
+    }
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Text => {
             println!("strict Aquarius run: ok");
             println!("ledger: {}", captured.provenance().ledger_sequence());
+            if let Some(protocols) = protocols {
+                println!("network protocol: {}", protocols.network);
+                println!("executed protocol: {}", protocols.executed);
+            }
             println!("candidate install: local injection (not transaction-faithful deploy)");
             println!("quote before: {quote_before}");
             println!("quote after: {quote_after}");
@@ -253,7 +277,30 @@ fn registration_json(registration: &CandidateRegistration) -> Value {
     })
 }
 
-fn receipt_json(receipt: &Receipt) -> Value {
+/// Network and executed ledger protocols of a strict fork.
+#[derive(Clone, Copy)]
+struct Protocols {
+    network: u32,
+    executed: u32,
+}
+
+impl Protocols {
+    const fn of(fork: &StrictFork) -> Self {
+        Self {
+            network: fork.network_protocol_version(),
+            executed: fork.executed_protocol_version(),
+        }
+    }
+
+    fn insert_into(self, value: &mut Value) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("networkProtocol".to_string(), json!(self.network));
+            object.insert("executedProtocol".to_string(), json!(self.executed));
+        }
+    }
+}
+
+fn receipt_json(receipt: &Receipt, protocols: Option<Protocols>) -> Value {
     let outcome = match &receipt.outcome {
         InvokeOutcome::Success(value) => json!({"status": "success", "resultXdr": xdr_b64(value)}),
         InvokeOutcome::Failure { error, kind } => json!({
@@ -262,7 +309,7 @@ fn receipt_json(receipt: &Receipt) -> Value {
             "kind": invoke_error_name(*kind),
         }),
     };
-    json!({
+    let mut value = json!({
         "request": {
             "contractXdr": xdr_b64(&receipt.request.contract),
             "functionXdr": xdr_b64(&receipt.request.function),
@@ -287,7 +334,11 @@ fn receipt_json(receipt: &Receipt) -> Value {
         "afterDigest": hex(receipt.after_digest),
         "disposition": format!("{:?}", receipt.disposition),
         "upstreamReads": receipt.upstream_reads,
-    })
+    });
+    if let Some(protocols) = protocols {
+        protocols.insert_into(&mut value);
+    }
+    value
 }
 
 fn state_change_json(change: &StateChange) -> Value {
@@ -385,11 +436,13 @@ enum Options {
     Capture {
         rpc_url: String,
         bundle: PathBuf,
+        allow_newer_protocol: bool,
     },
     Run {
         fixture: PathBuf,
         candidate: CandidateArtifact,
         format: OutputFormat,
+        allow_newer_protocol: bool,
     },
 }
 
@@ -410,22 +463,30 @@ impl Options {
             "capture" => {
                 let mut rpc_url = DEFAULT_RPC_URL.to_string();
                 let mut bundle = PathBuf::from(DEFAULT_BUNDLE);
+                let mut allow_newer_protocol = false;
                 while let Some(option) = args.next() {
                     match option.as_str() {
                         "--rpc-url" => rpc_url = next(&mut args, &option)?,
                         "--bundle" => bundle = PathBuf::from(next(&mut args, &option)?),
+                        "--allow-newer-protocol" => allow_newer_protocol = true,
                         _ => return Err(format!("unknown capture option: {option}").into()),
                     }
                 }
-                Ok(Self::Capture { rpc_url, bundle })
+                Ok(Self::Capture {
+                    rpc_url,
+                    bundle,
+                    allow_newer_protocol,
+                })
             }
             "run" => {
                 let mut fixture = PathBuf::from(DEFAULT_BUNDLE);
                 let mut candidate_path = None;
                 let mut candidate_hash = None;
                 let mut format = OutputFormat::Text;
+                let mut allow_newer_protocol = false;
                 while let Some(option) = args.next() {
                     match option.as_str() {
+                        "--allow-newer-protocol" => allow_newer_protocol = true,
                         "--fixture" | "--bundle" => {
                             fixture = PathBuf::from(next(&mut args, &option)?);
                         }
@@ -457,6 +518,7 @@ impl Options {
                     fixture,
                     candidate,
                     format,
+                    allow_newer_protocol,
                 })
             }
             _ => Err(format!("unknown command: {command}").into()),
@@ -522,9 +584,13 @@ fn print_help() {
     println!(
         "Kanatoko strict Soroban fork workflow\n\n\
          Capture the Aquarius scenario:\n  \
-         kanatoko capture aquarius-cp [--rpc-url URL] [--bundle PATH]\n\n\
+         kanatoko capture aquarius-cp [--rpc-url URL] [--bundle PATH]\n  \
+         [--allow-newer-protocol]\n\n\
          Run the strict workflow fully offline:\n  \
          kanatoko run aquarius-cp [--fixture PATH] [--format text|json]\n  \
-         [--candidate-wasm PATH --candidate-sha256 HEX]\n"
+         [--candidate-wasm PATH --candidate-sha256 HEX] [--allow-newer-protocol]\n\n\
+         --allow-newer-protocol accepts a ledger exactly one protocol newer than\n\
+         the Host and executes it on the Host's own protocol. Captures keep the\n\
+         real network protocol; Host behaviour may differ from the network.\n"
     );
 }

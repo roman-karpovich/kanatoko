@@ -30,13 +30,16 @@ an older one:
 The 28 line uses the stable Soroban Rust SDK and ledger snapshot 28 with the
 compatible Host 28 runtime. Use the Kanatoko major matching the network
 protocol being captured; the runner fails closed rather than replaying state
-under a different Host.
+under a different Host. Until a matching line exists, a network exactly one
+protocol ahead can be captured and replayed through an explicit opt-in; see
+[A network one protocol ahead](#a-network-one-protocol-ahead).
 
 ## Your contract against mainnet
 
 Kanatoko 28 captures and replays Protocol 28 Mainnet state. The committed CLI
 fixture is a Protocol 28 capture; its historical Protocol 27 predecessor is
-retained separately only to test fail-closed cross-protocol loading.
+retained separately only to test fail-closed cross-protocol loading. Protocol 29
+captures are committed next to them for the opt-in newer-protocol mode.
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -192,6 +195,70 @@ keys. Online mode seeds recapture from the cached key inventory even when the
 ledger anchor has not changed; offline mode fails closed until the cache is
 refreshed.
 
+## A network one protocol ahead
+
+When a network upgrades before the matching Kanatoko line is available, the 28
+line can opt into capturing and replaying a ledger exactly one protocol newer
+than its Host, that is Protocol 29:
+
+```rust,ignore
+use kanatoko::mainnet;
+
+mainnet()
+    .allow_newer_protocol()
+    .run(|fork| {
+        assert_eq!(fork.network_protocol_version(), 29);
+        assert_eq!(fork.executed_protocol_version(), 28);
+    })
+    .unwrap();
+```
+
+The same opt-in exists on every API that checks the protocol:
+`CaptureBuilder::allow_newer_protocol()`,
+`CapturedFixture::from_file_allowing_newer_protocol(...)`,
+`FrozenFixture::from_file_allowing_newer_protocol(...)` and
+`FrozenFixture::from_snapshot_allowing_newer_protocol(...)`, and
+`--allow-newer-protocol` on the CLI's `capture` and `run` commands. The flag
+also applies to `.offline()` cache loads.
+
+- **One protocol only.** The mode accepts the Host's own protocol or exactly
+  the next one. Older ledgers and ledgers two or more protocols ahead still
+  fail with `UnsupportedProtocol`. Without the opt-in, behaviour and errors are
+  unchanged.
+- **Captures stay truthful.** Bundles, their ledger snapshot, provenance, and
+  the ledger, inventory, and bundle digests keep the real network protocol. A
+  Protocol 29 bundle written this way has the same format and digests as one
+  written by a Protocol 29 line, and loaders without the opt-in reject it.
+- **Only execution is downgraded.** Every `Env` gives the Host its own
+  protocol as the ledger protocol, so a scenario's `Env` reports the executed
+  protocol in its ledger info. Fork digests, receipt digests, and checkpoints
+  keep the network protocol.
+- **Traceable.** `network_protocol_version()` and
+  `executed_protocol_version()` on `ScenarioFork`, `InvocationReport`,
+  `StrictFork`, and `Fork`, plus
+  `CaptureProvenance::executed_protocol_version()` and
+  `FrozenFixture::executed_protocol_version()`, expose both protocols. The CLI
+  prints a one-line warning to stderr and adds `networkProtocol` and
+  `executedProtocol` to its report and to every receipt.
+
+The ledger XDR does not change between Protocol 28 and 29, but the Host does.
+Behaviour that changed without an XDR change follows the older Host. Between
+Host 28.0.2 and 29.0.0 that is WASM parse metering (Protocol 29 also counts
+`br_table` targets and custom sections), the removal of a separate WASM
+pre-validation pass, `extend_ttl` saturating instead of failing on an
+overflowing TTL, and a Stellar Asset Contract error message. For example, a
+candidate installed locally records different `ContractCodeCostInputs` than on
+a Protocol 29 Host, so ledger digests taken after that install differ. The
+committed Aquarius strict workflow nevertheless returns identical quotes,
+results, events, authorization trees, and state changes on both Hosts. Treat
+resource estimates and metering-sensitive results as evidence from the older
+Host.
+
+Natural guards still fail closed and are never caught or softened: ledger data
+the older XDR cannot decode, and contracts whose WASM declares a newer
+interface protocol (`contract protocol number is newer than host`). Move to the
+Kanatoko major matching the network once it is available.
+
 ## One environment, both kinds of contract
 
 `fork.deploy(...)` installs your candidate WASM and executes its constructor,
@@ -252,6 +319,7 @@ mutable state and can be mixed freely.
 | `.cache(path)` | Overrides the automatically derived cache path. |
 | `.offline()` | Replays the cached ledger as a pinned snapshot with zero RPC calls. |
 | `.refresh()` | Discards cached key inventory and performs a cold coherent capture. |
+| `.allow_newer_protocol()` | Accepts a network exactly one protocol ahead and executes it on the Host's own protocol; see above. |
 | `fork.contract("C...")` | Parses a network contract address. |
 | `fork.account("G...")` | Parses a network account; Host access discovers its real account and trustlines. |
 | `fork.muxed_account("M...")` | Parses a muxed address; ledger state belongs to its underlying G-address. |
@@ -317,7 +385,8 @@ version when possible.
 A Kanatoko line can capture and replay a live network only when its selected
 Host protocol matches the protocol reported by that network. For example, a
 protocol-27 network requires Kanatoko 27; Kanatoko 25 or 26 is not a historical
-network-state fork.
+network-state fork. The only exception is the explicit newer-protocol opt-in,
+limited to one protocol ahead and executed on the older Host.
 
 Your production contract does not need to upgrade with the harness. A contract
 crate may remain on Soroban SDK 25 or 26, produce its normal network-valid
