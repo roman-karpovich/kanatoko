@@ -367,6 +367,25 @@ fork, and ordinary Rust code between the calls runs once. Use a separate cache
 path for a materially different scenario. If calls must observe each other's
 contract mutations, keep them inside the same `.run(...)` closure.
 
+## Roadmap
+
+Kanatoko is moving toward reproducible upgrade testing against captured Stellar
+network state.
+
+Planned improvements, in priority order:
+
+- **Network execution profiles:** capture network settings alongside contract
+  state, apply invocation limits, and verify compatibility with the runtime's
+  CPU and memory cost models.
+- **Baseline and candidate comparison:** run the same scenario against production
+  and candidate WASM from identical starting state, comparing results, storage
+  changes, events, authorization, and resource usage.
+- **Readable execution reports:** inspect cross-contract call trees and produce
+  comparison reports suitable for local debugging and CI.
+
+These capabilities are planned. Scope and delivery order may evolve with
+technical findings and developer feedback.
+
 ## Evidence boundary
 
 `fork.deploy(...)`, local account funding, and mocked authorization are explicit
