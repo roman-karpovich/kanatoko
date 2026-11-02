@@ -4,6 +4,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(kanatoko_protocol_27_fixtures)");
     println!("cargo:rustc-check-cfg=cfg(kanatoko_protocol_28_fixtures)");
     println!("cargo:rustc-check-cfg=cfg(kanatoko_protocol_29_fixtures)");
+    println!("cargo:rustc-check-cfg=cfg(kanatoko_protocol_30_fixtures)");
     println!("cargo:rustc-check-cfg=cfg(kanatoko_local_wasm_fixtures)");
 
     match env::var("CARGO_PKG_VERSION_MAJOR").as_deref() {
@@ -17,6 +18,10 @@ fn main() {
         }
         Ok("29") => {
             println!("cargo:rustc-cfg=kanatoko_protocol_29_fixtures");
+            println!("cargo:rustc-cfg=kanatoko_local_wasm_fixtures");
+        }
+        Ok("30") => {
+            println!("cargo:rustc-cfg=kanatoko_protocol_30_fixtures");
             println!("cargo:rustc-cfg=kanatoko_local_wasm_fixtures");
         }
         _ => {}

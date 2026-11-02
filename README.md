@@ -13,7 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "29", features = ["capture"] }
+kanatoko = { version = "=30.0.0-rc.1", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -27,20 +27,33 @@ an older one:
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
 | 29 | `kanatoko = "29"` | Protocol 29 or older |
+| 30 | `kanatoko = "=30.0.0-rc.1"` | Protocol 30 or older |
 
-The 29 line uses the stable Soroban Rust SDK and ledger snapshot 29 with the
-compatible Host 29 runtime. Use the Kanatoko major matching the network
-protocol being captured; the runner fails closed rather than replaying state
-under a different Host. Until a matching line exists, a network exactly one
+Protocol 30 support is a prerelease because the upstream Rust SDK is currently
+`30.0.0-rc.1`. Its SDK and ledger-snapshot dependencies (`30.0.0-rc.1`) and the
+Host they require (`soroban-env-host` 30.0.0) are pinned exactly, so this RC
+cannot silently float to a later breaking prerelease or the stable line. Use
+the Protocol 29 Kanatoko release for a network still running 29; the runner
+fails closed rather than replaying state under a different Host. Until a matching line exists, a network exactly one
 protocol ahead can be captured and replayed through an explicit opt-in; see
 [A network one protocol ahead](#a-network-one-protocol-ahead).
 
 ## Your contract against mainnet
 
-Kanatoko 29 captures and replays Protocol 29 Mainnet state. The committed CLI
-fixture is a Protocol 29 capture; its historical Protocol 27 and 28
-predecessors are retained separately only to test fail-closed cross-protocol
-loading.
+At this RC's release boundary, public Mainnet and testnet still report
+Protocol 29. Run the mainnet examples in this section with the stable matching
+line until the networks upgrade:
+
+```toml
+[dev-dependencies]
+kanatoko = { version = "29", features = ["capture"] }
+```
+
+Kanatoko 30 captures and replays Protocol 30 state. Because no public network
+runs Protocol 30 yet, its committed Protocol 30 evidence is a capture of a
+local standalone network. The committed CLI fixture is still the Protocol 29
+Mainnet capture; this line loads it, like the historical Protocol 27 and 28
+captures, only to test fail-closed cross-protocol loading.
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -202,7 +215,7 @@ When a network upgrades before the matching Kanatoko line is available, a
 Kanatoko line whose Host runs Protocol N can opt into capturing and replaying a
 ledger exactly one protocol newer, Protocol N+1, and execute it on its own
 Protocol N Host. On the 29 line that means a Protocol 30 ledger executed as
-Protocol 29:
+Protocol 29; on the 30 line, a Protocol 31 ledger executed as Protocol 30:
 
 ```rust,ignore
 use kanatoko::mainnet;

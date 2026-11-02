@@ -1,0 +1,13 @@
+[package]
+name = "kanatoko-p30-standalone-setup"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+base64 = "=0.22.1"
+ed25519-dalek = "2"
+serde_json = "1"
+sha2 = "=0.10.9"
+stellar-xdr = { version = "=30.0.0", features = ["std", "base64"] }
+ureq = { version = "=2.12.1", default-features = false, features = ["json"] }

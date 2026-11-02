@@ -85,7 +85,7 @@ jobs:
           else
             sdk_major="${version%%.*}"
             case "${sdk_major}" in
-              25|26|27|28|29) ;;
+              25|26|27|28|29|30) ;;
               *)
                 echo "Unsupported Kanatoko release major: ${sdk_major}" >&2
                 exit 1

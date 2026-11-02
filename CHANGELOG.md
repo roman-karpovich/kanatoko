@@ -2,6 +2,39 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 30.0.0-rc.1 - 2026-11-02
+
+- Add prerelease Protocol 30 support with exact `soroban-sdk` and
+  `soroban-ledger-snapshot` 30.0.0-rc.1 plus `soroban-env-host` 30.0.0 pins.
+  Cargo resolves one Host, 30.0.0, and `stellar-xdr` 30.0.0. The Rust
+  toolchain stays at 1.91.0, the SDK's minimum.
+- No Kanatoko API changes. SDK 30's migration notes concern contract builds
+  (`stellar contract build` from stellar-cli 30 or newer, spec name
+  deduplication and markers) and CAP-84 muxed contract addresses; none of them
+  required a source change here.
+- The newer-protocol mode is unchanged and relative to the Host: on the 30
+  Host it accepts exactly Protocol 31 and executes it as Protocol 30.
+  Protocol 32 and Protocols 29 and older still fail closed with
+  `UnsupportedProtocol`, also with the opt-in.
+- Testnet and Mainnet still run Protocol 29, so the Aquarius Mainnet captures
+  cannot be refreshed on Protocol 30. Keep `capture.json`, `auto-capture.json`
+  and the `native-xlm-p29` testnet capture byte for byte as cross-protocol
+  rejection evidence, next to the Protocol 27 and 28 captures: they fail
+  closed on the Protocol 30 Host through the loaders, the offline runners and
+  the CLI, with and without the opt-in. The Aquarius scenario tests stay on
+  the 29 line.
+- Add a frozen Protocol 30 capture of a local standalone network
+  (`stellar/quickstart:nightly-next`): the native XLM Stellar Asset Contract
+  and the stateful fixture contract, uploaded, deployed and incremented by real
+  Protocol 30 transactions. Offline tests replay it, execute the contract, and
+  transfer native XLM to a CAP-84 muxed contract address, checking the
+  `to_muxed_id` in the transfer event. The generic strict-fork tests now run
+  on this capture.
+- Keep the committed candidate fixtures built with `soroban-sdk` 28; the
+  Protocol 30 Host executes them unchanged, including on the real Protocol 30
+  ledger.
+- Teach release automation to accept the `sdk-30` release line.
+
 ## 29.0.0 - 2026-10-07
 
 - Add Protocol 29 support on the official `soroban-sdk` and

@@ -1,32 +1,61 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
+#![cfg(all(
+    feature = "capture",
+    any(kanatoko_protocol_29_fixtures, kanatoko_protocol_30_fixtures)
+))]
 
+//! Strict-fork mechanics on the line's current-protocol capture. The Protocol
+//! 29 line runs them on the Aquarius mainnet capture; the Protocol 30 line has
+//! no public-network capture and runs the generic ones on the local standalone
+//! Protocol 30 capture instead.
+
+#[cfg(kanatoko_protocol_29_fixtures)]
+use kanatoko::AppliedAuthMode;
 use kanatoko::{
-    AppliedAuthMode, AuthMode, CandidateInstallMode, CapturedFixture, ExecutionMode, InvokeOutcome,
-    InvokeRequest, ReceiptDisposition, StrictForkError, SUPPORTED_PROTOCOL_VERSION,
+    AuthMode, CandidateInstallMode, CapturedFixture, ExecutionMode, InvokeOutcome, InvokeRequest,
+    ReceiptDisposition, StrictForkError, SUPPORTED_PROTOCOL_VERSION,
 };
 use sha2::{Digest, Sha256};
+#[cfg(kanatoko_protocol_29_fixtures)]
+use soroban_env_host::xdr::UInt128Parts;
 use soroban_env_host::xdr::{
     ContractId, Hash, Int128Parts, InvokeContractArgs, LedgerKey, ScAddress, ScSymbol, ScVal,
     SorobanAddressCredentials, SorobanAuthorizationEntry, SorobanAuthorizedFunction,
-    SorobanAuthorizedInvocation, SorobanCredentials, UInt128Parts,
+    SorobanAuthorizedInvocation, SorobanCredentials,
 };
 use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
-const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
+#[cfg(kanatoko_protocol_29_fixtures)]
+const PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
+#[cfg(kanatoko_protocol_29_fixtures)]
 const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
+#[cfg(kanatoko_protocol_29_fixtures)]
 const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+#[cfg(kanatoko_protocol_29_fixtures)]
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+#[cfg(kanatoko_protocol_29_fixtures)]
 const ONE_USDC: u64 = 10_000_000;
+
+#[cfg(kanatoko_protocol_30_fixtures)]
+const PASSPHRASE: &str = "Standalone Network ; February 2017";
+#[cfg(kanatoko_protocol_30_fixtures)]
+const CAPTURE: &str = "fixtures/standalone/native-xlm-stateful-p30/capture.json";
+#[cfg(kanatoko_protocol_30_fixtures)]
+const XLM: &str = "CDMLFMKMMD7MWZP3FKUBZPVHTUEDLSX4BYGYKH4GCESXYHS3IHQ4EIG4";
+#[cfg(kanatoko_protocol_30_fixtures)]
+const DEPLOYER: &str = "GDG2BXH36BVGBOF62IXSAIZXKJ62CAIWHEFQOAA5ZGIEOMXQDYSPZ7VT";
+#[cfg(kanatoko_protocol_30_fixtures)]
+const STATEFUL: &str = "CCNHIRURTVMTX65DOASMBGJSQZLZMFGRO7QBHMBDSFPGEQ7AWH6VMTH5";
 const STATEFUL_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
 const STATEFUL_WASM_SHA256: [u8; 32] = [
     0x01, 0x56, 0xa9, 0xa8, 0x40, 0xe4, 0x14, 0x77, 0x32, 0xfc, 0xf0, 0x47, 0x98, 0x46, 0x22, 0x08,
     0x40, 0xae, 0x4b, 0x42, 0x81, 0xc5, 0x83, 0x54, 0xaa, 0x31, 0xcf, 0x70, 0xda, 0xf6, 0xb2, 0xea,
 ];
 
+#[cfg(kanatoko_protocol_29_fixtures)]
 #[test]
 #[allow(clippy::too_many_lines)]
 fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert() {
-    let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let captured = CapturedFixture::from_file(CAPTURE, PASSPHRASE).unwrap();
     let mut fork = captured.fork();
     let initial_digest = fork.ledger_digest().unwrap();
     let checkpoint = fork.checkpoint();
@@ -161,22 +190,17 @@ fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert()
 
 #[test]
 fn mock_exact_mismatch_and_foreign_checkpoint_are_atomic() {
-    let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let captured = CapturedFixture::from_file(CAPTURE, PASSPHRASE).unwrap();
     let mut first = captured.fork();
     let mut second = captured.fork();
     let before = first.ledger_digest().unwrap();
-    let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
-    let mint = InvokeRequest {
-        contract: address(USDC),
-        function: symbol("mint"),
-        args: vec![
-            ScVal::Address(user),
-            ScVal::I128(Int128Parts { hi: 0, lo: 1 }),
-        ],
-    };
 
     let error = first
-        .invoke(mint, ExecutionMode::Apply, AuthMode::MockExact(vec![]))
+        .invoke(
+            authorized_request(),
+            ExecutionMode::Apply,
+            AuthMode::MockExact(vec![]),
+        )
         .unwrap_err();
     assert!(matches!(error, StrictForkError::AuthTreeMismatch));
     assert_eq!(first.ledger_digest().unwrap(), before);
@@ -194,7 +218,7 @@ fn candidate_production_wasm_hash_constructor_and_local_injection_are_atomic() {
         <[u8; 32]>::from(Sha256::digest(STATEFUL_WASM)),
         STATEFUL_WASM_SHA256
     );
-    let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let captured = CapturedFixture::from_file(CAPTURE, PASSPHRASE).unwrap();
     let mut fork = captured.fork();
     let before = fork.ledger_digest().unwrap();
     let candidate = ScAddress::Contract(ContractId(Hash([0x6b; 32])));
@@ -271,8 +295,8 @@ fn newer_interface_contract_still_fails_closed_under_the_newer_protocol_opt_in()
     let newer_interface_sha256: [u8; 32] = Sha256::digest(&newer_interface).into();
 
     for captured in [
-        CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE),
-        CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, MAINNET_PASSPHRASE),
+        CapturedFixture::from_file(CAPTURE, PASSPHRASE),
+        CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, PASSPHRASE),
     ] {
         let mut fork = captured.unwrap().fork();
         let before = fork.ledger_digest().unwrap();
@@ -306,10 +330,10 @@ fn newer_interface_contract_still_fails_closed_under_the_newer_protocol_opt_in()
 
 #[test]
 fn repeated_mocked_auth_applies_for_one_address_do_not_commit_nonce_scaffolding() {
-    let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let captured = CapturedFixture::from_file(CAPTURE, PASSPHRASE).unwrap();
     let mut fork = captured.fork();
     let candidate = ScAddress::Contract(ContractId(Hash([0x6d; 32])));
-    let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
+    let user = auth_user();
     fork.register_candidate(
         candidate.clone(),
         STATEFUL_WASM,
@@ -357,7 +381,7 @@ fn repeated_mocked_auth_applies_for_one_address_do_not_commit_nonce_scaffolding(
 
 #[test]
 fn malformed_enforce_auth_is_typed_and_atomic() {
-    let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
+    let captured = CapturedFixture::from_file(CAPTURE, PASSPHRASE).unwrap();
     let signature_expiration_ledger = captured.provenance().ledger_sequence() + 100;
     let mut fork = captured.fork();
     let candidate = ScAddress::Contract(ContractId(Hash([0x6e; 32])));
@@ -393,6 +417,48 @@ fn malformed_enforce_auth_is_typed_and_atomic() {
         StrictForkError::InvalidAuthorizationEntries
     ));
     assert_eq!(fork.ledger_digest().unwrap(), before);
+}
+
+/// An address whose authorization the Host records. Its ledger entries are
+/// within the capture's Present/Absent coverage.
+#[cfg(kanatoko_protocol_29_fixtures)]
+fn auth_user() -> ScAddress {
+    ScAddress::Contract(ContractId(Hash([0x4b; 32])))
+}
+
+/// An address whose authorization the Host records: the captured account
+/// that deployed the fixture contract.
+#[cfg(kanatoko_protocol_30_fixtures)]
+fn auth_user() -> ScAddress {
+    address(DEPLOYER)
+}
+
+/// A captured-contract call that requires one authorization.
+#[cfg(kanatoko_protocol_29_fixtures)]
+fn authorized_request() -> InvokeRequest {
+    InvokeRequest {
+        contract: address(USDC),
+        function: symbol("mint"),
+        args: vec![
+            ScVal::Address(ScAddress::Contract(ContractId(Hash([0x4b; 32])))),
+            ScVal::I128(Int128Parts { hi: 0, lo: 1 }),
+        ],
+    }
+}
+
+/// A captured-contract call that requires one authorization. The recipient's
+/// balance key is RPC-confirmed absent in the capture.
+#[cfg(kanatoko_protocol_30_fixtures)]
+fn authorized_request() -> InvokeRequest {
+    InvokeRequest {
+        contract: address(XLM),
+        function: symbol("transfer"),
+        args: vec![
+            ScVal::Address(address(DEPLOYER)),
+            ScVal::Address(address(STATEFUL)),
+            ScVal::I128(Int128Parts { hi: 0, lo: 1 }),
+        ],
+    }
 }
 
 fn assert_unknown(fork: &mut kanatoko::StrictFork, byte: u8) {
@@ -463,6 +529,7 @@ fn authorization_entry(
     }
 }
 
+#[cfg(kanatoko_protocol_29_fixtures)]
 fn request(contract: &str, function: &str, args: Vec<ScVal>) -> InvokeRequest {
     InvokeRequest {
         contract: address(contract),

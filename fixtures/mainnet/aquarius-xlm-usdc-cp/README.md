@@ -191,6 +191,19 @@ executes it on the Protocol 29 Host. No Protocol 30 network exists yet, so no
 Protocol 30 capture is committed; the mode is tested with synthetic in-memory
 Protocol 30 snapshots.
 
+## On the Kanatoko 30 line
+
+Mainnet still runs Protocol 29, so `capture.json` and `auto-capture.json` cannot
+be recaptured on Protocol 30 yet. On the 30 line they are kept byte for byte as
+cross-protocol rejection evidence: `tests/protocol_boundary.rs` proves that
+both, through the loaders, the offline runners and the CLI's default fixture,
+fail closed on the Protocol 30 Host with and without the newer-protocol opt-in.
+The Aquarius scenario tests (`tests/aquarius_candidate.rs`,
+`tests/auto_runner.rs`, `tests/cli.rs` and the Aquarius workflow in
+`tests/strict_fork.rs`) run only on the 29 line until a Protocol 30 Mainnet
+capture exists. The generic strict-fork tests run on the 30 line against
+`fixtures/standalone/native-xlm-stateful-p30/capture.json`.
+
 Historical frozen Protocol 27 snapshot toolchain:
 
 - `stellar 27.0.0` (`5a7c5fe76530bf4248477ac812fc757146b98cc4`)
