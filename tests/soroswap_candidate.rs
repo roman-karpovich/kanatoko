@@ -7,34 +7,35 @@ use kanatoko::{
 };
 use soroban_env_host::xdr::{
     ContractId, Hash, Int128Parts, InvokeContractArgs, ScAddress, ScSymbol, ScVal,
-    SorobanAuthorizedFunction, SorobanAuthorizedInvocation, UInt128Parts,
+    SorobanAuthorizedFunction, SorobanAuthorizedInvocation,
 };
 use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
-const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
-const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
+const ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+const PAIR: &str = "CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP";
 const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-const ONE_USDC: u128 = 10_000_000;
-const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapper.wasm");
+const ONE_USDC: i128 = 10_000_000;
+const DEADLINE: u64 = u64::MAX;
+const SWAP: &str = "swap_exact_tokens_for_tokens";
+const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_soroswap_wrapper.wasm");
 const WRAPPER_SHA256: [u8; 32] = [
-    0xe4, 0xd6, 0x26, 0xc4, 0x96, 0x0b, 0xc8, 0x79, 0xdd, 0x44, 0xc8, 0x24, 0x3c, 0x04, 0xb8, 0x90,
-    0xa9, 0xbb, 0x0d, 0xdb, 0x7e, 0x13, 0x92, 0xd8, 0x4a, 0x5b, 0x65, 0x1c, 0x15, 0xaa, 0xab, 0x4f,
+    0x1e, 0x7b, 0xca, 0x07, 0xc5, 0xaa, 0x5c, 0x2f, 0x31, 0x54, 0x48, 0x57, 0x02, 0x77, 0x99, 0x28,
+    0x5d, 0xff, 0x97, 0x26, 0x6e, 0xd7, 0x89, 0x5c, 0xf2, 0x1d, 0x0e, 0x67, 0x36, 0xdc, 0xb3, 0xa8,
 ];
-/// Quotes of the committed Protocol 29 capture on the Protocol 29 Host. Kanatoko
-/// 28.1.0 returns the same quotes for this capture on the Protocol 28 Host
-/// through the newer-protocol opt-in.
+/// Quotes of the committed Protocol 29 capture on the Protocol 29 Host.
 const PROTOCOL_29_QUOTES: Quotes = Quotes {
-    before: 44_629_339,
-    after: 36_888_783,
-    restored: 44_629_339,
+    before: 67_870_832,
+    after: 56_106_992,
+    restored: 67_870_832,
 };
 
 #[test]
-fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert() {
+fn candidate_calls_captured_soroswap_graph_statefully_with_receipts_and_revert() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 64_731_471);
+    assert_eq!(captured.provenance().ledger_sequence(), 65_389_557);
     assert_eq!(captured.provenance().protocol_version(), 29);
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
 
@@ -47,7 +48,7 @@ fn candidate_calls_captured_aquarius_graph_statefully_with_receipts_and_revert()
 fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
     let captured =
         CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 64_731_471);
+    assert_eq!(captured.provenance().ledger_sequence(), 65_389_557);
     assert_eq!(
         captured.provenance().protocol_version(),
         SUPPORTED_PROTOCOL_VERSION
@@ -58,7 +59,7 @@ fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
     );
     assert_eq!(
         hex(captured.frozen_fixture().ledger_digest()),
-        "7ff8b3606ec09f7c8c2937bcf493928dadbba455d1a8fcf78da9bc6d174d8c6d"
+        "54b45ed4b3d3037e0882c004629ff7574c822d915f4f51e664f2e5f15b0f3ab5"
     );
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
 
@@ -67,9 +68,9 @@ fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Quotes {
-    before: u128,
-    after: u128,
-    restored: u128,
+    before: i128,
+    after: i128,
+    restored: i128,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -87,7 +88,8 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
         fork.ledger_digest().unwrap(),
         captured.frozen_fixture().ledger_digest()
     );
-    let pool = address(POOL);
+    let router = address(ROUTER);
+    let pair = address(PAIR);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
     let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
 
@@ -96,45 +98,49 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
             candidate.clone(),
             WRAPPER_WASM,
             WRAPPER_SHA256,
-            vec![ScVal::Address(pool.clone())],
+            vec![ScVal::Address(router.clone()), ScVal::Address(pair.clone())],
         )
         .unwrap();
     assert_eq!(registration.mode, CandidateInstallMode::LocalInjection);
     assert_eq!(registration.upstream_reads, 0);
     let checkpoint = fork.checkpoint();
 
-    let tokens = invoke_success(
+    let token_0 = invoke_success(
         &mut fork,
-        call(&candidate, "get_tokens", vec![]),
+        call(&candidate, "token_0", vec![]),
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     );
-    let tokens = sc_vec(result(&tokens));
-    assert_eq!(
-        tokens,
-        vec![ScVal::Address(address(XLM)), ScVal::Address(address(USDC))]
+    assert_eq!(result(&token_0), &ScVal::Address(address(XLM)));
+    let token_1 = invoke_success(
+        &mut fork,
+        call(&candidate, "token_1", vec![]),
+        ExecutionMode::Preview,
+        AuthMode::Enforce(vec![]),
     );
+    assert_eq!(result(&token_1), &ScVal::Address(address(USDC)));
 
     let quote_before = quote(&mut fork, &candidate);
     assert!(quote_before > 0);
+    let digest_after_quote = fork.ledger_digest().unwrap();
     let reserves_before_receipt = invoke_success(
         &mut fork,
         call(&candidate, "get_reserves", vec![]),
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     );
-    let reserves_before = sc_u128_vec(result(&reserves_before_receipt));
+    let reserves_before = sc_i128_vec(result(&reserves_before_receipt));
     assert_eq!(reserves_before.len(), 2);
+    assert_eq!(fork.ledger_digest().unwrap(), digest_after_quote);
     let minted = reserves_before[1] / 10;
     assert!(minted > ONE_USDC);
-    let minted_i128 = i128::try_from(minted).unwrap();
 
     let mint_receipt = invoke_success(
         &mut fork,
         InvokeRequest {
             contract: address(USDC),
             function: symbol("mint"),
-            args: vec![ScVal::Address(user.clone()), sc_i128(minted_i128)],
+            args: vec![ScVal::Address(user.clone()), sc_i128(minted)],
         },
         ExecutionMode::Apply,
         AuthMode::Record,
@@ -144,18 +150,18 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
     assert!(!mint_receipt.events.is_empty());
     assert!(!mint_receipt.state_changes.is_empty());
     assert_eq!(mint_receipt.upstream_reads, 0);
-    assert_eq!(token_balance(&mut fork, USDC, &user), minted_i128);
+    assert_eq!(token_balance(&mut fork, USDC, &user), minted);
     assert_eq!(token_balance(&mut fork, XLM, &user), 0);
 
     let swap_request = call(
         &candidate,
-        "swap",
+        SWAP,
         vec![
+            sc_i128(minted),
+            sc_i128(0),
+            usdc_to_xlm_path(),
             ScVal::Address(user.clone()),
-            ScVal::U32(1),
-            ScVal::U32(0),
-            sc_u128(minted),
-            sc_u128(0),
+            ScVal::U64(DEADLINE),
         ],
     );
     let digest_before_swap = fork.ledger_digest().unwrap();
@@ -169,7 +175,7 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
     assert_ne!(preview.before_digest, preview.after_digest);
     assert!(!preview.state_changes.is_empty());
     assert_eq!(fork.ledger_digest().unwrap(), digest_before_swap);
-    assert_candidate_pool_sac_auth(&preview.authorization, &candidate, &pool, &address(USDC));
+    assert_candidate_router_sac_auth(&preview.authorization, &candidate, &router, &address(USDC));
 
     let swap = invoke_success(
         &mut fork,
@@ -177,7 +183,7 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
         ExecutionMode::Apply,
         AuthMode::MockExact(preview.authorization.clone()),
     );
-    let received_xlm = sc_u128_value(result(&swap));
+    let received_xlm = sc_i128_vec(result(&swap))[1];
     assert!(received_xlm > 0);
     assert_eq!(swap.authorization, preview.authorization);
     assert_eq!(swap.disposition, ReceiptDisposition::Committed);
@@ -187,13 +193,10 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
     assert!(swap
         .events
         .iter()
-        .any(|event| { event.event.contract_id == contract_id(&pool) && !event.failed_call }));
+        .any(|event| { event.event.contract_id == contract_id(&pair) && !event.failed_call }));
     assert_ne!(fork.ledger_digest().unwrap(), digest_before_swap);
     assert_eq!(token_balance(&mut fork, USDC, &user), 0);
-    assert_eq!(
-        token_balance(&mut fork, XLM, &user),
-        i128::try_from(received_xlm).unwrap()
-    );
+    assert_eq!(token_balance(&mut fork, XLM, &user), received_xlm);
 
     let reserves_after_receipt = invoke_success(
         &mut fork,
@@ -201,9 +204,9 @@ fn candidate_scenario(captured: &CapturedFixture) -> Quotes {
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     );
-    let reserves_after = sc_u128_vec(result(&reserves_after_receipt));
+    let reserves_after = sc_i128_vec(result(&reserves_after_receipt));
     assert_eq!(reserves_after[0], reserves_before[0] - received_xlm);
-    assert!(reserves_after[1] > reserves_before[1]);
+    assert_eq!(reserves_after[1], reserves_before[1] + minted);
     let quote_after = quote(&mut fork, &candidate);
     assert_ne!(quote_after, quote_before);
     assert!(quote_after < quote_before);
@@ -245,18 +248,23 @@ fn hex(bytes: [u8; 32]) -> String {
     output
 }
 
-fn quote(fork: &mut StrictFork, candidate: &ScAddress) -> u128 {
+fn quote(fork: &mut StrictFork, candidate: &ScAddress) -> i128 {
     let receipt = invoke_success(
         fork,
         call(
             candidate,
-            "estimate_swap",
-            vec![ScVal::U32(1), ScVal::U32(0), sc_u128(ONE_USDC)],
+            "router_get_amounts_out",
+            vec![sc_i128(ONE_USDC), usdc_to_xlm_path()],
         ),
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     );
-    sc_u128_value(result(&receipt))
+    sc_i128_vec(result(&receipt))[1]
+}
+
+fn usdc_to_xlm_path() -> ScVal {
+    let path = vec![ScVal::Address(address(USDC)), ScVal::Address(address(XLM))];
+    ScVal::Vec(Some(path.try_into().unwrap()))
 }
 
 fn token_balance(fork: &mut StrictFork, token: &str, user: &ScAddress) -> i128 {
@@ -295,20 +303,20 @@ fn result(receipt: &Receipt) -> &ScVal {
     value
 }
 
-fn assert_candidate_pool_sac_auth(
+fn assert_candidate_router_sac_auth(
     auth: &[AuthorizationTree],
     candidate: &ScAddress,
-    pool: &ScAddress,
+    router: &ScAddress,
     usdc: &ScAddress,
 ) {
     assert_eq!(auth.len(), 1);
-    assert_contract_call(&auth[0].invocation, candidate, "swap");
+    assert_contract_call(&auth[0].invocation, candidate, SWAP);
     let wrapper_children = &auth[0].invocation.sub_invocations;
     assert_eq!(wrapper_children.len(), 1);
-    assert_contract_call(&wrapper_children[0], pool, "swap");
-    let pool_children = &wrapper_children[0].sub_invocations;
-    assert_eq!(pool_children.len(), 1);
-    assert_contract_call(&pool_children[0], usdc, "transfer");
+    assert_contract_call(&wrapper_children[0], router, SWAP);
+    let router_children = &wrapper_children[0].sub_invocations;
+    assert_eq!(router_children.len(), 1);
+    assert_contract_call(&router_children[0], usdc, "transfer");
 }
 
 fn assert_contract_call(
@@ -363,23 +371,15 @@ fn sc_vec(value: &ScVal) -> Vec<ScVal> {
     values.0.to_vec()
 }
 
-fn sc_u128_vec(value: &ScVal) -> Vec<u128> {
-    sc_vec(value).iter().map(sc_u128_value).collect()
+fn sc_i128_vec(value: &ScVal) -> Vec<i128> {
+    sc_vec(value).iter().map(sc_i128_value).collect()
 }
 
-fn sc_u128_value(value: &ScVal) -> u128 {
-    let ScVal::U128(parts) = value else {
-        panic!("value must be u128")
+fn sc_i128_value(value: &ScVal) -> i128 {
+    let ScVal::I128(parts) = value else {
+        panic!("value must be i128")
     };
-    (u128::from(parts.hi) << 64) | u128::from(parts.lo)
-}
-
-fn sc_u128(value: u128) -> ScVal {
-    let bytes = value.to_be_bytes();
-    ScVal::U128(UInt128Parts {
-        hi: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
-        lo: u64::from_be_bytes(bytes[8..].try_into().unwrap()),
-    })
+    (i128::from(parts.hi) << 64) | i128::from(parts.lo)
 }
 
 fn sc_i128(value: i128) -> ScVal {

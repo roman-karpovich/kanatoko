@@ -253,7 +253,7 @@ removal of a separate WASM pre-validation pass, `extend_ttl` saturating instead
 of failing on an overflowing TTL, and a Stellar Asset Contract error message.
 A candidate installed locally recorded different `ContractCodeCostInputs` than
 on a Protocol 29 Host, so ledger digests taken after that install differed,
-while the committed Aquarius strict workflow returned identical quotes,
+while the committed Mainnet pool strict workflow returned identical quotes,
 results, events, authorization trees, and state changes on both Hosts. What
 Protocol 30 changes is not known yet. Treat resource estimates and
 metering-sensitive results as evidence from the older Host.

@@ -1,32 +1,50 @@
-//! Runnable CLI for Aquarius capture and strict-fork workflows.
+//! Runnable CLI for Soroswap capture and strict-fork workflows.
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use kanatoko::{
-    AuthMode, CandidateRegistration, CapturedFixture, ExecutionMode, InvokeErrorKind,
-    InvokeOutcome, InvokeRequest, LedgerValue, Receipt, StateChange, StrictFork, StrictForkError,
+    AuthMode, CandidateRegistration, CaptureBuilder, CaptureProvenance, CapturedFixture,
+    ExecutionMode, InvokeErrorKind, InvokeOutcome, InvokeRequest, LedgerValue, Receipt,
+    StateChange, StrictFork, StrictForkError,
 };
 use serde_json::{json, Value};
 use soroban_env_host::xdr::{
-    ContractId, Hash, Int128Parts, Limits, ScAddress, ScSymbol, ScVal, UInt128Parts, WriteXdr,
+    ContractId, Hash, Int128Parts, Limits, ScAddress, ScSymbol, ScVal, WriteXdr,
 };
-use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
+use soroban_sdk::{
+    testutils::{
+        AuthorizedFunction, AuthorizedInvocation, EnvTestConfig, MockAuth, MockAuthInvoke,
+    },
+    token::{StellarAssetClient, TokenClient},
+    Address, Env, IntoVal, Symbol, TryFromVal,
+};
 
-#[allow(dead_code)]
-#[path = "capture_aquarius_xlm_usdc_cp.rs"]
-mod aquarius_capture;
+mod soroswap {
+    #![allow(clippy::too_many_arguments)]
+
+    soroban_sdk::contractimport!(
+        file = "fixtures/wasm/kanatoko_soroswap_wrapper.wasm",
+        sha256 = "1e7bca07c5aa5c2f31544857027799285dff97266ed7895cf21d0e6736dcb3a8",
+    );
+}
 
 const DEFAULT_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
-const DEFAULT_POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
-const DEFAULT_BUNDLE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
+const DEFAULT_ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+const DEFAULT_PAIR: &str = "CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP";
+const DEFAULT_BUNDLE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
-const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapper.wasm");
+const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_soroswap_wrapper.wasm");
 const WRAPPER_SHA256: [u8; 32] = [
-    0xe4, 0xd6, 0x26, 0xc4, 0x96, 0x0b, 0xc8, 0x79, 0xdd, 0x44, 0xc8, 0x24, 0x3c, 0x04, 0xb8, 0x90,
-    0xa9, 0xbb, 0x0d, 0xdb, 0x7e, 0x13, 0x92, 0xd8, 0x4a, 0x5b, 0x65, 0x1c, 0x15, 0xaa, 0xab, 0x4f,
+    0x1e, 0x7b, 0xca, 0x07, 0xc5, 0xaa, 0x5c, 0x2f, 0x31, 0x54, 0x48, 0x57, 0x02, 0x77, 0x99, 0x28,
+    0x5d, 0xff, 0x97, 0x26, 0x6e, 0xd7, 0x89, 0x5c, 0xf2, 0x1d, 0x0e, 0x67, 0x36, 0xdc, 0xb3, 0xa8,
 ];
-const ONE_TOKEN: u128 = 10_000_000;
+const ONE_TOKEN: i128 = 10_000_000;
+const DEADLINE: u64 = u64::MAX;
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Options::parse()? {
@@ -38,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             rpc_url,
             bundle,
             allow_newer_protocol,
-        } => aquarius_capture::capture(&rpc_url, &bundle, allow_newer_protocol),
+        } => capture(&rpc_url, &bundle, allow_newer_protocol),
         Options::Run {
             fixture,
             candidate,
@@ -46,6 +64,167 @@ fn main() -> Result<(), Box<dyn Error>> {
             allow_newer_protocol,
         } => run(&fixture, &candidate, format, allow_newer_protocol),
     }
+}
+
+fn capture(
+    rpc_url: &str,
+    bundle_path: &Path,
+    allow_newer_protocol: bool,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = bundle_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut builder = CaptureBuilder::mainnet(rpc_url)?;
+    if allow_newer_protocol {
+        builder = builder.allow_newer_protocol();
+    }
+    let captured = builder.capture(soroswap_scenario)?;
+    warn_if_newer_protocol(captured.provenance());
+    captured.write_file(bundle_path)?;
+
+    // Read back through the public fail-closed loader and prove that the exact
+    // saved artifact, rather than the in-memory capture, replays offline.
+    let loaded = load(bundle_path, allow_newer_protocol)?;
+    loaded.replay(soroswap_scenario)?;
+
+    println!("captured ledger {}", loaded.provenance().ledger_sequence());
+    println!("source origin: {}", loaded.provenance().rpc_origin());
+    println!("scenario router: {DEFAULT_ROUTER}");
+    println!("scenario pair: {DEFAULT_PAIR}");
+    println!("present entries: {}", loaded.report().present_entries());
+    println!(
+        "confirmed absent entries: {}",
+        loaded.report().absent_entries()
+    );
+    println!("bundle: {}", bundle_path.display());
+    println!("offline replay: ok");
+    Ok(())
+}
+
+fn load(bundle_path: &Path, allow_newer_protocol: bool) -> Result<CapturedFixture, Box<dyn Error>> {
+    Ok(if allow_newer_protocol {
+        CapturedFixture::from_file_allowing_newer_protocol(bundle_path, MAINNET_PASSPHRASE)?
+    } else {
+        CapturedFixture::from_file(bundle_path, MAINNET_PASSPHRASE)?
+    })
+}
+
+/// Prints one stderr line when a newer-protocol ledger runs on the older Host.
+fn warn_if_newer_protocol(provenance: &CaptureProvenance) {
+    if provenance.protocol_version() != provenance.executed_protocol_version() {
+        eprintln!(
+            "warning: --allow-newer-protocol: executing Protocol {} ledger {} on the Protocol {} Host; Host behaviour may differ from the network",
+            provenance.protocol_version(),
+            provenance.ledger_sequence(),
+            provenance.executed_protocol_version(),
+        );
+    }
+}
+
+fn soroswap_scenario(env: &Env) {
+    let router_id = Address::from_str(env, DEFAULT_ROUTER);
+    let pair_id = Address::from_str(env, DEFAULT_PAIR);
+    let router = soroswap::Client::new(env, &router_id);
+    let pair = soroswap::Client::new(env, &pair_id);
+    let xlm = pair.token_0();
+    let usdc = pair.token_1();
+    let usdc_token = TokenClient::new(env, &usdc);
+    let usdc_admin = StellarAssetClient::new(env, &usdc);
+    let one_usdc = 10_i128
+        .checked_pow(usdc_token.decimals())
+        .expect("token decimals must fit i128");
+    let path = soroban_sdk::vec![env, usdc.clone(), xlm];
+
+    let quote_before = router
+        .router_get_amounts_out(&one_usdc, &path)
+        .get(1)
+        .expect("router quote must have an output amount");
+    assert!(quote_before > 0);
+    let (_, usdc_reserve) = pair.get_reserves();
+    let minted = usdc_reserve / 10;
+    assert!(minted > one_usdc);
+    let user = deterministic_contract_user(env);
+
+    // The live SAC admin can itself be a contract. Recording mode observes the
+    // real admin authorization without replacing imported contract state.
+    let admin = usdc_admin.admin();
+    env.mock_all_auths();
+    usdc_admin.mint(&user, &minted);
+    assert_eq!(
+        env.auths(),
+        [(
+            admin,
+            AuthorizedInvocation {
+                function: AuthorizedFunction::Contract((
+                    usdc.clone(),
+                    Symbol::new(env, "mint"),
+                    (user.clone(), minted).into_val(env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+    assert_eq!(usdc_token.balance(&user), minted);
+    env.set_auths(&[]);
+
+    let transfer = MockAuthInvoke {
+        contract: &usdc,
+        fn_name: "transfer",
+        args: (user.clone(), pair_id.clone(), minted).into_val(env),
+        sub_invokes: &[],
+    };
+    let nested = [transfer];
+    let swap_args = (minted, 0_i128, path.clone(), user.clone(), DEADLINE);
+    let swap = MockAuthInvoke {
+        contract: &router_id,
+        fn_name: "swap_exact_tokens_for_tokens",
+        args: swap_args.clone().into_val(env),
+        sub_invokes: &nested,
+    };
+    let amounts = router
+        .mock_auths(&[MockAuth {
+            address: &user,
+            invoke: &swap,
+        }])
+        .swap_exact_tokens_for_tokens(&minted, &0, &path, &user, &DEADLINE);
+    assert!(amounts.get(1).expect("swap must have an output amount") > 0);
+    assert_eq!(
+        env.auths(),
+        [(
+            user.clone(),
+            AuthorizedInvocation {
+                function: AuthorizedFunction::Contract((
+                    router_id.clone(),
+                    Symbol::new(env, "swap_exact_tokens_for_tokens"),
+                    swap_args.into_val(env),
+                )),
+                sub_invocations: std::vec![AuthorizedInvocation {
+                    function: AuthorizedFunction::Contract((
+                        usdc,
+                        Symbol::new(env, "transfer"),
+                        (user, pair_id, minted).into_val(env),
+                    )),
+                    sub_invocations: std::vec![],
+                }],
+            },
+        )]
+    );
+
+    let quote_after = router
+        .router_get_amounts_out(&one_usdc, &path)
+        .get(1)
+        .expect("router quote must have an output amount");
+    assert_ne!(quote_after, quote_before);
+    assert!(quote_after < quote_before);
+}
+
+fn deterministic_contract_user(env: &Env) -> Address {
+    Address::try_from_val(env, &ScAddress::Contract(Hash([0x4b; 32]).into()))
+        .expect("synthetic contract user must be a valid Address")
 }
 
 #[allow(clippy::too_many_lines)]
@@ -60,9 +239,10 @@ fn run(
     } else {
         CapturedFixture::from_file(fixture_path, MAINNET_PASSPHRASE)?
     };
-    aquarius_capture::warn_if_newer_protocol(captured.provenance());
+    warn_if_newer_protocol(captured.provenance());
     let mut fork = captured.fork();
-    let pool = address(DEFAULT_POOL);
+    let router = address(DEFAULT_ROUTER);
+    let pair = address(DEFAULT_PAIR);
     let candidate = ScAddress::Contract(ContractId(Hash([0x6c; 32])));
     let user = ScAddress::Contract(ContractId(Hash([0x4b; 32])));
     let wasm = candidate_artifact.bytes()?;
@@ -70,26 +250,35 @@ fn run(
         candidate.clone(),
         &wasm,
         candidate_artifact.sha256(),
-        vec![ScVal::Address(pool)],
+        vec![ScVal::Address(router), ScVal::Address(pair)],
     )?;
     let checkpoint = fork.checkpoint();
 
     let mut receipts = Vec::new();
-    let tokens_receipt = invoke_success(
+    let xlm_receipt = invoke_success(
         &mut fork,
-        call(&candidate, "get_tokens", vec![]),
+        call(&candidate, "token_0", vec![]),
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     )?;
-    let tokens = sc_vec(result(&tokens_receipt)?);
-    let usdc = match tokens.get(1) {
-        Some(ScVal::Address(address)) => address.clone(),
-        _ => return Err("candidate get_tokens did not return a second address".into()),
+    let ScVal::Address(xlm) = result(&xlm_receipt)?.clone() else {
+        return Err("candidate token_0 did not return an address".into());
     };
-    receipts.push(tokens_receipt);
+    receipts.push(xlm_receipt);
+    let usdc_receipt = invoke_success(
+        &mut fork,
+        call(&candidate, "token_1", vec![]),
+        ExecutionMode::Preview,
+        AuthMode::Enforce(vec![]),
+    )?;
+    let ScVal::Address(usdc) = result(&usdc_receipt)?.clone() else {
+        return Err("candidate token_1 did not return an address".into());
+    };
+    receipts.push(usdc_receipt);
+    let path = sc_path(&usdc, &xlm)?;
 
-    let quote_before_receipt = quote_receipt(&mut fork, &candidate)?;
-    let quote_before = sc_u128_value(result(&quote_before_receipt)?)?;
+    let quote_before_receipt = quote_receipt(&mut fork, &candidate, &path)?;
+    let quote_before = quoted_output(result(&quote_before_receipt)?)?;
     receipts.push(quote_before_receipt);
     let reserves_receipt = invoke_success(
         &mut fork,
@@ -97,7 +286,7 @@ fn run(
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
     )?;
-    let reserves = sc_u128_vec(result(&reserves_receipt)?)?;
+    let reserves = sc_i128_vec(result(&reserves_receipt)?)?;
     let minted = *reserves
         .get(1)
         .ok_or("candidate get_reserves did not return two reserves")?
@@ -105,7 +294,6 @@ fn run(
     if minted <= ONE_TOKEN {
         return Err("10% of captured USDC reserve is not greater than one token".into());
     }
-    let minted_i128 = i128::try_from(minted)?;
     receipts.push(reserves_receipt);
 
     let mint = invoke_success(
@@ -113,7 +301,7 @@ fn run(
         InvokeRequest {
             contract: usdc,
             function: symbol("mint"),
-            args: vec![ScVal::Address(user.clone()), sc_i128(minted_i128)],
+            args: vec![ScVal::Address(user.clone()), sc_i128(minted)],
         },
         ExecutionMode::Apply,
         AuthMode::Record,
@@ -122,13 +310,13 @@ fn run(
 
     let swap_request = call(
         &candidate,
-        "swap",
+        "swap_exact_tokens_for_tokens",
         vec![
+            sc_i128(minted),
+            sc_i128(0),
+            path.clone(),
             ScVal::Address(user),
-            ScVal::U32(1),
-            ScVal::U32(0),
-            sc_u128(minted),
-            sc_u128(0),
+            ScVal::U64(DEADLINE),
         ],
     );
     let preview = invoke_success(
@@ -145,19 +333,19 @@ fn run(
         ExecutionMode::Apply,
         AuthMode::MockExact(exact_auth),
     )?;
-    let received = sc_u128_value(result(&swap)?)?;
+    let received = quoted_output(result(&swap)?)?;
     receipts.push(swap);
 
-    let quote_after_receipt = quote_receipt(&mut fork, &candidate)?;
-    let quote_after = sc_u128_value(result(&quote_after_receipt)?)?;
+    let quote_after_receipt = quote_receipt(&mut fork, &candidate, &path)?;
+    let quote_after = quoted_output(result(&quote_after_receipt)?)?;
     receipts.push(quote_after_receipt);
     if quote_after >= quote_before {
         return Err("post-swap 1 USDC -> XLM quote did not decrease".into());
     }
 
     fork.revert(checkpoint)?;
-    let restored_receipt = quote_receipt(&mut fork, &candidate)?;
-    let restored_quote = sc_u128_value(result(&restored_receipt)?)?;
+    let restored_receipt = quote_receipt(&mut fork, &candidate, &path)?;
+    let restored_quote = quoted_output(result(&restored_receipt)?)?;
     receipts.push(restored_receipt);
     if restored_quote != quote_before {
         return Err("checkpoint revert did not restore the initial quote".into());
@@ -175,7 +363,8 @@ fn run(
         "transactionFaithfulDeploy": false,
         "fixture": fixture_path,
         "ledger": captured.provenance().ledger_sequence(),
-        "scenarioPool": DEFAULT_POOL,
+        "scenarioRouter": DEFAULT_ROUTER,
+        "scenarioPair": DEFAULT_PAIR,
         "candidateRegistration": registration_json(&registration),
         "mintedUsdc": minted.to_string(),
         "receivedXlm": received.to_string(),
@@ -195,7 +384,7 @@ fn run(
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Text => {
-            println!("strict Aquarius run: ok");
+            println!("strict Soroswap run: ok");
             println!("ledger: {}", captured.provenance().ledger_sequence());
             if let Some(protocols) = protocols {
                 println!("network protocol: {}", protocols.network);
@@ -216,13 +405,17 @@ fn run(
     Ok(())
 }
 
-fn quote_receipt(fork: &mut StrictFork, candidate: &ScAddress) -> Result<Receipt, Box<dyn Error>> {
+fn quote_receipt(
+    fork: &mut StrictFork,
+    candidate: &ScAddress,
+    path: &ScVal,
+) -> Result<Receipt, Box<dyn Error>> {
     invoke_success(
         fork,
         call(
             candidate,
-            "estimate_swap",
-            vec![ScVal::U32(1), ScVal::U32(0), sc_u128(ONE_TOKEN)],
+            "router_get_amounts_out",
+            vec![sc_i128(ONE_TOKEN), path.clone()],
         ),
         ExecutionMode::Preview,
         AuthMode::Enforce(vec![]),
@@ -384,23 +577,30 @@ fn sc_vec(value: &ScVal) -> Vec<ScVal> {
     }
 }
 
-fn sc_u128_vec(value: &ScVal) -> Result<Vec<u128>, Box<dyn Error>> {
-    sc_vec(value).iter().map(sc_u128_value).collect()
+fn sc_i128_vec(value: &ScVal) -> Result<Vec<i128>, Box<dyn Error>> {
+    sc_vec(value).iter().map(sc_i128_value).collect()
 }
 
-fn sc_u128_value(value: &ScVal) -> Result<u128, Box<dyn Error>> {
-    let ScVal::U128(parts) = value else {
-        return Err("result is not u128".into());
+fn sc_i128_value(value: &ScVal) -> Result<i128, Box<dyn Error>> {
+    let ScVal::I128(parts) = value else {
+        return Err("result is not i128".into());
     };
-    Ok((u128::from(parts.hi) << 64) | u128::from(parts.lo))
+    Ok((i128::from(parts.hi) << 64) | i128::from(parts.lo))
 }
 
-fn sc_u128(value: u128) -> ScVal {
-    let bytes = value.to_be_bytes();
-    ScVal::U128(UInt128Parts {
-        hi: u64::from_be_bytes(bytes[..8].try_into().expect("eight-byte high half")),
-        lo: u64::from_be_bytes(bytes[8..].try_into().expect("eight-byte low half")),
-    })
+fn quoted_output(value: &ScVal) -> Result<i128, Box<dyn Error>> {
+    sc_i128_vec(value)?
+        .get(1)
+        .copied()
+        .ok_or_else(|| "result has no output amount".into())
+}
+
+fn sc_path(input: &ScAddress, output: &ScAddress) -> Result<ScVal, Box<dyn Error>> {
+    let path = vec![
+        ScVal::Address(input.clone()),
+        ScVal::Address(output.clone()),
+    ];
+    Ok(ScVal::Vec(Some(path.try_into()?)))
 }
 
 fn sc_i128(value: i128) -> ScVal {
@@ -455,8 +655,10 @@ impl Options {
         if matches!(command.as_str(), "help" | "--help" | "-h") {
             return Ok(Self::Help);
         }
-        let scenario = args.next().ok_or("expected scenario name aquarius-cp")?;
-        if scenario != "aquarius-cp" {
+        let scenario = args
+            .next()
+            .ok_or("expected scenario name soroswap-xlm-usdc")?;
+        if scenario != "soroswap-xlm-usdc" {
             return Err(format!("unsupported scenario: {scenario}").into());
         }
         match command.as_str() {
@@ -583,11 +785,11 @@ fn hex_nibble(value: u8) -> Result<u8, Box<dyn Error>> {
 fn print_help() {
     println!(
         "Kanatoko strict Soroban fork workflow\n\n\
-         Capture the Aquarius scenario:\n  \
-         kanatoko capture aquarius-cp [--rpc-url URL] [--bundle PATH]\n  \
+         Capture the Soroswap XLM/USDC scenario:\n  \
+         kanatoko capture soroswap-xlm-usdc [--rpc-url URL] [--bundle PATH]\n  \
          [--allow-newer-protocol]\n\n\
          Run the strict workflow fully offline:\n  \
-         kanatoko run aquarius-cp [--fixture PATH] [--format text|json]\n  \
+         kanatoko run soroswap-xlm-usdc [--fixture PATH] [--format text|json]\n  \
          [--candidate-wasm PATH --candidate-sha256 HEX] [--allow-newer-protocol]\n\n\
          --allow-newer-protocol accepts a ledger exactly one protocol newer than\n\
          the Host and executes it on the Host's own protocol. Captures keep the\n\

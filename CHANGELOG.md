@@ -2,6 +2,12 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## Unreleased
+
+- Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
+  scenario captured on Protocol 29, and remove the scenario-specific capture
+  binary. Rename the CLI scenario to `soroswap-xlm-usdc`.
+
 ## 29.0.0 - 2026-10-07
 
 - Add Protocol 29 support on the official `soroban-sdk` and
@@ -36,7 +42,7 @@ All notable changes to Kanatoko are documented in this file.
   (`roman-karpovich/rs-soroban-sdk`, tag `v29.0.0-kanatoko.1`) that only moves
   the env crates to 29.0.0. The 29 line returns to crates.io dependencies once
   the official SDK 29 ships.
-- Refresh the execution-driven Aquarius Mainnet captures on Protocol 29 and
+- Refresh the execution-driven Mainnet pool captures on Protocol 29 and
   retain the prior Protocol 28 bundle as `capture-p28.json`, next to
   `capture-p27.json`, as explicit cross-protocol rejection evidence.
 - Add frozen Protocol 29 testnet evidence for the native XLM Stellar Asset
@@ -71,7 +77,7 @@ All notable changes to Kanatoko are documented in this file.
   output, and the bundle format are unchanged.
 - Add the Protocol 29 Mainnet and testnet captures from the 29 line as
   `capture-p29.json`, `auto-capture-p29.json`, and `native-xlm-p29`, with
-  offline acceptance on the Protocol 28 Host. The strict Aquarius workflow
+  offline acceptance on the Protocol 28 Host. The strict Mainnet pool workflow
   returns the same quotes as on a Protocol 29 Host.
 
 ## 28.0.0 - 2026-09-21
@@ -80,7 +86,7 @@ All notable changes to Kanatoko are documented in this file.
   `soroban-ledger-snapshot` 28.0.0 with the compatible Host 28.0.2 runtime.
 - Rebuild the committed Protocol 28 candidate fixtures with stable SDK
   metadata and update every pinned artifact hash.
-- Refresh the execution-driven Aquarius Mainnet captures on Protocol 28,
+- Refresh the execution-driven Mainnet pool captures on Protocol 28,
   restore their offline acceptance coverage, and retain the prior Protocol 27
   bundle as explicit cross-protocol rejection evidence.
 - Keep the frozen Protocol 28 testnet fixture unchanged and verify its local
