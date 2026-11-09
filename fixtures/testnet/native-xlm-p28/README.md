@@ -15,7 +15,7 @@ XLM Stellar Asset Contract on public testnet:
 
 The normal test is strictly offline and proves that the committed bundle
 replays with zero RPC reads. It also deploys and executes the committed
-Protocol 28 stateful and Aquarius-wrapper fixtures only inside Kanatoko's
+Protocol 28 stateful and quote-forwarder fixtures only inside Kanatoko's
 local Host; no contract is uploaded or deployed to testnet.
 
 On the Kanatoko 29 line this bundle is historical: `tests/protocol_boundary.rs`

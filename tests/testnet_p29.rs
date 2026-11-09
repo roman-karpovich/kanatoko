@@ -17,10 +17,10 @@ mod stateful {
     );
 }
 
-mod aquarius_wrapper {
+mod quote_forwarder {
     soroban_sdk::contractimport!(
-        file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-        sha256 = "e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f",
+        file = "fixtures/wasm/kanatoko_quote_forwarder.wasm",
+        sha256 = "097956e80c94d40d2a8734f9e8db786632cb125baf14d70c7e3d2b5a5937062d",
     );
 }
 
@@ -92,9 +92,9 @@ fn scenario(fork: &ScenarioFork<'_>) {
     let candidate = fork.deploy(stateful::WASM, (41_i64,));
     assert_eq!(stateful::Client::new(fork.env(), &candidate).get(), 41);
 
-    let wrapper = fork.deploy(aquarius_wrapper::WASM, (candidate,));
+    let wrapper = fork.deploy(quote_forwarder::WASM, (candidate,));
     assert_eq!(
-        aquarius_wrapper::Client::new(fork.env(), &wrapper).estimate_swap(&1, &0, &1_000),
+        quote_forwarder::Client::new(fork.env(), &wrapper).estimate_swap(&1, &0, &1_000),
         1_007
     );
 }

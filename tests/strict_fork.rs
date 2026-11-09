@@ -8,13 +8,14 @@ use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     ContractId, Hash, Int128Parts, InvokeContractArgs, LedgerKey, ScAddress, ScSymbol, ScVal,
     SorobanAddressCredentials, SorobanAuthorizationEntry, SorobanAuthorizedFunction,
-    SorobanAuthorizedInvocation, SorobanCredentials, UInt128Parts,
+    SorobanAuthorizedInvocation, SorobanCredentials,
 };
 use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
-const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
-const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
+const ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const ONE_USDC: u64 = 10_000_000;
 const STATEFUL_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
@@ -35,15 +36,18 @@ fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert()
     let quote = fork
         .invoke(
             request(
-                POOL,
-                "estimate_swap",
+                ROUTER,
+                "router_get_amounts_out",
                 vec![
-                    ScVal::U32(1),
-                    ScVal::U32(0),
-                    ScVal::U128(UInt128Parts {
+                    ScVal::I128(Int128Parts {
                         hi: 0,
                         lo: ONE_USDC,
                     }),
+                    ScVal::Vec(Some(
+                        vec![ScVal::Address(address(USDC)), ScVal::Address(address(XLM))]
+                            .try_into()
+                            .unwrap(),
+                    )),
                 ],
             ),
             ExecutionMode::Preview,
@@ -52,7 +56,7 @@ fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert()
         .unwrap();
     assert!(matches!(
         quote.outcome,
-        InvokeOutcome::Success(ScVal::U128(_))
+        InvokeOutcome::Success(ScVal::Vec(Some(_)))
     ));
     assert_eq!(quote.auth_mode, AppliedAuthMode::Enforce);
     assert_eq!(quote.disposition, ReceiptDisposition::Previewed);

@@ -4,19 +4,19 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-const CAPTURE_P28: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture-p28.json";
+const OLDER_PROTOCOL_BUNDLE: &str = "fixtures/synthetic/mainnet-protocol-28.capture.json";
 
 #[test]
-fn cli_runs_the_strict_aquarius_workflow_offline() {
-    let output = run_offline(&["run", "aquarius-cp", "--format", "text"]);
+fn cli_runs_the_strict_soroswap_workflow_offline() {
+    let output = run_offline(&["run", "soroswap-xlm-usdc", "--format", "text"]);
 
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("strict Aquarius run: ok"));
-    assert!(stdout.contains("ledger: 64731471"));
-    assert!(stdout.contains("quote before: 44629339"));
-    assert!(stdout.contains("quote after: 36888783"));
-    assert!(stdout.contains("revert restored quote: 44629339"));
+    assert!(stdout.contains("strict Soroswap run: ok"));
+    assert!(stdout.contains("ledger: 65389557"));
+    assert!(stdout.contains("quote before: 67870832"));
+    assert!(stdout.contains("quote after: 56106992"));
+    assert!(stdout.contains("revert restored quote: 67870832"));
     assert!(stdout.contains("unknown key fail-closed: true"));
     assert!(stdout.contains("upstream reads: 0"));
     assert!(stdout.contains("not transaction-faithful deploy"));
@@ -28,13 +28,18 @@ fn cli_runs_the_strict_aquarius_workflow_offline() {
 #[test]
 fn cli_rejects_a_protocol_28_fixture_with_and_without_the_opt_in() {
     for args in [
-        &["run", "aquarius-cp", "--fixture", CAPTURE_P28][..],
         &[
             "run",
-            "aquarius-cp",
+            "soroswap-xlm-usdc",
+            "--fixture",
+            OLDER_PROTOCOL_BUNDLE,
+        ][..],
+        &[
+            "run",
+            "soroswap-xlm-usdc",
             "--allow-newer-protocol",
             "--fixture",
-            CAPTURE_P28,
+            OLDER_PROTOCOL_BUNDLE,
         ][..],
     ] {
         let output = run_offline(args);
@@ -55,7 +60,7 @@ fn cli_rejects_a_protocol_28_fixture_with_and_without_the_opt_in() {
 fn cli_opt_in_on_a_current_protocol_fixture_reports_both_protocols_without_a_warning() {
     let output = run_offline(&[
         "run",
-        "aquarius-cp",
+        "soroswap-xlm-usdc",
         "--allow-newer-protocol",
         "--format",
         "json",
@@ -65,16 +70,16 @@ fn cli_opt_in_on_a_current_protocol_fixture_reports_both_protocols_without_a_war
     assert!(output.stderr.is_empty());
 
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["ledger"], 64_731_471);
+    assert_eq!(report["ledger"], 65_389_557);
     assert_eq!(report["networkProtocol"], 29);
     assert_eq!(report["executedProtocol"], 29);
-    assert_eq!(report["quoteBefore"], "44629339");
-    assert_eq!(report["quoteAfter"], "36888783");
-    assert_eq!(report["restoredQuote"], "44629339");
+    assert_eq!(report["quoteBefore"], "67870832");
+    assert_eq!(report["quoteAfter"], "56106992");
+    assert_eq!(report["restoredQuote"], "67870832");
     assert_eq!(report["unknownFailClosed"], true);
     assert_eq!(report["upstreamReads"], 0);
     let receipts = report["receipts"].as_array().unwrap();
-    assert_eq!(receipts.len(), 8);
+    assert_eq!(receipts.len(), 9);
     for receipt in receipts {
         assert_eq!(receipt["networkProtocol"], 29);
         assert_eq!(receipt["executedProtocol"], 29);
