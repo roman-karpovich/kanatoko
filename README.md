@@ -374,24 +374,38 @@ fork, and ordinary Rust code between the calls runs once. Use a separate cache
 path for a materially different scenario. If calls must observe each other's
 contract mutations, keep them inside the same `.run(...)` closure.
 
+### Controlling time
+
+A scenario can move ledger time with the SDK's own `Ledger` test utility.
+Kanatoko re-exports `soroban_sdk`, so no separate dependency is needed:
+
+```rust,ignore
+use kanatoko::soroban_sdk::testutils::Ledger as _;
+
+let now = fork.env().ledger().timestamp();
+fork.env().ledger().set_timestamp(now + 86_400);
+```
+
+Limits to keep in mind:
+
+- Timestamp and sequence number are separate. `set_timestamp` does not move the
+  sequence number; `set_sequence_number` is the call for that.
+- Temporary entries can expire as the sequence number advances.
+- Persistent entries past their TTL stay readable because state archival is not
+  modeled, so a passing test does not prove behavior around state archival.
+
 ## Roadmap
 
-Kanatoko is moving toward reproducible upgrade testing against captured Stellar
-network state.
+Kanatoko is moving toward being the easiest way to test your own Soroban contract on top of real deployed protocols, under conditions that are hard to reproduce on a live network.
 
 Planned improvements, in priority order:
 
-- **Network execution profiles:** capture network settings alongside contract
-  state, apply invocation limits, and verify compatibility with the runtime's
-  CPU and memory cost models.
-- **Baseline and candidate comparison:** run the same scenario against production
-  and candidate WASM from identical starting state, comparing results, storage
-  changes, events, authorization, and resource usage.
-- **Readable execution reports:** inspect cross-contract call trees and produce
-  comparison reports suitable for local debugging and CI.
+- **Scenario controls:** documented one-line control of time, balances, storage, and external inputs such as oracle prices.
+- **Clear failure explanations:** which external call failed and why, with a readable cross-contract call tree.
+- **Network fidelity:** capture network settings, apply invocation limits, and verify cost-model compatibility.
+- **Integrator onboarding:** a project template and recipes for building on AMMs, lending pools, and oracles.
 
-These capabilities are planned. Scope and delivery order may evolve with
-technical findings and developer feedback.
+These are plans, not shipped features.
 
 ## Evidence boundary
 
