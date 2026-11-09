@@ -36,6 +36,11 @@ name = "kanatoko"
 path = "tools/kanatoko.rs"
 required-features = ["capture"]
 
+[[example]]
+name = "offline_replay"
+path = "examples/offline_replay.rs"
+required-features = ["capture"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

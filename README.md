@@ -139,6 +139,16 @@ Use `.cache(path)` to override the path, `.refresh()` to force a cold capture
 with an empty key inventory, or `.offline()` in CI to replay the cached ledger
 as an explicitly pinned snapshot with zero transport calls.
 
+## Offline example
+
+`examples/offline_replay.rs` replays the committed standalone Protocol 30
+capture and prints the value held by its stateful contract, using only that
+bundle and no RPC:
+
+```sh
+cargo run --locked --features capture --example offline_replay
+```
+
 ## Network and RPC
 
 `mainnet()` and `testnet()` expose the same API and default RPC endpoints, but
