@@ -126,6 +126,15 @@ Use `.cache(path)` to override the path, `.refresh()` to force a cold capture
 with an empty key inventory, or `.offline()` in CI to replay the cached ledger
 as an explicitly pinned snapshot with zero transport calls.
 
+## Offline example
+
+`examples/offline_replay.rs` replays the committed Soroswap XLM/USDC Mainnet
+capture and prints a 1 USDC to XLM quote, using only that bundle and no RPC:
+
+```sh
+cargo run --locked --features capture --example offline_replay
+```
+
 ## Network and RPC
 
 `mainnet()` and `testnet()` expose the same API and default RPC endpoints, but
