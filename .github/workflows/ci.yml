@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - "sdk-*"
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUST_TOOLCHAIN: "1.91.0"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${RUST_TOOLCHAIN}" \
+            --profile minimal \
+            --component clippy \
+            --component rustfmt
+          rustup default "${RUST_TOOLCHAIN}"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run default-feature tests
+        run: cargo test --locked
+
+      - name: Run all-feature tests
+        run: cargo test --locked --all-features
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --all-features --no-deps
