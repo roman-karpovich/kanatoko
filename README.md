@@ -22,8 +22,6 @@ an older one:
 
 | Ledger protocol | Kanatoko | Contract WASM |
 | --- | --- | --- |
-| 25 | `kanatoko = "25"` | Protocol 25 or older |
-| 26 | `kanatoko = "26"` | Protocol 26 or older |
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
 | 29 | `kanatoko = "29"` | Protocol 29 or older |
@@ -420,9 +418,9 @@ version when possible.
 
 A Kanatoko line can capture and replay a live network only when its selected
 Host protocol matches the protocol reported by that network. For example, a
-protocol-27 network requires Kanatoko 27; Kanatoko 25 or 26 is not a historical
-network-state fork. The only exception is the explicit newer-protocol opt-in,
-limited to one protocol ahead and executed on the older Host.
+protocol-27 network requires Kanatoko 27; no other major is a historical
+network-state fork of it. The only exception is the explicit newer-protocol
+opt-in, limited to one protocol ahead and executed on the older Host.
 
 Your production contract does not need to upgrade with the harness. A contract
 crate may remain on Soroban SDK 25 or 26, produce its normal network-valid
