@@ -920,7 +920,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kanatoko-aquarius-wrapper"
+name = "kanatoko-soroswap-wrapper"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",

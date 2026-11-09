@@ -2,6 +2,12 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## Unreleased
+
+- Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
+  scenario captured on Protocol 29, and remove the scenario-specific capture
+  binary. Rename the CLI scenario to `soroswap-xlm-usdc`.
+
 ## 30.0.0-rc.1 - 2026-11-02
 
 - Add prerelease Protocol 30 support with exact `soroban-sdk` and
@@ -16,13 +22,13 @@ All notable changes to Kanatoko are documented in this file.
   Host it accepts exactly Protocol 31 and executes it as Protocol 30.
   Protocol 32 and Protocols 29 and older still fail closed with
   `UnsupportedProtocol`, also with the opt-in.
-- Testnet and Mainnet still run Protocol 29, so the Aquarius Mainnet captures
+- Testnet and Mainnet still run Protocol 29, so the Mainnet pool captures
   cannot be refreshed on Protocol 30. Keep `capture.json`, `auto-capture.json`
   and the `native-xlm-p29` testnet capture byte for byte as cross-protocol
   rejection evidence, next to the Protocol 27 and 28 captures: they fail
   closed on the Protocol 30 Host through the loaders, the offline runners and
-  the CLI, with and without the opt-in. The Aquarius scenario tests stay on
-  the 29 line.
+  the CLI, with and without the opt-in. The Mainnet pool scenario tests stay
+  on the 29 line.
 - Add a frozen Protocol 30 capture of a local standalone network
   (`stellar/quickstart:nightly-next`): the native XLM Stellar Asset Contract
   and the stateful fixture contract, uploaded, deployed and incremented by real
@@ -69,7 +75,7 @@ All notable changes to Kanatoko are documented in this file.
   (`roman-karpovich/rs-soroban-sdk`, tag `v29.0.0-kanatoko.1`) that only moves
   the env crates to 29.0.0. The 29 line returns to crates.io dependencies once
   the official SDK 29 ships.
-- Refresh the execution-driven Aquarius Mainnet captures on Protocol 29 and
+- Refresh the execution-driven Mainnet pool captures on Protocol 29 and
   retain the prior Protocol 28 bundle as `capture-p28.json`, next to
   `capture-p27.json`, as explicit cross-protocol rejection evidence.
 - Add frozen Protocol 29 testnet evidence for the native XLM Stellar Asset
@@ -104,7 +110,7 @@ All notable changes to Kanatoko are documented in this file.
   output, and the bundle format are unchanged.
 - Add the Protocol 29 Mainnet and testnet captures from the 29 line as
   `capture-p29.json`, `auto-capture-p29.json`, and `native-xlm-p29`, with
-  offline acceptance on the Protocol 28 Host. The strict Aquarius workflow
+  offline acceptance on the Protocol 28 Host. The strict Mainnet pool workflow
   returns the same quotes as on a Protocol 29 Host.
 
 ## 28.0.0 - 2026-09-21
@@ -113,7 +119,7 @@ All notable changes to Kanatoko are documented in this file.
   `soroban-ledger-snapshot` 28.0.0 with the compatible Host 28.0.2 runtime.
 - Rebuild the committed Protocol 28 candidate fixtures with stable SDK
   metadata and update every pinned artifact hash.
-- Refresh the execution-driven Aquarius Mainnet captures on Protocol 28,
+- Refresh the execution-driven Mainnet pool captures on Protocol 28,
   restore their offline acceptance coverage, and retain the prior Protocol 27
   bundle as explicit cross-protocol rejection evidence.
 - Keep the frozen Protocol 28 testnet fixture unchanged and verify its local

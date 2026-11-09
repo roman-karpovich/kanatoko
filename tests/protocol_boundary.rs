@@ -3,7 +3,7 @@
 use kanatoko::{CaptureError, CapturedFixture, FixtureError, SUPPORTED_PROTOCOL_VERSION};
 
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
-const PROTOCOL_27_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture-p27.json";
+const PROTOCOL_27_CAPTURE: &str = "fixtures/synthetic/mainnet-protocol-27.capture.json";
 
 #[test]
 fn protocol_27_capture_fails_closed_on_a_different_protocol_host() {
@@ -42,11 +42,11 @@ fn committed_bundles_rewrite_byte_identically() {
     const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
     assert_bundles_rewrite_byte_identically(&[
         (
-            "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json",
+            "fixtures/mainnet/soroswap-xlm-usdc/capture.json",
             MAINNET_PASSPHRASE,
         ),
         (
-            "fixtures/mainnet/aquarius-xlm-usdc-cp/auto-capture.json",
+            "fixtures/mainnet/soroswap-xlm-usdc/auto-capture.json",
             MAINNET_PASSPHRASE,
         ),
         (
@@ -99,7 +99,7 @@ mod protocol_28 {
     };
 
     const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
-    const MAINNET_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture-p28.json";
+    const MAINNET_CAPTURE: &str = "fixtures/synthetic/mainnet-protocol-28.capture.json";
     const TESTNET_CAPTURE: &str = "fixtures/testnet/native-xlm-p28/auto-capture.json";
 
     #[test]
@@ -181,8 +181,8 @@ mod protocol_29 {
     };
 
     const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
-    const MAINNET_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
-    const MAINNET_AUTO_CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/auto-capture.json";
+    const MAINNET_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
+    const MAINNET_AUTO_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/auto-capture.json";
     const TESTNET_CAPTURE: &str = "fixtures/testnet/native-xlm-p29/auto-capture.json";
     const CAPTURES: [(&str, &str); 3] = [
         (MAINNET_CAPTURE, MAINNET_PASSPHRASE),
@@ -239,12 +239,12 @@ mod protocol_29 {
         }
     }
 
-    /// The CLI's default fixture is the Protocol 29 Aquarius capture.
+    /// The CLI's default fixture is the Protocol 29 Soroswap capture.
     #[test]
     fn cli_rejects_the_default_protocol_29_fixture_with_and_without_the_opt_in() {
         for args in [
-            &["run", "aquarius-cp"][..],
-            &["run", "aquarius-cp", "--allow-newer-protocol"][..],
+            &["run", "soroswap-xlm-usdc"][..],
+            &["run", "soroswap-xlm-usdc", "--allow-newer-protocol"][..],
         ] {
             let output = Command::new(env!("CARGO_BIN_EXE_kanatoko"))
                 .args(args)

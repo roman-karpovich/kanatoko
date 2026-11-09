@@ -16,7 +16,7 @@ XLM Stellar Asset Contract on public testnet:
 
 The normal test is strictly offline and proves that the committed bundle
 replays with zero RPC reads. It also deploys and executes the committed
-stateful and Aquarius-wrapper fixtures (built with `soroban-sdk` 28) only
+stateful and quote-forwarder fixtures (built with `soroban-sdk` 28) only
 inside Kanatoko's local Protocol 29 Host; no contract is uploaded or deployed
 to testnet.
 

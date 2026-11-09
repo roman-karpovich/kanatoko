@@ -2258,21 +2258,12 @@ mod tests {
     use super::*;
     use crate::SUPPORTED_PROTOCOL_VERSION;
 
-    mod pool {
-        #![allow(clippy::ref_option, clippy::too_many_arguments)]
-
-        soroban_sdk::contractimport!(
-            file = "fixtures/mainnet/aquarius-xlm-usdc-cp/pool.wasm",
-            sha256 = "ae0da5a84b15805c5c7931ac567a8d1b34be3f26b483993d9ff80cb2c3de9852",
-        );
-    }
-
     mod local_wrapper {
         #![allow(clippy::too_many_arguments)]
 
         soroban_sdk::contractimport!(
-            file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-            sha256 = "e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f",
+            file = "fixtures/wasm/kanatoko_soroswap_wrapper.wasm",
+            sha256 = "1e7bca07c5aa5c2f31544857027799285dff97266ed7895cf21d0e6736dcb3a8",
         );
     }
 
@@ -2283,13 +2274,17 @@ mod tests {
         );
     }
 
-    const POOL_ID: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+    const PAIR_ID: &str = "CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP";
+    const ROUTER_ID: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+    const XLM_ID: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
     const USDC_ID: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
-    const ONE_USDC: u128 = 10_000_000;
+    const ONE_USDC: i128 = 10_000_000;
+    const DEADLINE: u64 = u64::MAX;
+    const CAPTURE_PATH: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
 
     #[test]
     fn empty_scenario_does_not_seed_any_contract() {
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let captured = builder(&fake).capture(|_| {}).unwrap();
 
         assert!(captured
@@ -2304,14 +2299,17 @@ mod tests {
 
     #[test]
     fn touched_contract_instance_and_matching_wasm_are_discovered() {
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let captured = builder(&fake)
             .capture(|env| {
-                let pool_id = Address::from_str(env, POOL_ID);
-                assert_eq!(pool::Client::new(env, &pool_id).get_tokens().len(), 2);
+                let pair_id = Address::from_str(env, PAIR_ID);
+                assert_eq!(
+                    local_wrapper::Client::new(env, &pair_id).token_1(),
+                    Address::from_str(env, USDC_ID)
+                );
             })
             .unwrap();
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let contract_id = key_id(&contract_instance_key(contract)).unwrap();
 
         let contract_entry = captured
@@ -2328,7 +2326,7 @@ mod tests {
             panic!("contract instance must contain a contract instance value");
         };
         let ContractExecutable::Wasm(hash) = &instance.executable else {
-            panic!("Aquarius pool must be WASM");
+            panic!("Soroswap pair must be WASM");
         };
         let code_id = key_id(&LedgerKey::ContractCode(LedgerKeyContractCode {
             hash: hash.clone(),
@@ -2361,8 +2359,11 @@ mod tests {
             expanded.ledger_info.protocol_version,
         ));
         let env = env_from_materialized(&expanded, source.clone());
-        let pool = Address::from_str(&env, POOL_ID);
-        assert_eq!(pool::Client::new(&env, &pool).get_tokens().len(), 2);
+        let pair = Address::from_str(&env, PAIR_ID);
+        assert_eq!(
+            local_wrapper::Client::new(&env, &pair).token_1(),
+            Address::from_str(&env, USDC_ID)
+        );
         assert_eq!(source.rpc_reads(), 0);
         assert!(source.unknown_keys().is_empty());
     }
@@ -2535,13 +2536,13 @@ mod tests {
     }
 
     #[test]
-    fn aquarius_snapshot_auto_discovers_quote_mint_swap_dependencies_and_replays_offline() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let captured = builder(&fake).capture(aquarius_scenario).unwrap();
+    fn soroswap_snapshot_auto_discovers_quote_mint_swap_dependencies_and_replays_offline() {
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let captured = builder(&fake).capture(soroswap_scenario).unwrap();
         assert!(captured.report().present_entries() >= 9);
         assert!(captured.report().absent_entries() >= 1);
         let reads_before = fake.ledger_entry_reads();
-        captured.replay(aquarius_scenario).unwrap();
+        captured.replay(soroswap_scenario).unwrap();
         assert_eq!(fake.ledger_entry_reads(), reads_before);
     }
 
@@ -2549,7 +2550,7 @@ mod tests {
     fn auto_runner_mixes_imported_abi_and_dynamic_invocations_then_reuses_cache_offline() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner");
         let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2575,7 +2576,7 @@ mod tests {
     fn auto_runner_cache_hit_ignores_invalid_rpc_override() {
         use crate::auto::{mainnet, AutoRunError, AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-invalid-rpc-cache-hit");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2606,14 +2607,20 @@ mod tests {
     fn auto_runner_deploys_local_wasm_that_calls_captured_contract_offline() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-local-wasm");
         let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
-            let pool = fork.contract(POOL_ID);
-            let candidate = fork.deploy(local_wrapper::WASM, (pool.clone(),));
-            let direct = fork.invoke::<u128>(&pool, "estimate_swap", (1_u32, 0_u32, ONE_USDC));
-            let through_candidate =
-                local_wrapper::Client::new(fork.env(), &candidate).estimate_swap(&1, &0, &ONE_USDC);
+            let router = fork.contract(ROUTER_ID);
+            let pair = fork.contract(PAIR_ID);
+            let path = usdc_to_xlm_path(fork.env());
+            let candidate = fork.deploy(local_wrapper::WASM, (router.clone(), pair));
+            let direct = fork.invoke::<soroban_sdk::Vec<i128>>(
+                &router,
+                "router_get_amounts_out",
+                (ONE_USDC, path.clone()),
+            );
+            let through_candidate = local_wrapper::Client::new(fork.env(), &candidate)
+                .router_get_amounts_out(&ONE_USDC, &path);
             assert_eq!(through_candidate, direct);
         };
 
@@ -2664,10 +2671,10 @@ mod tests {
     fn auto_runner_replaces_captured_wasm_and_reuses_cache_offline() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-replace-wasm");
         let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
-            let pool = fork.contract(POOL_ID);
+            let pool = fork.contract(PAIR_ID);
             assert_eq!(
                 fork.replace_wasm(&pool, local_stateful::WASM),
                 <[u8; 32]>::from(Sha256::digest(local_stateful::WASM))
@@ -2710,20 +2717,23 @@ mod tests {
             PreviewAuth,
         };
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-preview-only");
         let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
-            let pool = fork.contract(POOL_ID);
-            let candidate = fork.deploy(local_wrapper::WASM, (pool,));
+            let router = fork.contract(ROUTER_ID);
+            let pair = fork.contract(PAIR_ID);
+            let path = usdc_to_xlm_path(fork.env());
+            let candidate = fork.deploy(local_wrapper::WASM, (router, pair));
             let report = fork
                 .preview(
                     &candidate,
-                    "estimate_swap",
-                    (1_u32, 0_u32, ONE_USDC),
+                    "router_get_amounts_out",
+                    (ONE_USDC, path),
                     PreviewAuth::Record,
                 )
                 .unwrap();
-            assert!(report.result::<u128>(fork.env()).unwrap() > 0);
+            let amounts = report.result::<soroban_sdk::Vec<i128>>(fork.env()).unwrap();
+            assert!(amounts.get(1).unwrap() > 0);
         };
 
         let first = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
@@ -2749,7 +2759,7 @@ mod tests {
     fn auto_runner_recaptures_unknown_scenario_keys_and_replaces_cache() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-refresh");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2780,7 +2790,7 @@ mod tests {
     fn auto_runner_online_cache_hit_probes_anchor_without_entry_reads() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-anchor-hit");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2816,9 +2826,9 @@ mod tests {
     fn auto_runner_warm_refreshes_large_inventory_in_bounded_batches() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let mut fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-warm-refresh-large-inventory");
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let keys: Vec<LedgerKey> = (0..MAX_KEYS_PER_BATCH)
             .map(|value| data_key(contract.clone(), u32::try_from(value).unwrap() + 1_000))
             .collect();
@@ -2859,9 +2869,9 @@ mod tests {
     fn auto_runner_same_ledger_unknown_seeds_recapture_from_cached_inventory() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-same-anchor-unknown");
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let first_key = data_key(contract.clone(), 880);
         let second_key = data_key(contract, 881);
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
@@ -2914,7 +2924,7 @@ mod tests {
     fn auto_runner_offline_replay_is_pinned_and_makes_no_transport_calls() {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-offline-pinned");
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2948,9 +2958,9 @@ mod tests {
     fn failed_warm_refresh_preserves_previous_cache_file() {
         use crate::auto::AutoRunner;
 
-        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let mut fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-failed-warm-refresh");
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let known = data_key(contract, 882);
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -2987,7 +2997,7 @@ mod tests {
     fn auto_runner_offline_missing_cache_fails_without_rpc_reads() {
         use crate::auto::{AutoRunError, AutoRunner};
 
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path("auto-runner-missing");
         let result = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -3003,8 +3013,8 @@ mod tests {
 
     #[test]
     fn versioned_bundle_roundtrips_and_replays_strictly_offline() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let captured = builder(&fake).capture(aquarius_scenario).unwrap();
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let captured = builder(&fake).capture(soroswap_scenario).unwrap();
         let path = test_bundle_path("roundtrip");
         captured.write_file(&path).unwrap();
 
@@ -3016,7 +3026,7 @@ mod tests {
             captured.frozen_fixture().ledger_digest()
         );
         let reads_before = fake.ledger_entry_reads();
-        loaded.replay(aquarius_scenario).unwrap();
+        loaded.replay(soroswap_scenario).unwrap();
         assert_eq!(fake.ledger_entry_reads(), reads_before);
         assert!(matches!(
             CapturedFixture::from_file(&path, "not the captured network"),
@@ -3026,7 +3036,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(document["schema_version"], 2);
         assert!(document.get("root_contract").is_none());
-        document["root_contract"] = serde_json::Value::String(POOL_ID.to_string());
+        document["root_contract"] = serde_json::Value::String(PAIR_ID.to_string());
         fs::write(&path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
         assert!(matches!(
             CapturedFixture::from_file(&path, MAINNET_PASSPHRASE),
@@ -3048,8 +3058,8 @@ mod tests {
 
     #[test]
     fn versioned_bundle_rejects_digest_tampering() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let captured = builder(&fake).capture(aquarius_scenario).unwrap();
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let captured = builder(&fake).capture(soroswap_scenario).unwrap();
         let path = test_bundle_path("tamper");
         captured.write_file(&path).unwrap();
 
@@ -3067,8 +3077,8 @@ mod tests {
 
     #[test]
     fn capture_and_bundle_loading_reject_invalid_ledger_metadata() {
-        let mut fake = FakeTransport::from_aquarius_snapshot();
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let mut fake = FakeTransport::from_soroswap_snapshot();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let contract_id = key_id(&contract_instance_key(contract)).unwrap();
         Rc::get_mut(&mut fake)
             .unwrap()
@@ -3078,14 +3088,14 @@ mod tests {
             .live_until = None;
         assert!(matches!(
             builder(&fake).capture(|env| {
-                let pool_id = Address::from_str(env, POOL_ID);
-                let _ = pool::Client::new(env, &pool_id).get_tokens();
+                let pair_id = Address::from_str(env, PAIR_ID);
+                let _ = local_wrapper::Client::new(env, &pair_id).token_0();
             }),
             Err(CaptureError::MalformedRpc { .. })
         ));
 
-        let captured = builder(&FakeTransport::from_aquarius_snapshot())
-            .capture(aquarius_scenario)
+        let captured = builder(&FakeTransport::from_soroswap_snapshot())
+            .capture(soroswap_scenario)
             .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
         let (_, (_, live_until)) = bundle
@@ -3104,8 +3114,8 @@ mod tests {
 
     #[test]
     fn versioned_bundle_roundtrip_preserves_v1_ledger_entry_extension() {
-        let captured = builder(&FakeTransport::from_aquarius_snapshot())
-            .capture(aquarius_scenario)
+        let captured = builder(&FakeTransport::from_soroswap_snapshot())
+            .capture(soroswap_scenario)
             .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
         let account_entry = bundle
@@ -3143,8 +3153,8 @@ mod tests {
 
     #[test]
     fn write_only_and_confirmed_missing_keys_are_sealed_but_other_unknowns_fail_replay() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let missing = data_key(contract.clone(), 777);
         let write_only = data_key(contract.clone(), 778);
         let written_entry = contract_data_entry(contract, 778, 42);
@@ -3168,7 +3178,7 @@ mod tests {
         assert!(absent.contains(&key_id(&missing).unwrap()));
         assert!(absent.contains(&key_id(&write_only).unwrap()));
 
-        let unknown = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 779);
+        let unknown = data_key(parse_legacy_contract_address(PAIR_ID).unwrap(), 779);
         let error = captured
             .replay(|env| {
                 let _ = env.host().get_ledger_entry(&Rc::new(unknown));
@@ -3182,9 +3192,9 @@ mod tests {
 
     #[test]
     fn coherent_materialization_batches_at_200_and_retries_the_whole_attempt() {
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         fake.mix_second_large_batch_once.set(true);
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let keys: Vec<LedgerKey> = (1_000..1_401)
             .map(|index| data_key(contract.clone(), index))
             .collect();
@@ -3222,7 +3232,7 @@ mod tests {
 
     #[test]
     fn terminal_panic_returns_opaque_error_and_transport_failure_is_not_absence() {
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let panic_error = builder(&fake)
             .capture(|_| panic!("scenario-payload-must-not-leak"))
             .unwrap_err();
@@ -3230,7 +3240,7 @@ mod tests {
         assert!(matches!(panic_error, CaptureError::ScenarioPanicked));
         assert!(!rendered.contains("scenario-payload-must-not-leak"));
 
-        let failed_key = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 888);
+        let failed_key = data_key(parse_legacy_contract_address(PAIR_ID).unwrap(), 888);
         fake.fail_keys
             .borrow_mut()
             .insert(key_id(&failed_key).unwrap());
@@ -3244,16 +3254,16 @@ mod tests {
 
     #[test]
     fn generated_client_transport_panic_returns_the_capture_failure() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let failed_key = contract_instance_key(contract);
         let failed_id = key_id(&failed_key).unwrap();
         fake.fail_keys.borrow_mut().insert(failed_id.clone());
 
         let error = builder(&fake)
             .capture(|env| {
-                let pool_id = Address::from_str(env, POOL_ID);
-                let _ = pool::Client::new(env, &pool_id).get_tokens();
+                let pair_id = Address::from_str(env, PAIR_ID);
+                let _ = local_wrapper::Client::new(env, &pair_id).token_0();
             })
             .unwrap_err();
 
@@ -3390,8 +3400,8 @@ mod tests {
 
     #[test]
     fn tracking_source_latches_transport_failure_without_refetching() {
-        let fake = FakeTransport::from_aquarius_snapshot();
-        let failed_key = data_key(parse_legacy_contract_address(POOL_ID).unwrap(), 889);
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let failed_key = data_key(parse_legacy_contract_address(PAIR_ID).unwrap(), 889);
         fake.fail_keys
             .borrow_mut()
             .insert(key_id(&failed_key).unwrap());
@@ -3443,7 +3453,7 @@ mod tests {
 
     #[test]
     fn capture_fails_closed_when_provider_network_differs_from_selected_network() {
-        let fake = FakeTransport::from_aquarius_snapshot();
+        let fake = FakeTransport::from_soroswap_snapshot();
         let error = CaptureBuilder::with_transport(fake, TESTNET_PASSPHRASE)
             .capture(|_| {})
             .unwrap_err();
@@ -3454,9 +3464,9 @@ mod tests {
     #[test]
     fn newer_protocol_capture_requires_the_opt_in_and_keeps_the_network_protocol() {
         let newer = SUPPORTED_PROTOCOL_VERSION + 1;
-        let fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let fake = FakeTransport::from_soroswap_snapshot_at(newer);
 
-        let error = builder(&fake).capture(aquarius_scenario).unwrap_err();
+        let error = builder(&fake).capture(soroswap_scenario).unwrap_err();
         assert!(is_unsupported_capture(&error, newer));
         assert_eq!(fake.ledger_entry_reads(), 0);
 
@@ -3464,7 +3474,7 @@ mod tests {
             .allow_newer_protocol()
             .capture(|env| {
                 assert_eq!(host_protocol(env), SUPPORTED_PROTOCOL_VERSION);
-                aquarius_scenario(env);
+                soroswap_scenario(env);
             })
             .unwrap();
         assert_eq!(captured.provenance().protocol_version(), newer);
@@ -3507,7 +3517,7 @@ mod tests {
         let reads_before = fake.ledger_entry_reads();
         let executed = loaded
             .replay(|env| {
-                aquarius_scenario(env);
+                soroswap_scenario(env);
                 host_protocol(env)
             })
             .unwrap();
@@ -3527,7 +3537,7 @@ mod tests {
             SUPPORTED_PROTOCOL_VERSION - 1,
             SUPPORTED_PROTOCOL_VERSION + 2,
         ] {
-            let fake = FakeTransport::from_aquarius_snapshot_at(found);
+            let fake = FakeTransport::from_soroswap_snapshot_at(found);
             let error = builder(&fake)
                 .allow_newer_protocol()
                 .capture(|_| {})
@@ -3538,7 +3548,7 @@ mod tests {
 
         // The anchor of a coherent materialization is checked independently
         // of getNetwork.
-        let mut fake = FakeTransport::from_aquarius_snapshot_at(SUPPORTED_PROTOCOL_VERSION + 1);
+        let mut fake = FakeTransport::from_soroswap_snapshot_at(SUPPORTED_PROTOCOL_VERSION + 1);
         Rc::get_mut(&mut fake).unwrap().anchor.protocol_version = SUPPORTED_PROTOCOL_VERSION + 2;
         let error = builder(&fake)
             .allow_newer_protocol()
@@ -3554,10 +3564,10 @@ mod tests {
     #[test]
     fn newer_protocol_bundle_two_ahead_is_rejected_even_with_the_opt_in() {
         let newer = SUPPORTED_PROTOCOL_VERSION + 1;
-        let fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let fake = FakeTransport::from_soroswap_snapshot_at(newer);
         let captured = builder(&fake)
             .allow_newer_protocol()
-            .capture(aquarius_scenario)
+            .capture(soroswap_scenario)
             .unwrap();
         let mut bundle = captured.to_bundle().unwrap();
         let two_ahead = SUPPORTED_PROTOCOL_VERSION + 2;
@@ -3581,10 +3591,10 @@ mod tests {
     #[test]
     fn newer_protocol_strict_fork_still_refuses_a_newer_interface_contract() {
         let newer = SUPPORTED_PROTOCOL_VERSION + 1;
-        let fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let fake = FakeTransport::from_soroswap_snapshot_at(newer);
         let captured = builder(&fake)
             .allow_newer_protocol()
-            .capture(aquarius_scenario)
+            .capture(soroswap_scenario)
             .unwrap();
         let mut fork = captured.fork();
         assert_eq!(fork.network_protocol_version(), newer);
@@ -3644,15 +3654,15 @@ mod tests {
         };
 
         let newer = SUPPORTED_PROTOCOL_VERSION + 1;
-        let mut fake = FakeTransport::from_aquarius_snapshot_at(newer);
+        let mut fake = FakeTransport::from_soroswap_snapshot_at(newer);
         let path = test_bundle_path("auto-runner-newer-protocol");
         let scenario = |fork: &crate::auto::ScenarioFork<'_>| {
             assert_eq!(fork.network_protocol_version(), newer);
             assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
             assert_eq!(host_protocol(fork.env()), SUPPORTED_PROTOCOL_VERSION);
-            let pool = fork.contract(POOL_ID);
+            let pair = fork.contract(PAIR_ID);
             let report = fork
-                .preview(&pool, "get_tokens", (), PreviewAuth::Record)
+                .preview(&pair, "token_0", (), PreviewAuth::Record)
                 .unwrap();
             assert_eq!(
                 report.receipt().auth_mode,
@@ -3732,8 +3742,7 @@ mod tests {
 
     #[test]
     fn rpc_wire_preserves_v1_extension_and_rejects_missing_or_malformed_extension() {
-        let snapshot =
-            LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json").unwrap();
+        let snapshot = captured_snapshot();
         let account_entry = snapshot
             .ledger_entries
             .iter()
@@ -3781,7 +3790,7 @@ mod tests {
     fn ledger_metadata_validation_covers_live_archived_and_classic_entries() {
         let sequence = 100;
         let max_entry_ttl = 20;
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let mut persistent = contract_data_entry(contract, 1, 1);
         persistent.last_modified_ledger_seq = sequence;
 
@@ -3840,8 +3849,7 @@ mod tests {
             max_entry_ttl
         ));
 
-        let snapshot =
-            LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json").unwrap();
+        let snapshot = captured_snapshot();
         let account = snapshot
             .ledger_entries
             .iter()
@@ -3870,45 +3878,60 @@ mod tests {
         ));
     }
 
-    fn aquarius_scenario(env: &Env) {
-        let pool_id = Address::from_str(env, POOL_ID);
-        let pool = pool::Client::new(env, &pool_id);
-        let tokens = pool.get_tokens();
-        let usdc = tokens.get(1).unwrap();
+    fn usdc_to_xlm_path(env: &Env) -> soroban_sdk::Vec<Address> {
+        soroban_sdk::vec![
+            env,
+            Address::from_str(env, USDC_ID),
+            Address::from_str(env, XLM_ID)
+        ]
+    }
+
+    fn soroswap_scenario(env: &Env) {
+        let router_id = Address::from_str(env, ROUTER_ID);
+        let pair_id = Address::from_str(env, PAIR_ID);
+        let router = local_wrapper::Client::new(env, &router_id);
+        let pair = local_wrapper::Client::new(env, &pair_id);
+        let usdc = pair.token_1();
         assert_eq!(usdc, Address::from_str(env, USDC_ID));
-        let quote_before = pool.estimate_swap(&1, &0, &ONE_USDC);
-        let reserves = pool.get_reserves();
-        let amount = reserves.get(1).unwrap() / 10;
+        let path = usdc_to_xlm_path(env);
+        let quote_before = router
+            .router_get_amounts_out(&ONE_USDC, &path)
+            .get(1)
+            .unwrap();
+        let (_, usdc_reserve) = pair.get_reserves();
+        let amount = usdc_reserve / 10;
         let user =
             Address::try_from_val(env, &ScAddress::Contract(Hash([0x4b; 32]).into())).unwrap();
 
         env.mock_all_auths();
-        StellarAssetClient::new(env, &usdc).mint(&user, &i128::try_from(amount).unwrap());
+        StellarAssetClient::new(env, &usdc).mint(&user, &amount);
         env.set_auths(&[]);
         let transfer = MockAuthInvoke {
             contract: &usdc,
             fn_name: "transfer",
-            args: (
-                user.clone(),
-                pool_id.clone(),
-                i128::try_from(amount).unwrap(),
-            )
-                .into_val(env),
+            args: (user.clone(), pair_id.clone(), amount).into_val(env),
             sub_invokes: &[],
         };
         let children = [transfer];
         let swap = MockAuthInvoke {
-            contract: &pool_id,
-            fn_name: "swap",
-            args: (user.clone(), 1_u32, 0_u32, amount, 0_u128).into_val(env),
+            contract: &router_id,
+            fn_name: "swap_exact_tokens_for_tokens",
+            args: (amount, 0_i128, path.clone(), user.clone(), DEADLINE).into_val(env),
             sub_invokes: &children,
         };
-        pool.mock_auths(&[MockAuth {
-            address: &user,
-            invoke: &swap,
-        }])
-        .swap(&user, &1, &0, &amount, &0);
-        assert!(pool.estimate_swap(&1, &0, &ONE_USDC) < quote_before);
+        router
+            .mock_auths(&[MockAuth {
+                address: &user,
+                invoke: &swap,
+            }])
+            .swap_exact_tokens_for_tokens(&amount, &0, &path, &user, &DEADLINE);
+        assert!(
+            router
+                .router_get_amounts_out(&ONE_USDC, &path)
+                .get(1)
+                .unwrap()
+                < quote_before
+        );
     }
 
     fn mixed_auto_scenario(fork: &crate::auto::ScenarioFork<'_>) {
@@ -3919,28 +3942,40 @@ mod tests {
         let env = fork.env();
         let user = fork.local_account(user_label);
         fork.fund_local_account(&user, 100_000_000);
-        let pool_id = fork.contract(POOL_ID);
+        let router_id = fork.contract(ROUTER_ID);
+        let pair_id = fork.contract(PAIR_ID);
         let usdc = fork.contract(USDC_ID);
-        let pool = pool::Client::new(env, &pool_id);
+        let router = local_wrapper::Client::new(env, &router_id);
+        let pair = local_wrapper::Client::new(env, &pair_id);
         assert!(matches!(ScAddress::from(&user), ScAddress::Account(_)));
 
-        assert_eq!(pool.get_tokens().get(1).unwrap(), usdc);
-        let before = pool.estimate_swap(&1, &0, &ONE_USDC);
-        let reserves = pool.get_reserves();
-        let amount = reserves.get(1).unwrap() / 10;
-        let amount_i128 = i128::try_from(amount).unwrap();
+        assert_eq!(pair.token_1(), usdc);
+        let path = usdc_to_xlm_path(env);
+        let before = router
+            .router_get_amounts_out(&ONE_USDC, &path)
+            .get(1)
+            .unwrap();
+        let (_, usdc_reserve) = pair.get_reserves();
+        let amount = usdc_reserve / 10;
 
         fork.mock_all_auths();
         let admin = fork.invoke::<Address>(&usdc, "admin", ());
         fork.invoke::<()>(&usdc, "trust", (user.clone(),));
         assert_eq!(fork.local_account(user_label), user);
         fork.invoke::<()>(&usdc, "set_authorized", (user.clone(), true));
-        fork.invoke::<()>(&usdc, "mint", (user.clone(), amount_i128));
+        fork.invoke::<()>(&usdc, "mint", (user.clone(), amount));
         assert_eq!(env.auths()[0].0, admin);
-        let received = fork.invoke::<u128>(&pool_id, "swap", (user, 1_u32, 0_u32, amount, 0_u128));
-        assert!(received > 0);
+        let amounts = fork.invoke::<soroban_sdk::Vec<i128>>(
+            &router_id,
+            "swap_exact_tokens_for_tokens",
+            (amount, 0_i128, path.clone(), user, DEADLINE),
+        );
+        assert!(amounts.get(1).unwrap() > 0);
 
-        let after = pool.estimate_swap(&1, &0, &ONE_USDC);
+        let after = router
+            .router_get_amounts_out(&ONE_USDC, &path)
+            .get(1)
+            .unwrap();
         assert!(after < before);
     }
 
@@ -4019,9 +4054,9 @@ mod tests {
     }
 
     fn external_ref_transport() -> (Rc<FakeTransport>, LedgerKey, LedgerKey, LedgerKey) {
-        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let mut fake = FakeTransport::from_soroswap_snapshot();
         let fake_mut = Rc::get_mut(&mut fake).unwrap();
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let instance_key = contract_instance_key(contract);
         let instance_id = key_id(&instance_key).unwrap();
         let fetched = fake_mut.entries.get(&instance_id).unwrap();
@@ -4100,13 +4135,13 @@ mod tests {
     fn assert_warm_refreshes_known_key(same_sequence: bool) {
         use crate::auto::{AutoRunner, CacheStatus};
 
-        let mut fake = FakeTransport::from_aquarius_snapshot();
+        let mut fake = FakeTransport::from_soroswap_snapshot();
         let path = test_bundle_path(if same_sequence {
             "auto-runner-warm-refresh-hash"
         } else {
             "auto-runner-warm-refresh-sequence"
         });
-        let contract = parse_legacy_contract_address(POOL_ID).unwrap();
+        let contract = parse_legacy_contract_address(PAIR_ID).unwrap();
         let known = data_key(contract.clone(), 879);
         AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
             .cache(&path)
@@ -4167,6 +4202,15 @@ mod tests {
             .iter()
             .any(|batch| batch == std::slice::from_ref(&known_id)));
         fs::remove_file(path).unwrap();
+    }
+
+    /// The ledger snapshot embedded in the committed capture, parsed directly
+    /// so it can also seed a fake transport on Hosts that reject the bundle's
+    /// own protocol.
+    fn captured_snapshot() -> LedgerSnapshot {
+        serde_json::from_slice::<CaptureBundleV2>(&fs::read(CAPTURE_PATH).unwrap())
+            .unwrap()
+            .ledger_snapshot
     }
 
     struct ChangingExternalRefTransport {
@@ -4232,18 +4276,16 @@ mod tests {
     }
 
     impl FakeTransport {
-        fn from_aquarius_snapshot() -> Rc<Self> {
-            Self::from_aquarius_snapshot_at(SUPPORTED_PROTOCOL_VERSION)
+        fn from_soroswap_snapshot() -> Rc<Self> {
+            Self::from_soroswap_snapshot_at(SUPPORTED_PROTOCOL_VERSION)
         }
 
-        fn from_aquarius_snapshot_at(protocol_version: u32) -> Rc<Self> {
-            let mut snapshot =
-                LedgerSnapshot::read_file("fixtures/mainnet/aquarius-xlm-usdc-cp/ledger.json")
-                    .unwrap();
-            // The captured entries and finalized Protocol 27 WASM are useful
-            // deterministic unit inputs on newer Hosts too. Promote only the
-            // in-memory ledger header used by this fake transport; the
-            // committed snapshot remains exact Protocol 27 network evidence.
+        fn from_soroswap_snapshot_at(protocol_version: u32) -> Rc<Self> {
+            let mut snapshot = captured_snapshot();
+            // The captured entries and WASM are useful deterministic unit
+            // inputs on other Hosts too. Set only the in-memory ledger header
+            // used by this fake transport; the committed bundle remains exact
+            // network evidence.
             snapshot.protocol_version = protocol_version;
             let mut entries = BTreeMap::new();
             for (_, (entry, live_until)) in &snapshot.ledger_entries {

@@ -4,7 +4,7 @@
 ))]
 
 //! Strict-fork mechanics on the line's current-protocol capture. The Protocol
-//! 29 line runs them on the Aquarius mainnet capture; the Protocol 30 line has
+//! 29 line runs them on the Soroswap mainnet capture; the Protocol 30 line has
 //! no public-network capture and runs the generic ones on the local standalone
 //! Protocol 30 capture instead.
 
@@ -15,8 +15,6 @@ use kanatoko::{
     ReceiptDisposition, StrictForkError, SUPPORTED_PROTOCOL_VERSION,
 };
 use sha2::{Digest, Sha256};
-#[cfg(kanatoko_protocol_29_fixtures)]
-use soroban_env_host::xdr::UInt128Parts;
 use soroban_env_host::xdr::{
     ContractId, Hash, Int128Parts, InvokeContractArgs, LedgerKey, ScAddress, ScSymbol, ScVal,
     SorobanAddressCredentials, SorobanAuthorizationEntry, SorobanAuthorizedFunction,
@@ -27,9 +25,11 @@ use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 #[cfg(kanatoko_protocol_29_fixtures)]
 const PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 #[cfg(kanatoko_protocol_29_fixtures)]
-const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/capture.json";
+const CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
 #[cfg(kanatoko_protocol_29_fixtures)]
-const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+#[cfg(kanatoko_protocol_29_fixtures)]
+const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 #[cfg(kanatoko_protocol_29_fixtures)]
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 #[cfg(kanatoko_protocol_29_fixtures)]
@@ -64,15 +64,18 @@ fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert()
     let quote = fork
         .invoke(
             request(
-                POOL,
-                "estimate_swap",
+                ROUTER,
+                "router_get_amounts_out",
                 vec![
-                    ScVal::U32(1),
-                    ScVal::U32(0),
-                    ScVal::U128(UInt128Parts {
+                    ScVal::I128(Int128Parts {
                         hi: 0,
                         lo: ONE_USDC,
                     }),
+                    ScVal::Vec(Some(
+                        vec![ScVal::Address(address(USDC)), ScVal::Address(address(XLM))]
+                            .try_into()
+                            .unwrap(),
+                    )),
                 ],
             ),
             ExecutionMode::Preview,
@@ -81,7 +84,7 @@ fn strict_mutable_fork_preserves_absent_unknown_and_atomic_calls_across_revert()
         .unwrap();
     assert!(matches!(
         quote.outcome,
-        InvokeOutcome::Success(ScVal::U128(_))
+        InvokeOutcome::Success(ScVal::Vec(Some(_)))
     ));
     assert_eq!(quote.auth_mode, AppliedAuthMode::Enforce);
     assert_eq!(quote.disposition, ReceiptDisposition::Previewed);

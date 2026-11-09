@@ -10,18 +10,18 @@ use soroban_env_host::xdr::{
 };
 use soroban_sdk::{
     testutils::{EnvTestConfig, Events as _, MuxedAddress as _},
-    Address, Env, MuxedAddress,
+    vec, Address, Env, MuxedAddress, Vec as SorobanVec,
 };
 
 mod pool_abi {
     #![allow(clippy::too_many_arguments)]
 
-    // Deliberately import a different executable that exposes the same pool
-    // methods. It generates Rust bindings only: calls target the captured
-    // network pool address and execute the captured network pool WASM.
+    // Deliberately import a different executable that exposes the same pair
+    // and router methods. It generates Rust bindings only: calls target the
+    // captured network addresses and execute the captured network WASM.
     soroban_sdk::contractimport!(
-        file = "fixtures/wasm/kanatoko_aquarius_wrapper.wasm",
-        sha256 = "e4d626c4960bc879dd44c8243c04b890a9bb0ddb7e1392d84a5b651c15aaab4f",
+        file = "fixtures/wasm/kanatoko_soroswap_wrapper.wasm",
+        sha256 = "1e7bca07c5aa5c2f31544857027799285dff97266ed7895cf21d0e6736dcb3a8",
     );
 }
 
@@ -39,14 +39,16 @@ mod replacement {
     );
 }
 
-const CAPTURE: &str = "fixtures/mainnet/aquarius-xlm-usdc-cp/auto-capture.json";
-const POOL: &str = "CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE";
+const CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/auto-capture.json";
+const ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+const PAIR: &str = "CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP";
 const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 const USDC_ISSUER: &str = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-const REAL_ACCOUNT: &str = "GBJGQAC4PP3MFD3FOAODOZAWIRKZGZCHAU35EUPKJGJOLMNZM7HU4U5D";
-const ONE_USDC: u128 = 10_000_000;
+const REAL_ACCOUNT: &str = "GAI2BF5I2G77J653SVF5ONB77SURJSD225MLZZOBWWBR3WU3YEPVIEO2";
+const ONE_USDC: i128 = 10_000_000;
+const DEADLINE: u64 = u64::MAX;
 const MUXED_ID: u64 = 42;
-const ABI_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_aquarius_wrapper.wasm");
+const ABI_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_soroswap_wrapper.wasm");
 
 #[test]
 fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
@@ -59,7 +61,7 @@ fn one_scenario_mixes_abi_client_and_dynamic_invoke_without_manual_capture() {
     assert_eq!(run.cache_status(), CacheStatus::Hit);
     assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
     assert_ne!(
-        captured_contract_wasm_hash(run.fixture(), POOL),
+        captured_contract_wasm_hash(run.fixture(), PAIR),
         <[u8; 32]>::from(Sha256::digest(ABI_WASM)),
         "the ABI source WASM must not replace the captured network executable",
     );
@@ -79,9 +81,9 @@ fn newer_protocol_opt_in_replays_the_current_protocol_cache_unchanged() {
         .run(|fork| {
             assert_eq!(fork.network_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
             assert_eq!(fork.executed_protocol_version(), SUPPORTED_PROTOCOL_VERSION);
-            let pool = fork.contract(POOL);
+            let pair = fork.contract(PAIR);
             let report = fork
-                .preview(&pool, "get_tokens", (), PreviewAuth::Record)
+                .preview(&pair, "token_0", (), PreviewAuth::Record)
                 .unwrap();
             assert!(report.receipt().outcome.is_success());
             assert_eq!(report.receipt().upstream_reads, 0);
@@ -99,7 +101,7 @@ fn newer_protocol_opt_in_replays_the_current_protocol_cache_unchanged() {
 
     assert_eq!(run.cache_status(), CacheStatus::Hit);
     let provenance = run.fixture().provenance();
-    assert_eq!(provenance.ledger_sequence(), 64_731_476);
+    assert_eq!(provenance.ledger_sequence(), 65_389_638);
     assert_eq!(provenance.protocol_version(), 29);
     assert_eq!(provenance.executed_protocol_version(), 29);
     assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
@@ -130,8 +132,8 @@ fn incompatible_local_abi_fails_instead_of_replacing_network_wasm() {
         .cache(CAPTURE)
         .offline()
         .run(|fork| {
-            let pool_id = fork.contract(POOL);
-            let incompatible = incompatible_abi::Client::new(fork.env(), &pool_id);
+            let pair_id = fork.contract(PAIR);
+            let incompatible = incompatible_abi::Client::new(fork.env(), &pair_id);
             assert!(incompatible.try_get().is_err());
         })
         .unwrap();
@@ -143,15 +145,15 @@ fn replacement_wasm_runs_at_captured_address_without_changing_its_storage() {
         .cache(CAPTURE)
         .offline()
         .run(|fork| {
-            let pool = fork.contract(POOL);
-            let before = contract_storage(fork.env(), &pool);
+            let pair = fork.contract(PAIR);
+            let before = contract_storage(fork.env(), &pair);
             assert!(!before.is_empty());
 
-            fork.replace_wasm(&pool, replacement::WASM);
+            fork.replace_wasm(&pair, replacement::WASM);
 
-            let replacement = replacement::Client::new(fork.env(), &pool);
+            let replacement = replacement::Client::new(fork.env(), &pair);
             assert_eq!(replacement.sdk_major(), 25);
-            assert_eq!(contract_storage(fork.env(), &pool), before);
+            assert_eq!(contract_storage(fork.env(), &pair), before);
         })
         .unwrap();
 }
@@ -165,38 +167,49 @@ fn price_moves(fork: &ScenarioFork<'_>) {
     let env = fork.env();
     let user = fork.local_account("swap-user");
     fork.fund_local_account(&user, 100_000_000);
-    let pool_id = fork.contract(POOL);
+    let router_id = fork.contract(ROUTER);
+    let pair_id = fork.contract(PAIR);
     let usdc = fork.contract(USDC);
-    let pool = pool_abi::Client::new(env, &pool_id);
+    let router = pool_abi::Client::new(env, &router_id);
+    let pair = pool_abi::Client::new(env, &pair_id);
     assert!(matches!(ScAddress::from(&user), ScAddress::Account(_)));
 
-    let before = pool.estimate_swap(&1, &0, &ONE_USDC);
-    let reserves = pool.get_reserves();
-    let amount = reserves.get(1).unwrap() / 10;
-    let amount_i128 = i128::try_from(amount).unwrap();
+    let path = vec![env, usdc.clone(), pair.token_0()];
+    let before = router
+        .router_get_amounts_out(&ONE_USDC, &path)
+        .get(1)
+        .unwrap();
+    let (_, usdc_reserve) = pair.get_reserves();
+    let amount = usdc_reserve / 10;
 
     fork.mock_all_auths();
     let admin = fork.invoke::<Address>(&usdc, "admin", ());
     fork.invoke::<()>(&usdc, "trust", (user.clone(),));
     fork.invoke::<()>(&usdc, "set_authorized", (user.clone(), true));
-    fork.invoke::<()>(&usdc, "mint", (user.clone(), amount_i128));
+    fork.invoke::<()>(&usdc, "mint", (user.clone(), amount));
     assert_eq!(env.auths()[0].0, admin);
 
-    let received = fork.invoke::<u128>(&pool_id, "swap", (user, 1_u32, 0_u32, amount, 0_u128));
-    assert!(received > 0);
+    let amounts = fork.invoke::<SorobanVec<i128>>(
+        &router_id,
+        "swap_exact_tokens_for_tokens",
+        (amount, 0_i128, path.clone(), user, DEADLINE),
+    );
+    assert!(amounts.get(1).unwrap() > 0);
 
-    let after = pool.estimate_swap(&1, &0, &ONE_USDC);
+    let after = router
+        .router_get_amounts_out(&ONE_USDC, &path)
+        .get(1)
+        .unwrap();
     assert_ne!(after, before);
     assert!(after < before);
 }
 
 fn real_account_and_muxed_destination(fork: &ScenarioFork<'_>) {
     let env = fork.env();
-    let pool_id = fork.contract(POOL);
-    let pool = pool_abi::Client::new(env, &pool_id);
-    let tokens = pool.get_tokens();
-    let xlm = tokens.get(0).unwrap();
-    let usdc = tokens.get(1).unwrap();
+    let pair_id = fork.contract(PAIR);
+    let pair = pool_abi::Client::new(env, &pair_id);
+    let xlm = pair.token_0();
+    let usdc = pair.token_1();
     let real_account = fork.account(REAL_ACCOUNT);
 
     let xlm_before = fork.invoke::<i128>(&xlm, "balance", (real_account.clone(),));

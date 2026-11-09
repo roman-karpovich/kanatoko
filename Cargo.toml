@@ -32,11 +32,6 @@ thiserror = "2"
 ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
 
 [[bin]]
-name = "capture-aquarius-xlm-usdc-cp"
-path = "tools/capture_aquarius_xlm_usdc_cp.rs"
-required-features = ["capture"]
-
-[[bin]]
 name = "kanatoko"
 path = "tools/kanatoko.rs"
 required-features = ["capture"]
