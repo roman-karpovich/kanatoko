@@ -2,7 +2,7 @@
 
 All notable changes to Kanatoko are documented in this file.
 
-## Unreleased
+## 29.1.0 - 2026-11-09
 
 - Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
   scenario captured on Protocol 29, and remove the scenario-specific capture
