@@ -2,6 +2,30 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 29.1.1 - 2026-11-10
+
+- Report ledger XDR that this release cannot decode, read from a network on
+  another protocol, as `UnsupportedProtocol` for that protocol instead of
+  `CaptureError::Transport`. Protocol 30 changed the ledger header format, so
+  a capture with `allow_newer_protocol()` from a Protocol 30 network failed
+  with `Transport { operation: "getLatestLedger" }`; it now fails with
+  `UnsupportedProtocol { found: 30, supported: 29 }`. At Protocol 29 an
+  undecodable header or entry is still a `Transport` error.
+- The `UnsupportedProtocol` message of `CaptureError` and `FixtureError` now
+  names the Kanatoko release line to use. No API changes.
+- Document that the 29 line cannot capture from Protocol 30 networks
+  (testnet now, Mainnet after its upgrade); use `kanatoko = "=30.0.0-rc.2"`
+  for them until 30.0.0 is released. Committed bundles still replay offline.
+- Lock the tests to `soroban-sdk`, `soroban-env-host` and
+  `soroban-ledger-snapshot` 29.0.1, the versions a fresh resolution picks;
+  `soroban-env-host` 29.0.0 is yanked.
+- Add `examples/offline_replay.rs`, which replays the committed Soroswap
+  XLM/USDC Mainnet capture without RPC.
+- Run the CI checks on pushes to `master` and `sdk-*` and on pull requests.
+- Document controlling ledger time in scenarios, replace the README roadmap,
+  and remove the README rows for Kanatoko 25 and 26, which were never
+  published.
+
 ## 29.1.0 - 2026-11-09
 
 - Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
