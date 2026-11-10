@@ -2,11 +2,30 @@
 
 All notable changes to Kanatoko are documented in this file.
 
-## Unreleased
+## 30.0.0-rc.2 - 2026-11-10
 
 - Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
   scenario captured on Protocol 29, and remove the scenario-specific capture
-  binary. Rename the CLI scenario to `soroswap-xlm-usdc`.
+  binary. Rename the CLI scenario to `soroswap-xlm-usdc`. On this line the
+  Protocol 29 bundles are cross-protocol rejection evidence.
+- Add `examples/offline_replay.rs`, which replays the committed standalone
+  Protocol 30 capture without RPC and reads its stateful contract.
+- Report ledger XDR that this release cannot decode, read from a network on
+  another protocol, as `UnsupportedProtocol` for that protocol instead of
+  `CaptureError::Transport`, for example a Protocol 31 network captured with
+  `allow_newer_protocol()`. At Protocol 30 an undecodable header or entry is
+  still a `Transport` error. 29.1.1 ships the same fix; there a Protocol 30
+  network now fails with `UnsupportedProtocol { found: 30, supported: 29 }`.
+- The `UnsupportedProtocol` message of `CaptureError` and `FixtureError` now
+  names the Kanatoko release line to use. No API changes.
+- Testnet now runs Protocol 30 and Mainnet still runs Protocol 29: the README
+  points testnet to this line and Mainnet to the 29 line until it upgrades.
+- Run the CI checks on pushes to `master` and `sdk-*` and on pull requests.
+- Document controlling ledger time in scenarios, replace the README roadmap,
+  and remove the README rows for Kanatoko 25 and 26, which were never
+  published.
+- The SDK pins are unchanged: `soroban-sdk` and `soroban-ledger-snapshot`
+  `=30.0.0-rc.1` with `soroban-env-host` `=30.0.0`. No newer SDK 30 exists.
 
 ## 30.0.0-rc.1 - 2026-11-02
 

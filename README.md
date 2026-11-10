@@ -13,7 +13,7 @@ WASM and captured network contracts then call each other normally.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "=30.0.0-rc.1", features = ["capture"] }
+kanatoko = { version = "=30.0.0-rc.2", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -25,7 +25,7 @@ an older one:
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
 | 29 | `kanatoko = "29"` | Protocol 29 or older |
-| 30 | `kanatoko = "=30.0.0-rc.1"` | Protocol 30 or older |
+| 30 | `kanatoko = "=30.0.0-rc.2"` | Protocol 30 or older |
 
 Protocol 30 support is a prerelease because the upstream Rust SDK is currently
 `30.0.0-rc.1`. Its SDK and ledger-snapshot dependencies (`30.0.0-rc.1`) and the

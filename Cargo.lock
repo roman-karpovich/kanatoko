@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "kanatoko"
-version = "30.0.0-rc.1"
+version = "30.0.0-rc.2"
 dependencies = [
  "base64",
  "serde",
