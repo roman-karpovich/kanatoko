@@ -1,8 +1,8 @@
 //! Replays the committed standalone Protocol 30 capture and reads a contract.
 //!
-//! No public network runs Protocol 30 yet, so this line replays a capture of a
-//! local standalone network. The capture is loaded from disk into a strict
-//! fork, which holds no RPC transport. Run it with:
+//! This line's committed Protocol 30 evidence is a capture of a local
+//! standalone network, made before testnet upgraded. The capture is loaded
+//! from disk into a strict fork, which holds no RPC transport. Run it with:
 //!
 //! ```sh
 //! cargo run --locked --features capture --example offline_replay

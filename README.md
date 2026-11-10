@@ -38,20 +38,20 @@ protocol ahead can be captured and replayed through an explicit opt-in; see
 
 ## Your contract against mainnet
 
-At this RC's release boundary, public Mainnet and testnet still report
-Protocol 29. Run the mainnet examples in this section with the stable matching
-line until the networks upgrade:
+Testnet runs Protocol 30, so use this line for testnet. Mainnet still runs
+Protocol 29: run the mainnet examples in this section with the stable 29 line
+until Mainnet upgrades:
 
 ```toml
 [dev-dependencies]
 kanatoko = { version = "29", features = ["capture"] }
 ```
 
-Kanatoko 30 captures and replays Protocol 30 state. Because no public network
-runs Protocol 30 yet, its committed Protocol 30 evidence is a capture of a
-local standalone network. The committed CLI fixture is still the Protocol 29
-Mainnet capture; this line loads it, like the historical Protocol 27 and 28
-captures, only to test fail-closed cross-protocol loading.
+Kanatoko 30 captures and replays Protocol 30 state. Its committed Protocol 30
+evidence is a capture of a local standalone network, made before testnet
+upgraded. The committed CLI fixture is still the Protocol 29 Mainnet capture;
+this line loads it, like the historical Protocol 27 and 28 captures, only to
+test fail-closed cross-protocol loading.
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -222,8 +222,8 @@ refreshed.
 When a network upgrades before the matching Kanatoko line is available, a
 Kanatoko line whose Host runs Protocol N can opt into capturing and replaying a
 ledger exactly one protocol newer, Protocol N+1, and execute it on its own
-Protocol N Host. On the 29 line that means a Protocol 30 ledger executed as
-Protocol 29; on the 30 line, a Protocol 31 ledger executed as Protocol 30:
+Protocol N Host. On the 30 line that means a Protocol 31 ledger executed as
+Protocol 30:
 
 ```rust,ignore
 use kanatoko::mainnet;
@@ -231,12 +231,17 @@ use kanatoko::mainnet;
 mainnet()
     .allow_newer_protocol()
     .run(|fork| {
-        // On the 29 line, against a Protocol 30 network.
-        assert_eq!(fork.network_protocol_version(), 30);
-        assert_eq!(fork.executed_protocol_version(), 29);
+        // On the 30 line, against a Protocol 31 network.
+        assert_eq!(fork.network_protocol_version(), 31);
+        assert_eq!(fork.executed_protocol_version(), 30);
     })
     .unwrap();
 ```
+
+This works only while Protocol N+1 keeps the ledger XDR that the Protocol N
+line decodes. Protocol 30 changed the ledger header format, so the 29 line
+cannot capture from Protocol 30 networks, also with the opt-in; use this line
+for them.
 
 The same opt-in exists on every API that checks the protocol:
 `CaptureBuilder::allow_newer_protocol()`,
@@ -275,14 +280,15 @@ of failing on an overflowing TTL, and a Stellar Asset Contract error message.
 A candidate installed locally recorded different `ContractCodeCostInputs` than
 on a Protocol 29 Host, so ledger digests taken after that install differed,
 while the committed Mainnet pool strict workflow returned identical quotes,
-results, events, authorization trees, and state changes on both Hosts. What
-Protocol 30 changes is not known yet. Treat resource estimates and
-metering-sensitive results as evidence from the older Host.
+results, events, authorization trees, and state changes on both Hosts. Treat
+resource estimates and metering-sensitive results as evidence from the older
+Host.
 
 Natural guards still fail closed and are never caught or softened: ledger data
-the older XDR cannot decode, and contracts whose WASM declares a newer
-interface protocol (`contract protocol number is newer than host`). Move to the
-Kanatoko major matching the network once it is available.
+the older XDR cannot decode, which capture reports as `UnsupportedProtocol` for
+the network's protocol, and contracts whose WASM declares a newer interface
+protocol (`contract protocol number is newer than host`). Move to the Kanatoko
+major matching the network once it is available.
 
 ## One environment, both kinds of contract
 

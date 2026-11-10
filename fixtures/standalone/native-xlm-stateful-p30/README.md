@@ -1,10 +1,10 @@
 # Protocol 30 standalone fixture
 
-No public Stellar network runs Protocol 30 yet: testnet and Mainnet still
-report Protocol 29. `capture.json` is therefore a read-only capture of a local
-standalone network started from `stellar/quickstart:nightly-next`, whose
-stellar-core (`v30.0.0-22-gb8c4f12d6`) upgrades the network to Protocol 30 at
-startup.
+When this fixture was made, no public Stellar network ran Protocol 30: testnet
+and Mainnet still reported Protocol 29. `capture.json` is therefore a read-only
+capture of a local standalone network started from
+`stellar/quickstart:nightly-next`, whose stellar-core (`v30.0.0-22-gb8c4f12d6`)
+upgrades the network to Protocol 30 at startup.
 
 - network passphrase: `Standalone Network ; February 2017`
 - RPC origin: `http://localhost:8000`
