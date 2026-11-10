@@ -323,7 +323,10 @@ pub enum FixtureError {
         source: SnapshotError,
     },
 
-    #[error("unsupported ledger protocol {found}; pinned Host supports exactly {supported}")]
+    #[error(
+        "ledger protocol {found} is not supported by this Kanatoko release (Host protocol \
+         {supported}); use the Kanatoko release line for protocol {found}"
+    )]
     UnsupportedProtocol { found: u32, supported: u32 },
 
     #[error("fixture network ID does not match the expected passphrase")]
