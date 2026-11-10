@@ -38,7 +38,7 @@ use thiserror::Error;
 use crate::{
     fixture::{executed_protocol_version, ProtocolPolicy, UnsupportedProtocol},
     runtime::{configure_fork_env, fork_env, ForkEnvSeed},
-    FixtureError, FrozenFixture, StrictFork,
+    FixtureError, FrozenFixture, StrictFork, SUPPORTED_PROTOCOL_VERSION,
 };
 
 pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
@@ -177,10 +177,15 @@ impl CaptureBuilder {
     /// [`crate::SUPPORTED_PROTOCOL_VERSION`] as the ledger protocol, reported
     /// by [`CaptureProvenance::executed_protocol_version`]. Host behaviour that
     /// changed without an XDR change, such as metering, follows the older
-    /// Host. Ledger entries the older XDR cannot decode and contracts built for
-    /// a newer interface version still fail closed. Older protocols and
-    /// protocols two or more above the Host are still rejected with
-    /// [`CaptureError::UnsupportedProtocol`].
+    /// Host. Contracts built for a newer interface version still fail closed.
+    ///
+    /// The mode only works while the newer protocol keeps the ledger XDR this
+    /// release reads. If the newer protocol changed the ledger header format,
+    /// or a captured ledger entry uses XDR this release cannot decode, capture
+    /// fails with [`CaptureError::UnsupportedProtocol`] for the network's
+    /// protocol; such a network needs the Kanatoko release line for that
+    /// protocol. Older protocols and protocols two or more above the Host are
+    /// rejected with the same error.
     #[must_use]
     pub const fn allow_newer_protocol(mut self) -> Self {
         self.protocol_policy = ProtocolPolicy::AllowNewer;
@@ -267,8 +272,11 @@ impl CaptureBuilder {
                 scenario(&env, local.clone(), source.clone());
             }));
 
-            if let Some(operation) = source.take_failure() {
-                return Err(transport_error(operation));
+            if let Some(failure) = source.take_failure() {
+                return Err(transport_error(
+                    failure,
+                    Some(source.network_protocol_version()),
+                ));
             }
 
             let mut requested = source.requested_keys();
@@ -352,7 +360,7 @@ impl CaptureBuilder {
         let network = self
             .transport
             .network()
-            .map_err(|failure| transport_error(failure.operation))?;
+            .map_err(|failure| transport_error(failure, None))?;
         if network.passphrase != self.network_passphrase {
             return Err(CaptureError::NetworkMismatch);
         }
@@ -364,7 +372,7 @@ impl CaptureBuilder {
         let anchor = self
             .transport
             .latest_ledger()
-            .map_err(|failure| transport_error(failure.operation))?;
+            .map_err(|failure| transport_error(failure, None))?;
         self.protocol_policy.check(anchor.protocol_version)?;
         Ok(anchor)
     }
@@ -380,7 +388,7 @@ impl CaptureBuilder {
             let before = self
                 .transport
                 .latest_ledger()
-                .map_err(|failure| transport_error(failure.operation))?;
+                .map_err(|failure| transport_error(failure, None))?;
             self.protocol_policy.check(before.protocol_version)?;
 
             let mut coverage = BTreeMap::new();
@@ -391,7 +399,7 @@ impl CaptureBuilder {
                 let batch = self
                     .transport
                     .ledger_entries(&batch_keys)
-                    .map_err(|failure| transport_error(failure.operation))?;
+                    .map_err(|failure| transport_error(failure, Some(before.protocol_version)))?;
                 if batch.latest_ledger != before.sequence {
                     batches_match = false;
                     break;
@@ -416,7 +424,7 @@ impl CaptureBuilder {
             let after = self
                 .transport
                 .latest_ledger()
-                .map_err(|failure| transport_error(failure.operation))?;
+                .map_err(|failure| transport_error(failure, None))?;
             if !batches_match || before != after {
                 continue;
             }
@@ -600,7 +608,10 @@ impl CapturedFixture {
     /// The bundle is validated exactly as recorded, including its network
     /// protocol and digests. Replays and forks execute it on the Host as
     /// [`crate::SUPPORTED_PROTOCOL_VERSION`]; see
-    /// [`CaptureBuilder::allow_newer_protocol`] for what can differ.
+    /// [`CaptureBuilder::allow_newer_protocol`] for what can differ. A bundle
+    /// holds no ledger header, so a newer header format does not prevent
+    /// loading it; ledger entries this release cannot decode still fail
+    /// closed.
     ///
     /// # Errors
     ///
@@ -1217,7 +1228,10 @@ pub enum CaptureError {
     InvalidRpcUrl,
     #[error("RPC network passphrase does not match the requested network")]
     NetworkMismatch,
-    #[error("unsupported ledger protocol {found}; pinned Host supports exactly {supported}")]
+    #[error(
+        "ledger protocol {found} is not supported by this Kanatoko release (Host protocol \
+         {supported}); use the Kanatoko release line for protocol {found}"
+    )]
     UnsupportedProtocol { found: u32, supported: u32 },
     #[error("RPC transport failed during {operation}")]
     Transport { operation: &'static str },
@@ -1311,9 +1325,36 @@ struct EntryBatch {
     entries: Vec<FetchedEntry>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TransportFailure {
     operation: &'static str,
+    kind: TransportFailureKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportFailureKind {
+    /// The request failed, or the RPC answer was not valid data.
+    Rpc,
+    /// The RPC answered, but ledger XDR in the answer does not decode with
+    /// this release's XDR definitions. A newer protocol can change that XDR.
+    /// Carries the ledger protocol reported in the same answer, if any.
+    UndecodableXdr { reported_protocol: Option<u32> },
+}
+
+impl TransportFailure {
+    const fn rpc(operation: &'static str) -> Self {
+        Self {
+            operation,
+            kind: TransportFailureKind::Rpc,
+        }
+    }
+
+    const fn undecodable_xdr(operation: &'static str, reported_protocol: Option<u32>) -> Self {
+        Self {
+            operation,
+            kind: TransportFailureKind::UndecodableXdr { reported_protocol },
+        }
+    }
 }
 
 trait Transport {
@@ -1330,7 +1371,7 @@ pub(crate) struct TrackingSource {
     local: Rc<LocalLedger>,
     network_protocol_version: u32,
     rpc_reads: Cell<u64>,
-    failure: Cell<Option<&'static str>>,
+    failure: Cell<Option<TransportFailure>>,
 }
 
 impl TrackingSource {
@@ -1390,7 +1431,7 @@ impl TrackingSource {
         self.get(key).map(|_| ())
     }
 
-    fn take_failure(&self) -> Option<&'static str> {
+    fn take_failure(&self) -> Option<TransportFailure> {
         self.failure.take()
     }
 
@@ -1405,7 +1446,8 @@ impl SnapshotSource for TrackingSource {
             return Err(Self::host_error());
         }
         let Ok(id) = key_id(key) else {
-            self.failure.set(Some("ledger-key-encode"));
+            self.failure
+                .set(Some(TransportFailure::rpc("ledger-key-encode")));
             return Err(Self::host_error());
         };
         if self.local.owns(key) {
@@ -1429,12 +1471,13 @@ impl SnapshotSource for TrackingSource {
         let batch = match transport.ledger_entries(&[(**key).clone()]) {
             Ok(batch) => batch,
             Err(failure) => {
-                self.failure.set(Some(failure.operation));
+                self.failure.set(Some(failure));
                 return Err(Self::host_error());
             }
         };
         let Ok(returned) = validate_batch(&[(**key).clone()], batch.entries) else {
-            self.failure.set(Some("getLedgerEntries"));
+            self.failure
+                .set(Some(TransportFailure::rpc("getLedgerEntries")));
             return Err(Self::host_error());
         };
         let state = returned
@@ -1539,14 +1582,14 @@ impl HttpTransport {
             },
             thread::sleep,
         )
-        .map_err(|_| TransportFailure { operation })?;
+        .map_err(|_| TransportFailure::rpc(operation))?;
         let body: RpcResponse<T> = response
             .into_json()
-            .map_err(|_| TransportFailure { operation })?;
+            .map_err(|_| TransportFailure::rpc(operation))?;
         if body.error.is_some() {
-            return Err(TransportFailure { operation });
+            return Err(TransportFailure::rpc(operation));
         }
-        body.result.ok_or(TransportFailure { operation })
+        body.result.ok_or(TransportFailure::rpc(operation))
     }
 }
 
@@ -1604,30 +1647,8 @@ impl Transport for HttpTransport {
     }
 
     fn latest_ledger(&self) -> Result<Anchor, TransportFailure> {
-        let operation = "getLatestLedger";
-        let wire: LatestWire = self.rpc(operation, &serde_json::json!({}))?;
-        let bytes = BASE64
-            .decode(&wire.header_xdr)
-            .map_err(|_| TransportFailure { operation })?;
-        let header = LedgerHeader::from_xdr(bytes.clone(), Limits::none())
-            .map_err(|_| TransportFailure { operation })?;
-        let timestamp = wire
-            .close_time
-            .parse::<u64>()
-            .map_err(|_| TransportFailure { operation })?;
-        if header.ledger_seq != wire.sequence
-            || header.scp_value.close_time.0 != timestamp
-            || hex(Sha256::digest(bytes)) != wire.id
-        {
-            return Err(TransportFailure { operation });
-        }
-        Ok(Anchor {
-            sequence: wire.sequence,
-            hash: wire.id,
-            protocol_version: wire.protocol_version,
-            timestamp,
-            base_reserve: header.base_reserve,
-        })
+        let wire: LatestWire = self.rpc(LATEST_LEDGER_OPERATION, &serde_json::json!({}))?;
+        decode_latest_ledger(wire)
     }
 
     fn ledger_entries(&self, keys: &[LedgerKey]) -> Result<EntryBatch, TransportFailure> {
@@ -1636,7 +1657,7 @@ impl Transport for HttpTransport {
             .iter()
             .map(|key| key.to_xdr(Limits::none()).map(|xdr| BASE64.encode(xdr)))
             .collect();
-        let encoded = encoded.map_err(|_| TransportFailure { operation })?;
+        let encoded = encoded.map_err(|_| TransportFailure::rpc(operation))?;
         let wire: EntriesWire = self.rpc(operation, &serde_json::json!({ "keys": encoded }))?;
         let entries = wire
             .entries
@@ -1658,7 +1679,7 @@ struct NetworkWire {
     protocol_version: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LatestWire {
     id: String,
@@ -1666,6 +1687,39 @@ struct LatestWire {
     sequence: u32,
     close_time: String,
     header_xdr: String,
+}
+
+const LATEST_LEDGER_OPERATION: &str = "getLatestLedger";
+
+/// Decodes and cross-checks a `getLatestLedger` answer.
+///
+/// A header that does not decode carries the answer's `protocolVersion`, so
+/// [`transport_error`] can report a protocol whose header format this release
+/// does not know as unsupported instead of as a transport failure.
+fn decode_latest_ledger(wire: LatestWire) -> Result<Anchor, TransportFailure> {
+    let operation = LATEST_LEDGER_OPERATION;
+    let bytes = BASE64
+        .decode(&wire.header_xdr)
+        .map_err(|_| TransportFailure::rpc(operation))?;
+    let header = LedgerHeader::from_xdr(bytes.clone(), Limits::none())
+        .map_err(|_| TransportFailure::undecodable_xdr(operation, Some(wire.protocol_version)))?;
+    let timestamp = wire
+        .close_time
+        .parse::<u64>()
+        .map_err(|_| TransportFailure::rpc(operation))?;
+    if header.ledger_seq != wire.sequence
+        || header.scp_value.close_time.0 != timestamp
+        || hex(Sha256::digest(bytes)) != wire.id
+    {
+        return Err(TransportFailure::rpc(operation));
+    }
+    Ok(Anchor {
+        sequence: wire.sequence,
+        hash: wire.id,
+        protocol_version: wire.protocol_version,
+        timestamp,
+        base_reserve: header.base_reserve,
+    })
 }
 
 #[derive(Deserialize)]
@@ -1691,39 +1745,39 @@ struct RpcResponse<T> {
     error: Option<serde_json::Value>,
 }
 
+/// Decodes one `getLedgerEntries` entry.
+///
+/// The answer reports no ledger protocol, so XDR that does not decode is
+/// marked without one; the caller supplies the protocol of the ledger read.
 fn decode_wire_entry(
     wire: EntryWire,
     operation: &'static str,
 ) -> Result<FetchedEntry, TransportFailure> {
+    let undecodable = |_| TransportFailure::undecodable_xdr(operation, None);
     let key_bytes = BASE64
         .decode(wire.key)
-        .map_err(|_| TransportFailure { operation })?;
-    let key = LedgerKey::from_xdr(key_bytes, Limits::none())
-        .map_err(|_| TransportFailure { operation })?;
+        .map_err(|_| TransportFailure::rpc(operation))?;
+    let key = LedgerKey::from_xdr(key_bytes, Limits::none()).map_err(undecodable)?;
     let entry_bytes = BASE64
         .decode(wire.xdr)
-        .map_err(|_| TransportFailure { operation })?;
-    let data = LedgerEntryData::from_xdr(entry_bytes, Limits::none())
-        .map_err(|_| TransportFailure { operation })?;
+        .map_err(|_| TransportFailure::rpc(operation))?;
+    let data = LedgerEntryData::from_xdr(entry_bytes, Limits::none()).map_err(undecodable)?;
     let ext = wire
         .ext_xdr
-        .ok_or(TransportFailure { operation })
+        .ok_or(TransportFailure::rpc(operation))
         .and_then(|encoded| {
             BASE64
                 .decode(encoded)
-                .map_err(|_| TransportFailure { operation })
+                .map_err(|_| TransportFailure::rpc(operation))
         })
-        .and_then(|bytes| {
-            LedgerEntryExt::from_xdr(bytes, Limits::none())
-                .map_err(|_| TransportFailure { operation })
-        })?;
+        .and_then(|bytes| LedgerEntryExt::from_xdr(bytes, Limits::none()).map_err(undecodable))?;
     let entry = LedgerEntry {
         last_modified_ledger_seq: wire.last_modified_ledger_seq,
         data,
         ext,
     };
     if entry.to_key() != key {
-        return Err(TransportFailure { operation });
+        return Err(TransportFailure::rpc(operation));
     }
     Ok(FetchedEntry {
         entry: Rc::new(entry),
@@ -2202,8 +2256,34 @@ fn is_state_archival_key(key: &LedgerKey) -> bool {
     )
 }
 
-fn transport_error(operation: &'static str) -> CaptureError {
-    CaptureError::Transport { operation }
+/// Converts a transport failure into the public capture error.
+///
+/// Ledger XDR that does not decode, read from a ledger whose protocol is not
+/// [`SUPPORTED_PROTOCOL_VERSION`], is reported as that protocol being
+/// unsupported: a newer protocol can change the ledger XDR, and the remedy is
+/// the Kanatoko release line for that protocol, not a retry. The same failure
+/// at the supported protocol stays an RPC failure. `network_protocol_version`
+/// is the protocol of the ledger being read when the caller knows it; a
+/// protocol reported in the failed answer itself takes precedence.
+fn transport_error(
+    failure: TransportFailure,
+    network_protocol_version: Option<u32>,
+) -> CaptureError {
+    let undecodable_at = match failure.kind {
+        TransportFailureKind::UndecodableXdr { reported_protocol } => {
+            reported_protocol.or(network_protocol_version)
+        }
+        TransportFailureKind::Rpc => None,
+    };
+    match undecodable_at {
+        Some(found) if found != SUPPORTED_PROTOCOL_VERSION => CaptureError::UnsupportedProtocol {
+            found,
+            supported: SUPPORTED_PROTOCOL_VERSION,
+        },
+        _ => CaptureError::Transport {
+            operation: failure.operation,
+        },
+    }
 }
 
 fn redact_rpc_origin(raw: &str) -> Result<String, CaptureError> {
@@ -2246,7 +2326,7 @@ mod tests {
         ContractDataEntry, ContractExecutableExternalRef, ContractId, ExtensionPoint,
         LedgerEntryData, LedgerEntryExt, LedgerEntryExtensionV1, LedgerEntryExtensionV1Ext,
         LedgerKeyContractData, ScAddress, ScString, ScVal, SponsorshipDescriptor,
-        StateArchivalSettings,
+        StateArchivalSettings, StellarValue, TimePoint,
     };
     use soroban_ledger_snapshot::LedgerSnapshot;
     use soroban_sdk::{
@@ -3417,7 +3497,10 @@ mod tests {
         assert!(source.get(&failed_key).is_err());
 
         assert_eq!(fake.ledger_entry_reads(), 1);
-        assert_eq!(source.take_failure(), Some("getLedgerEntries"));
+        assert_eq!(
+            source.take_failure(),
+            Some(TransportFailure::rpc("getLedgerEntries"))
+        );
     }
 
     fn http_status_error(status: u16, retry_after: Option<&str>) -> ureq::Error {
@@ -3558,6 +3641,169 @@ mod tests {
             &error,
             SUPPORTED_PROTOCOL_VERSION + 2
         ));
+        assert_eq!(fake.ledger_entry_reads(), 0);
+    }
+
+    #[test]
+    fn newer_protocol_capture_decodes_a_header_in_the_known_format() {
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let mut fake = FakeTransport::from_soroswap_snapshot_at(newer);
+        let wire = latest_wire(&fake.anchor, &encoded_header(&fake.anchor));
+        let ledger_hash = wire.id.clone();
+        Rc::get_mut(&mut fake).unwrap().latest_wire = Some(wire);
+
+        let captured = builder(&fake)
+            .allow_newer_protocol()
+            .capture(soroswap_scenario)
+            .unwrap();
+
+        assert_eq!(captured.provenance().protocol_version(), newer);
+        assert_eq!(captured.provenance().ledger_hash(), ledger_hash);
+    }
+
+    #[test]
+    fn undecodable_header_on_a_newer_protocol_is_unsupported_not_a_transport_failure() {
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let mut fake = FakeTransport::from_soroswap_snapshot_at(newer);
+        let wire = latest_wire(&fake.anchor, &header_with_unknown_value_type(&fake.anchor));
+        Rc::get_mut(&mut fake).unwrap().latest_wire = Some(wire);
+
+        let error = builder(&fake)
+            .allow_newer_protocol()
+            .capture(|_| {})
+            .unwrap_err();
+        assert!(is_unsupported_capture(&error, newer));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "ledger protocol {newer} is not supported by this Kanatoko release (Host \
+                 protocol {SUPPORTED_PROTOCOL_VERSION}); use the Kanatoko release line for \
+                 protocol {newer}"
+            )
+        );
+        assert_eq!(fake.ledger_entry_reads(), 0);
+
+        // The anchor probe of an online cache hit reads the same header.
+        let error = builder(&fake)
+            .allow_newer_protocol()
+            .current_anchor()
+            .unwrap_err();
+        assert!(is_unsupported_capture(&error, newer));
+
+        // Without the opt-in, getNetwork already rejects the protocol.
+        let latest_reads = fake.latest_reads.get();
+        let error = builder(&fake).capture(|_| {}).unwrap_err();
+        assert!(is_unsupported_capture(&error, newer));
+        assert_eq!(fake.latest_reads.get(), latest_reads);
+    }
+
+    #[test]
+    fn undecodable_header_at_the_supported_protocol_stays_a_transport_failure() {
+        let mut fake = FakeTransport::from_soroswap_snapshot();
+        let wire = latest_wire(&fake.anchor, &header_with_unknown_value_type(&fake.anchor));
+        Rc::get_mut(&mut fake).unwrap().latest_wire = Some(wire);
+
+        for capture_builder in [builder(&fake), builder(&fake).allow_newer_protocol()] {
+            let error = capture_builder.capture(|_| {}).unwrap_err();
+            assert!(matches!(
+                error,
+                CaptureError::Transport {
+                    operation: "getLatestLedger"
+                }
+            ));
+        }
+        assert_eq!(fake.ledger_entry_reads(), 0);
+    }
+
+    #[test]
+    fn undecodable_entry_on_a_newer_protocol_is_unsupported_not_a_transport_failure() {
+        let instance = contract_instance_key(parse_legacy_contract_address(PAIR_ID).unwrap());
+        let instance_id = key_id(&instance).unwrap();
+        let keys = BTreeMap::from([(instance_id.clone(), instance)]);
+        let scenario = |env: &Env| {
+            let pair_id = Address::from_str(env, PAIR_ID);
+            let _ = local_wrapper::Client::new(env, &pair_id).token_0();
+        };
+
+        let newer = SUPPORTED_PROTOCOL_VERSION + 1;
+        let fake = FakeTransport::from_soroswap_snapshot_at(newer);
+        fake.undecodable_keys
+            .borrow_mut()
+            .insert(instance_id.clone());
+        let newer_builder = builder(&fake).allow_newer_protocol();
+        // Discovery reads a new key on its own; a coherent reload reads known
+        // keys in batches.
+        let error = newer_builder.capture(scenario).unwrap_err();
+        assert!(is_unsupported_capture(&error, newer));
+        let error = newer_builder
+            .materialize(&keys)
+            .err()
+            .expect("the batch must fail");
+        assert!(is_unsupported_capture(&error, newer));
+
+        let fake = FakeTransport::from_soroswap_snapshot();
+        fake.undecodable_keys.borrow_mut().insert(instance_id);
+        let error = builder(&fake).capture(scenario).unwrap_err();
+        assert!(matches!(
+            error,
+            CaptureError::Transport {
+                operation: "getLedgerEntries"
+            }
+        ));
+        let error = builder(&fake)
+            .materialize(&keys)
+            .err()
+            .expect("the batch must fail");
+        assert!(matches!(
+            error,
+            CaptureError::Transport {
+                operation: "getLedgerEntries"
+            }
+        ));
+    }
+
+    /// `headerXdr` of public testnet ledger 5657882, returned by
+    /// `getLatestLedger` with `protocolVersion` 30 on 2026-11-10. Protocol 30
+    /// headers carry a `STELLAR_VALUE_SIGNED_MS` (3) `StellarValue` extension,
+    /// which the Protocol 29 XDR does not define.
+    #[cfg(kanatoko_protocol_29_fixtures)]
+    const TESTNET_PROTOCOL_30_HEADER_XDR: &str = concat!(
+        "AAAAHszw4xR0/jNC9tVqF0guigrH+J24QNzPdel9WDuDz1vd75HE2DpFf7c4ahTXB4BsrW8y5cSmcJPj",
+        "Xs4H6oBpVPQAAAAAavMLXQAAAAAAAAADAAABocVkY4gAAAAAqCTNGLyddQZNKZpbW6ykO8OqLzJpOBU9",
+        "jC+btctt8DMAAABAsYGuGB0x1V/uFgUbkQHQify33OdBDup4grd02zVXr9uh5vMyAeeX+UIXD6NPqnLp",
+        "Z+ouxcYeX1mqKNd02iA4C3hIicENyRDgdcXLxVL/zCzTrSiHoR8+tpU+NNbXRd/n6fPxwAOI+rxkN7v+",
+        "eEwtf5D+v0io0r6FGSxxsUzXVlQAVlUaDeC2s6dkAAAAACzrw716CwAAAAAAAAAAAA6bGwAAAGQATEtA",
+        "AAAAyOgrisRbvMPZK7K2Cu4BQpcqRrCdQ3RDrjlp/KKL5gHM71dLFXVLVvIyM6FvhcSzKdUnhAuEaOP5",
+        "9ptDsDga5i7bVkb0iUhY5FZ/a/deTviW8dvnAC13F74tI+gnC2SZCETAaAz0AcKXg+0YuEt37ZCofX9O",
+        "hI4/zMdPViWaDD1oAAAAAA==",
+    );
+
+    #[cfg(kanatoko_protocol_29_fixtures)]
+    #[test]
+    fn protocol_30_testnet_header_is_reported_as_unsupported_on_the_29_line() {
+        let header = BASE64.decode(TESTNET_PROTOCOL_30_HEADER_XDR).unwrap();
+        assert!(LedgerHeader::from_xdr(header, Limits::none()).is_err());
+        let wire = LatestWire {
+            id: "e81bd86da345fac7818deb11af0686f2b772f1e7ad43b5417baaba1c62cd6341".to_string(),
+            protocol_version: 30,
+            sequence: 5_657_882,
+            close_time: "1794313053".to_string(),
+            header_xdr: TESTNET_PROTOCOL_30_HEADER_XDR.to_string(),
+        };
+        let mut fake = FakeTransport::from_soroswap_snapshot_at(30);
+        Rc::get_mut(&mut fake).unwrap().latest_wire = Some(wire);
+
+        let error = builder(&fake)
+            .allow_newer_protocol()
+            .capture(|_| {})
+            .unwrap_err();
+
+        assert!(is_unsupported_capture(&error, 30));
+        assert_eq!(
+            error.to_string(),
+            "ledger protocol 30 is not supported by this Kanatoko release (Host protocol 29); \
+             use the Kanatoko release line for protocol 30"
+        );
         assert_eq!(fake.ledger_entry_reads(), 0);
     }
 
@@ -4031,6 +4277,47 @@ mod tests {
         CaptureBuilder::with_transport(fake.clone(), MAINNET_PASSPHRASE)
     }
 
+    /// A `getLatestLedger` answer for `header_xdr` that agrees with `anchor`
+    /// on every field the decoder cross-checks.
+    fn latest_wire(anchor: &Anchor, header_xdr: &[u8]) -> LatestWire {
+        LatestWire {
+            id: hex(Sha256::digest(header_xdr)),
+            protocol_version: anchor.protocol_version,
+            sequence: anchor.sequence,
+            close_time: anchor.timestamp.to_string(),
+            header_xdr: BASE64.encode(header_xdr),
+        }
+    }
+
+    /// A ledger header in the format this release decodes.
+    fn encoded_header(anchor: &Anchor) -> Vec<u8> {
+        LedgerHeader {
+            ledger_version: anchor.protocol_version,
+            ledger_seq: anchor.sequence,
+            scp_value: StellarValue {
+                close_time: TimePoint(anchor.timestamp),
+                ..StellarValue::default()
+            },
+            base_reserve: anchor.base_reserve,
+            ..LedgerHeader::default()
+        }
+        .to_xdr(Limits::none())
+        .unwrap()
+    }
+
+    /// A ledger header whose `StellarValue` extension uses a type this
+    /// release does not define, as a newer protocol can add one.
+    fn header_with_unknown_value_type(anchor: &Anchor) -> Vec<u8> {
+        // ledgerVersion (4), previousLedgerHash (32), then StellarValue:
+        // txSetHash (32), closeTime (8), empty upgrades (4), ext type (4).
+        const EXT_TYPE: std::ops::Range<usize> = 80..84;
+        let mut header = encoded_header(anchor);
+        assert_eq!(header[EXT_TYPE], [0; 4], "expected STELLAR_VALUE_BASIC");
+        header[EXT_TYPE].copy_from_slice(&i32::MAX.to_be_bytes());
+        assert!(LedgerHeader::from_xdr(header.clone(), Limits::none()).is_err());
+        header
+    }
+
     fn data_key(contract: ScAddress, value: u32) -> LedgerKey {
         LedgerKey::ContractData(LedgerKeyContractData {
             contract,
@@ -4239,9 +4526,7 @@ mod tests {
 
             let generation = self.generation.get() + 1;
             if generation > MAX_EXECUTABLE_CLOSURE_ROUNDS {
-                return Err(TransportFailure {
-                    operation: "getLedgerEntries",
-                });
+                return Err(TransportFailure::rpc("getLedgerEntries"));
             }
             self.generation.set(generation);
             let mut hash = [0_u8; 32];
@@ -4264,12 +4549,16 @@ mod tests {
     struct FakeTransport {
         network: Network,
         anchor: Anchor,
+        /// Raw `getLatestLedger` answer decoded instead of returning `anchor`.
+        latest_wire: Option<LatestWire>,
         entries: BTreeMap<KeyId, FetchedEntry>,
         batch_calls: RefCell<Vec<Vec<KeyId>>>,
         reads: Cell<u64>,
         network_reads: Cell<u64>,
         latest_reads: Cell<u64>,
         fail_keys: RefCell<BTreeSet<KeyId>>,
+        /// Keys whose entry XDR this release cannot decode.
+        undecodable_keys: RefCell<BTreeSet<KeyId>>,
         mix_second_large_batch_once: Cell<bool>,
         large_batches_seen: Cell<usize>,
         mixed_once: Cell<bool>,
@@ -4333,12 +4622,14 @@ mod tests {
                     timestamp: snapshot.timestamp,
                     base_reserve: snapshot.base_reserve,
                 },
+                latest_wire: None,
                 entries,
                 batch_calls: RefCell::new(Vec::new()),
                 reads: Cell::new(0),
                 network_reads: Cell::new(0),
                 latest_reads: Cell::new(0),
                 fail_keys: RefCell::new(BTreeSet::new()),
+                undecodable_keys: RefCell::new(BTreeSet::new()),
                 mix_second_large_batch_once: Cell::new(false),
                 large_batches_seen: Cell::new(0),
                 mixed_once: Cell::new(false),
@@ -4358,6 +4649,10 @@ mod tests {
 
         fn latest_ledger(&self) -> Result<Anchor, TransportFailure> {
             self.latest_reads.set(self.latest_reads.get() + 1);
+            // A configured raw answer goes through the real decoder.
+            if let Some(wire) = &self.latest_wire {
+                return decode_latest_ledger(wire.clone());
+            }
             Ok(self.anchor.clone())
         }
 
@@ -4366,9 +4661,13 @@ mod tests {
             let ids: Vec<KeyId> = keys.iter().map(|key| key_id(key).unwrap()).collect();
             self.batch_calls.borrow_mut().push(ids.clone());
             if ids.iter().any(|id| self.fail_keys.borrow().contains(id)) {
-                return Err(TransportFailure {
-                    operation: "getLedgerEntries",
-                });
+                return Err(TransportFailure::rpc("getLedgerEntries"));
+            }
+            if ids
+                .iter()
+                .any(|id| self.undecodable_keys.borrow().contains(id))
+            {
+                return Err(TransportFailure::undecodable_xdr("getLedgerEntries", None));
             }
             let mut latest_ledger = self.anchor.sequence;
             if keys.len() == MAX_KEYS_PER_BATCH && self.mix_second_large_batch_once.get() {

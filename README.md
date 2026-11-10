@@ -25,6 +25,7 @@ an older one:
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
 | 29 | `kanatoko = "29"` | Protocol 29 or older |
+| 30 | `kanatoko = "=30.0.0-rc.2"` (prerelease) | Protocol 30 or older |
 
 The 29 line uses the stable Soroban Rust SDK and ledger snapshot 29 with the
 compatible Host 29 runtime. Use the Kanatoko major matching the network
@@ -208,16 +209,27 @@ refreshed.
 When a network upgrades before the matching Kanatoko line is available, a
 Kanatoko line whose Host runs Protocol N can opt into capturing and replaying a
 ledger exactly one protocol newer, Protocol N+1, and execute it on its own
-Protocol N Host. On the 29 line that means a Protocol 30 ledger executed as
-Protocol 29:
+Protocol N Host. This works only while Protocol N+1 keeps the ledger XDR that
+the Protocol N line decodes.
+
+**Protocol 30 networks.** Protocol 30 changed the ledger header format, so the
+29 line cannot capture from Protocol 30 networks: testnet now, and Mainnet
+after its upgrade. Capture fails with `UnsupportedProtocol`, also with the
+opt-in. For those networks, use `kanatoko = "=30.0.0-rc.2"` until 30.0.0 is
+released. Committed bundles still replay offline on the 29 line.
+
+On the 29 line the opt-in still replays a Protocol 30 capture offline,
+executed as Protocol 29:
 
 ```rust,ignore
 use kanatoko::mainnet;
 
 mainnet()
     .allow_newer_protocol()
+    .cache("tests/fixtures/protocol-30.capture.json")
+    .offline()
     .run(|fork| {
-        // On the 29 line, against a Protocol 30 network.
+        // On the 29 line, replaying a Protocol 30 capture.
         assert_eq!(fork.network_protocol_version(), 30);
         assert_eq!(fork.executed_protocol_version(), 29);
     })
@@ -261,14 +273,15 @@ of failing on an overflowing TTL, and a Stellar Asset Contract error message.
 A candidate installed locally recorded different `ContractCodeCostInputs` than
 on a Protocol 29 Host, so ledger digests taken after that install differed,
 while the committed Mainnet pool strict workflow returned identical quotes,
-results, events, authorization trees, and state changes on both Hosts. What
-Protocol 30 changes is not known yet. Treat resource estimates and
-metering-sensitive results as evidence from the older Host.
+results, events, authorization trees, and state changes on both Hosts. Treat
+resource estimates and metering-sensitive results as evidence from the older
+Host.
 
 Natural guards still fail closed and are never caught or softened: ledger data
-the older XDR cannot decode, and contracts whose WASM declares a newer
-interface protocol (`contract protocol number is newer than host`). Move to the
-Kanatoko major matching the network once it is available.
+the older XDR cannot decode, which capture reports as `UnsupportedProtocol` for
+the network's protocol, and contracts whose WASM declares a newer interface
+protocol (`contract protocol number is newer than host`). Move to the Kanatoko
+major matching the network once it is available.
 
 ## One environment, both kinds of contract
 
