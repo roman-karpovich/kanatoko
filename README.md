@@ -294,6 +294,13 @@ let typed = app::Client::new(fork.env(), &app_id);
 let value = fork.invoke::<i128>(&app_id, "value", ());
 ```
 
+Local IDs are deterministic, network-scoped hashes rather than the SDK's
+small counter addresses, which can already hold balances on a live network.
+An existing contract instance at the generated ID is still rejected.
+Upgrading from counter-based IDs changes the keys touched by a scenario:
+refresh its capture on a compatible network, or keep the original Kanatoko
+version pinned for historical replay. Unknown keys remain errors.
+
 For a captured address, a local `contractimport!` file supplies only Rust
 bindings. Calls still execute the instance and WASM loaded from Stellar. A
 stale incompatible ABI fails instead of silently replacing network code.

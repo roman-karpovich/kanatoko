@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use kanatoko::{testnet, CacheStatus, ScenarioFork};
+use kanatoko::{testnet, AutoRunError, CacheStatus, CaptureError, ScenarioFork};
 use soroban_env_host::xdr::{ContractExecutable, LedgerEntryData, ScAddress, ScVal};
 use soroban_sdk::{testutils::EnvTestConfig, Address, Env};
 
@@ -26,7 +26,11 @@ mod quote_forwarder {
 
 #[test]
 fn frozen_protocol_29_testnet_replays_offline() {
-    let run = testnet().cache(CAPTURE).offline().run(scenario).unwrap();
+    let run = testnet()
+        .cache(CAPTURE)
+        .offline()
+        .run(xlm_scenario)
+        .unwrap();
     let fixture = run.fixture();
 
     assert_eq!(run.cache_status(), CacheStatus::Hit);
@@ -55,6 +59,17 @@ fn frozen_protocol_29_testnet_replays_offline() {
 }
 
 #[test]
+fn legacy_capture_rejects_new_deployment_addresses() {
+    let result = testnet().cache(CAPTURE).offline().run(scenario);
+    assert!(matches!(
+        result,
+        Err(AutoRunError::Capture(CaptureError::UnknownLedgerKeys {
+            count: 1
+        }))
+    ));
+}
+
+#[test]
 #[ignore = "manual read-only Protocol 29 testnet fixture refresh"]
 fn refresh_protocol_29_testnet_fixture() {
     let run = testnet().cache(CAPTURE).refresh().run(scenario).unwrap();
@@ -67,7 +82,7 @@ fn refresh_protocol_29_testnet_fixture() {
     assert_eq!(run.fixture().report().final_replay_rpc_reads(), 0);
 }
 
-fn scenario(fork: &ScenarioFork<'_>) {
+fn xlm_scenario(fork: &ScenarioFork<'_>) {
     let xlm = fork.contract(XLM);
     assert_eq!(fork.invoke::<u32>(&xlm, "decimals", ()), 7);
 
@@ -88,7 +103,10 @@ fn scenario(fork: &ScenarioFork<'_>) {
         fork.invoke::<i128>(&xlm, "balance", (receiver,)),
         receiver_before + 1
     );
+}
 
+fn scenario(fork: &ScenarioFork<'_>) {
+    xlm_scenario(fork);
     let candidate = fork.deploy(stateful::WASM, (41_i64,));
     assert_eq!(stateful::Client::new(fork.env(), &candidate).get(), 41);
 
