@@ -2,6 +2,18 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## Unreleased
+
+- Derive local `ScenarioFork::deploy` IDs from a network-specific hash
+  namespace and the deterministic SDK address sequence. Previously, a common
+  SDK counter address without a contract instance could already hold XLM or
+  other token balances, which a newly registered candidate would inherit.
+- Local candidate IDs change. A previously captured scenario using `deploy`
+  may need a fresh capture on a compatible live protocol before replaying on
+  this version. Unknown keys still fail closed; historical captures are not
+  rewritten or treated as proof of absence for the new IDs. Keep the original
+  Kanatoko version pinned when preserving an old candidate-address replay.
+
 ## 29.1.1 - 2026-11-10
 
 - Report ledger XDR that this release cannot decode, read from a network on
