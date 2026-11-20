@@ -200,9 +200,37 @@ pub struct StrictFork {
     pub(crate) local_contracts: BTreeSet<ScAddress>,
     pub(crate) local_code_hashes: BTreeSet<[u8; 32]>,
     receipts: Vec<Receipt>,
+    /// Keys a discovering run fetches before its next pass; `None` for a
+    /// plain strict fork.
+    discovery: Option<Rc<RefCell<BTreeSet<KeyId>>>>,
+    /// Next authorization nonce of [`StrictFork::sign`].
+    pub(crate) next_nonce: std::cell::Cell<i64>,
 }
 
 impl StrictFork {
+    /// A fork that also records every uncaptured key it fails on in
+    /// `discovery`. Strictness is unchanged: the failure still happens.
+    pub(crate) fn discovering(
+        snapshot: &LedgerSnapshot,
+        coverage: BTreeMap<KeyId, LookupState>,
+        discovery: Rc<RefCell<BTreeSet<KeyId>>>,
+    ) -> Self {
+        let mut fork = Self::from_captured(snapshot, coverage);
+        fork.discovery = Some(discovery);
+        fork
+    }
+
+    /// The fail-closed error for uncaptured `keys`, recorded for discovery.
+    pub(crate) fn report_unknown(&self, keys: Vec<KeyId>) -> StrictForkError {
+        if let Some(discovery) = &self.discovery {
+            discovery.borrow_mut().extend(keys.iter().cloned());
+        }
+        StrictForkError::UnknownLedgerKeys {
+            count: keys.len(),
+            keys,
+        }
+    }
+
     pub(crate) fn from_captured(
         snapshot: &LedgerSnapshot,
         coverage: BTreeMap<KeyId, LookupState>,
@@ -224,6 +252,8 @@ impl StrictFork {
             local_contracts: BTreeSet::new(),
             local_code_hashes: BTreeSet::new(),
             receipts: Vec::new(),
+            discovery: None,
+            next_nonce: std::cell::Cell::new(1),
         }
     }
 
@@ -387,10 +417,7 @@ impl StrictFork {
             false,
         )?;
         if !unknown.is_empty() {
-            return Err(StrictForkError::UnknownLedgerKeys {
-                count: unknown.len(),
-                keys: unknown.into_iter().collect(),
-            });
+            return Err(self.report_unknown(unknown.into_iter().collect()));
         }
         let installed = installed.map_err(|_| StrictForkError::CandidateRegistrationFailed)?;
         let installed: ScAddress = (&installed).into();
@@ -430,7 +457,7 @@ impl StrictFork {
         execution: ExecutionMode,
         auth: AuthMode,
     ) -> Result<Receipt, StrictForkError> {
-        self.invoke_from(None, request, execution, auth)
+        self.invoke_from(None, request, execution, auth, true)
     }
 
     /// [`Self::invoke`] with the Host's transaction source account set, so
@@ -441,6 +468,7 @@ impl StrictFork {
         request: InvokeRequest,
         execution: ExecutionMode,
         auth: AuthMode,
+        keep_receipt: bool,
     ) -> Result<Receipt, StrictForkError> {
         let before = self.ledger_snapshot();
         let before_digest = canonical_ledger_digest(&before)?;
@@ -487,10 +515,7 @@ impl StrictFork {
             allow_mock_nonces,
         )?;
         if !unknown.is_empty() {
-            return Err(StrictForkError::UnknownLedgerKeys {
-                count: unknown.len(),
-                keys: unknown.into_iter().collect(),
-            });
+            return Err(self.report_unknown(unknown.into_iter().collect()));
         }
 
         let (authorization, events) = detached_snapshot_evidence(&child);
@@ -542,7 +567,9 @@ impl StrictFork {
             self.coverage = coverage;
             self.env = promoted;
         }
-        self.receipts.push(receipt.clone());
+        if keep_receipt {
+            self.receipts.push(receipt.clone());
+        }
         Ok(receipt)
     }
 }

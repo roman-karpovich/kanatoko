@@ -42,7 +42,7 @@ mod transaction;
 #[cfg(feature = "capture")]
 pub use auto::{
     mainnet, testnet, AutoRun, AutoRunError, AutoRunner, CacheStatus, InvocationReport,
-    PreviewAuth, ScenarioFork,
+    PreviewAuth, ScenarioFork, StrictRun,
 };
 #[cfg(feature = "capture")]
 pub use capture::{
@@ -57,10 +57,10 @@ pub use strict::{
 };
 #[cfg(feature = "capture")]
 pub use transaction::{
-    AuthorizationFormat, Ed25519Signer, FailedApply, InvalidTransaction, NetworkConfig,
-    PreparedTransaction, ResourceExcess, ResourceFee, ResourceReport, TransactionCall,
-    TransactionError, TransactionLimits, TransactionReceipt, TransactionResource,
-    TransactionSimulation,
+    symbol, vec_val, AuthorizationFormat, Deployment, Ed25519Signer, FailedApply, IntoArgs,
+    IntoScVal, InvalidTransaction, NetworkConfig, PreparedTransaction, ResourceExcess, ResourceFee,
+    ResourceReport, TransactionCall, TransactionError, TransactionLimits, TransactionReceipt,
+    TransactionResource, TransactionSimulation,
 };
 
 pub use fixture::{

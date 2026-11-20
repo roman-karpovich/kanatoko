@@ -45,6 +45,9 @@ pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; Sep
 pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
+/// A strict pass usually stops at the first uncaptured key, so a flow of
+/// many transactions takes about one round per step.
+const MAX_STRICT_DISCOVERY_ROUNDS: usize = 64;
 const MAX_EXECUTABLE_CLOSURE_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
 const RPC_RETRY_BACKOFF: [Duration; 3] = [
@@ -341,43 +344,90 @@ impl CaptureBuilder {
                 return Err(CaptureError::InternalInvariant);
             }
 
-            let snapshot = snapshot_from_materialized(&materialized)?;
-            let fixture = FrozenFixture::from_snapshot_with_policy(
-                snapshot,
-                &self.network_passphrase,
-                self.protocol_policy,
-            )?;
-            let inventory_digest = inventory_digest(&materialized.coverage)?;
-            let present_entries = materialized
-                .coverage
-                .values()
-                .filter(|state| matches!(state, LookupState::Present(_, _)))
-                .count();
-            let absent_entries = materialized.coverage.len() - present_entries;
-            let report = CaptureReport {
-                discovery_rounds: round,
-                present_entries,
-                absent_entries,
-                inventory_digest,
-                final_replay_rpc_reads: 0,
-            };
-            let provenance = CaptureProvenance {
-                rpc_origin: self.rpc_origin.clone(),
-                network_passphrase: self.network_passphrase.clone(),
-                ledger_sequence: materialized.anchor.sequence,
-                ledger_hash: materialized.anchor.hash.clone(),
-                protocol_version: materialized.anchor.protocol_version,
-            };
-            return Ok(CapturedFixture {
-                fixture,
-                coverage: materialized.coverage,
-                report,
-                provenance,
-            });
+            return self.captured_fixture(materialized, round);
         }
 
         Err(CaptureError::FixedPointLimit {
             rounds: self.max_discovery_rounds,
+        })
+    }
+
+    fn captured_fixture(
+        &self,
+        materialized: Materialized,
+        round: usize,
+    ) -> Result<CapturedFixture, CaptureError> {
+        let snapshot = snapshot_from_materialized(&materialized)?;
+        let fixture = FrozenFixture::from_snapshot_with_policy(
+            snapshot,
+            &self.network_passphrase,
+            self.protocol_policy,
+        )?;
+        let inventory_digest = inventory_digest(&materialized.coverage)?;
+        let present_entries = materialized
+            .coverage
+            .values()
+            .filter(|state| matches!(state, LookupState::Present(_, _)))
+            .count();
+        let absent_entries = materialized.coverage.len() - present_entries;
+        let report = CaptureReport {
+            discovery_rounds: round,
+            present_entries,
+            absent_entries,
+            inventory_digest,
+            final_replay_rpc_reads: 0,
+        };
+        let provenance = CaptureProvenance {
+            rpc_origin: self.rpc_origin.clone(),
+            network_passphrase: self.network_passphrase.clone(),
+            ledger_sequence: materialized.anchor.sequence,
+            ledger_hash: materialized.anchor.hash.clone(),
+            protocol_version: materialized.anchor.protocol_version,
+        };
+        Ok(CapturedFixture {
+            fixture,
+            coverage: materialized.coverage,
+            report,
+            provenance,
+        })
+    }
+
+    /// Discovery for [`crate::AutoRunner::run_strict`]: materializes `keys`
+    /// and the network settings at one coherent ledger, runs `pass` on the
+    /// fixture, and repeats with every key the pass failed on until a pass
+    /// fails on none.
+    pub(crate) fn capture_strict<F>(
+        &self,
+        mut keys: BTreeMap<KeyId, LedgerKey>,
+        pass: F,
+    ) -> Result<CapturedFixture, CaptureError>
+    where
+        F: Fn(&CapturedFixture) -> BTreeSet<KeyId>,
+    {
+        self.validate_network()?;
+        for key in crate::transaction::network_config_keys() {
+            keys.insert(key_id(&key)?, key);
+        }
+        for round in 1..=MAX_STRICT_DISCOVERY_ROUNDS {
+            let mut materialized = self.materialize(&keys)?;
+            materialized = self.expand_code_closure(&mut keys, materialized)?;
+            let fixture = self.captured_fixture(materialized, round)?;
+            let mut added = 0_usize;
+            for id in pass(&fixture) {
+                if keys.contains_key(&id) {
+                    continue;
+                }
+                let key = LedgerKey::from_xdr(id.clone(), Limits::none())
+                    .map_err(|_| CaptureError::InternalInvariant)?;
+                keys.insert(id, key);
+                added += 1;
+            }
+            if added == 0 {
+                return Ok(fixture);
+            }
+        }
+        Err(CaptureError::FixedPointLimit {
+            rounds: MAX_STRICT_DISCOVERY_ROUNDS,
         })
     }
 
@@ -742,7 +792,7 @@ impl CapturedFixture {
         outcome.map_err(|_| CaptureError::ScenarioPanicked)
     }
 
-    fn inventory_keys(&self) -> Result<BTreeMap<KeyId, LedgerKey>, CaptureError> {
+    pub(crate) fn inventory_keys(&self) -> Result<BTreeMap<KeyId, LedgerKey>, CaptureError> {
         self.coverage
             .keys()
             .map(|id| {
@@ -786,6 +836,15 @@ impl CapturedFixture {
     #[must_use]
     pub fn fork(&self) -> StrictFork {
         StrictFork::from_captured(self.fixture.ledger_snapshot(), self.coverage.clone())
+    }
+
+    /// [`Self::fork`] that records the uncaptured keys it fails on.
+    pub(crate) fn discovering_fork(&self, discovery: Rc<RefCell<BTreeSet<KeyId>>>) -> StrictFork {
+        StrictFork::discovering(
+            self.fixture.ledger_snapshot(),
+            self.coverage.clone(),
+            discovery,
+        )
     }
 
     fn to_bundle(&self) -> Result<CaptureBundleV2, CaptureError> {
@@ -2775,6 +2834,135 @@ mod tests {
         ));
     }
 
+    /// The flow of one discovering strict run on the fake network: deploy,
+    /// a signed call, a negative path that must fail as Core fails it, and a
+    /// read that only that negative path makes.
+    fn strict_flow(
+        fork: &mut StrictFork,
+    ) -> Result<(i64, i128, [u8; 32]), crate::TransactionError> {
+        use crate::{transaction::symbol, Ed25519Signer, FailedApply, TransactionCall};
+        use soroban_env_host::xdr::{ScError, ScErrorCode};
+
+        let owner = Ed25519Signer::from_label("discovery owner");
+        fork.create_local_account(&owner, 10_000_000_000)?;
+        let wasm = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
+        let app = fork.deploy(&owner, wasm, [3; 32], (41_i64,))?.address;
+        let call =
+            TransactionCall::invoke_fn(&owner, &app, "authorized_increment", (&owner, 5_i64))?;
+        let prepared = fork.sign(&call, &[&owner])?;
+
+        // A key missing from the declared footprint fails in the Host, as in
+        // Core, during discovery too.
+        let value_key = LedgerKey::ContractData(LedgerKeyContractData {
+            contract: app.clone(),
+            key: symbol("value"),
+            durability: ContractDataDurability::Persistent,
+        });
+        let failed =
+            fork.expect_failed_apply(&prepared.clone().without_footprint_key(&value_key))?;
+        assert_eq!(
+            failed.host_error(),
+            Some(&ScError::Storage(ScErrorCode::ExceededLimit))
+        );
+        // Only this failure path reads the XLM contract.
+        let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
+        let balance = match failed {
+            FailedApply::Rejected(_) => fork.token_balance(&xlm, &owner.address())?,
+            FailedApply::Invalid(_) => 0,
+        };
+        let receipt = fork.apply_transaction(&prepared)?;
+        let value = fork.view::<i64>(&app, "get", ())?;
+        Ok((value, balance, receipt.after_digest))
+    }
+
+    #[test]
+    fn strict_runs_discover_every_key_and_replay_offline() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::with_network_config();
+        let path = test_bundle_path("strict-run");
+        let runner = || {
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+        };
+        let online = runner().run_strict(strict_flow).unwrap();
+        assert_eq!(online.cache_status(), CacheStatus::Created);
+        assert!(online.fixture().report().discovery_rounds() > 1);
+        let (value, balance, digest) = *online.value().as_ref().unwrap();
+        assert_eq!(value, 46);
+        assert!(balance > 0);
+
+        // The failure-only XLM instance and the signer's absence are frozen.
+        let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
+        let fork = online.fixture().fork();
+        assert!(fork
+            .ledger_entry(&contract_instance_key(xlm))
+            .unwrap()
+            .is_some());
+
+        // Offline replay is strict, reads nothing, and gives the same result.
+        let reads = fake.ledger_entry_reads();
+        let offline = runner().offline().run_strict(strict_flow).unwrap();
+        assert_eq!(offline.cache_status(), CacheStatus::Hit);
+        assert_eq!(fake.ledger_entry_reads(), reads);
+        assert_eq!(offline.into_value().unwrap(), (value, balance, digest));
+
+        // An online run on a current cache is a hit without new keys.
+        let again = runner().run_strict(strict_flow).unwrap();
+        assert_eq!(again.cache_status(), CacheStatus::Hit);
+        assert_eq!(again.into_value().unwrap(), (value, balance, digest));
+
+        // Offline, a key the cache lacks fails closed.
+        let unknown = runner()
+            .offline()
+            .run_strict(|fork| {
+                fork.ledger_entry(&contract_instance_key(
+                    parse_legacy_contract_address(PAIR_ID).unwrap(),
+                ))
+            })
+            .unwrap();
+        assert!(matches!(
+            unknown.into_value(),
+            Err(crate::StrictForkError::UnknownLedgerKeys { count: 1, .. })
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn token_balances_are_set_for_contracts_native_accounts_and_trustlines() {
+        use crate::{auto::AutoRunner, Ed25519Signer};
+
+        let fake = FakeTransport::with_network_config();
+        let path = test_bundle_path("token-balances");
+        let run =
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+                .run_strict(
+                    |fork| -> Result<(i128, i128, i128, Option<i64>), crate::TransactionError> {
+                        let holder = Ed25519Signer::from_label("token holder");
+                        fork.create_local_account(&holder, 100_000_000)?;
+                        let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
+                        let usdc = parse_legacy_contract_address(USDC_ID).unwrap();
+                        let pair = parse_legacy_contract_address(PAIR_ID).unwrap();
+                        fork.set_token_balance(&usdc, &holder.address(), 7_000)?;
+                        fork.set_token_balance(&xlm, &holder.address(), 250_000_000)?;
+                        fork.set_token_balance(&usdc, &pair, 11)?;
+                        Ok((
+                            fork.token_balance(&usdc, &holder.address())?,
+                            fork.token_balance(&xlm, &holder.address())?,
+                            fork.token_balance(&usdc, &pair)?,
+                            fork.account_balance(&holder.account_id())?,
+                        ))
+                    },
+                )
+                .unwrap();
+        assert_eq!(
+            run.into_value().unwrap(),
+            (7_000, 250_000_000, 11, Some(250_000_000))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn auto_runner_recaptures_a_cache_without_network_config() {
         use crate::auto::{AutoRunner, CacheStatus};
@@ -4747,8 +4935,8 @@ mod tests {
         }
 
         /// The Soroswap fake plus every network `ConfigSetting` entry of the
-        /// committed network-config capture, keeping the fake's own
-        /// `StateArchival` entry.
+        /// committed network-config capture; `StateArchival` keeps the fake
+        /// ledger's TTL bounds.
         fn with_network_config() -> Rc<Self> {
             let mut fake = Rc::try_unwrap(Self::from_soroswap_snapshot())
                 .unwrap_or_else(|_| unreachable!("the fake was just created"));
@@ -4756,9 +4944,18 @@ mod tests {
                 &fs::read("fixtures/mainnet/network-config-p29/auto-capture.json").unwrap(),
             )
             .unwrap();
+            let snapshot = captured_snapshot();
             for (_, (mut entry, live_until)) in bundle.ledger_snapshot.ledger_entries {
                 let key = entry.to_key();
-                if matches!(key, LedgerKey::ConfigSetting(_)) && !is_state_archival_key(&key) {
+                if let LedgerEntryData::ConfigSetting(ConfigSettingEntry::StateArchival(settings)) =
+                    &mut entry.data
+                {
+                    // Real rent rates, with the fake ledger's TTL bounds.
+                    settings.max_entry_ttl = snapshot.max_entry_ttl;
+                    settings.min_temporary_ttl = snapshot.min_temp_entry_ttl;
+                    settings.min_persistent_ttl = snapshot.min_persistent_entry_ttl;
+                }
+                if matches!(key, LedgerKey::ConfigSetting(_)) {
                     // The fake ledger is older than the config capture.
                     entry.last_modified_ledger_seq = fake.anchor.sequence;
                     fake.entries.insert(
