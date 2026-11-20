@@ -5,48 +5,58 @@ All notable changes to Kanatoko are documented in this file.
 ## 29.2.0 - Unreleased
 
 - Add transaction-faithful execution on `StrictFork`. `TransactionCall`
-  describes one `InvokeHostFunctionOp` (`invoke`, `upload_wasm`,
-  `create_contract` for `CreateContractV2` with constructor arguments, or any
-  `HostFunction`) from a source account whose key the test holds.
-  `simulate_transaction` runs the Host's recording mode and returns the
-  authorization trees; `prepare_transaction` re-simulates with the supplied,
-  enforced entries and declares the recorded footprint, resources, and minimum
-  resource fee; `apply_transaction` executes through the Host's enforcing
-  entry point with that footprint, the captured cost model, and a module cache
-  of the footprint's WASM, and commits only on success. `sign_transaction`
-  combines the three steps.
-- Check transactions against the captured network's per-transaction limits:
-  instructions, footprint, disk-read and write entries and bytes, ledger key
-  and entry sizes, contract code size, events plus return value, transaction
-  size, and the declared resource fee. Measured resources and the
-  non-refundable, refundable, and rent fees are reported in `ResourceReport`.
-- Sign authorization: `Ed25519Signer`, `StrictFork::sign_authorization` for
-  one `AuthorizationTree` (also from `Receipt::authorization`), and
-  `StrictFork::authorize` for a whole simulation, with `AddressV2` credentials
-  in the Stellar account contract's signature shape.
+  describes one `InvokeHostFunctionOp` transaction (contract call, WASM
+  upload, `CreateContractV2` with constructor arguments, or any
+  `HostFunction`) from a source account whose key the test holds, with an
+  SDK-default envelope that `with_inclusion_fee`, `with_time_bounds`,
+  `with_memo`, `with_muxed_source`, and `with_signature_count` change.
+- Simulate and prepare with `soroban-simulation`, the preflight library of
+  Stellar RPC `simulateTransaction`, against the fork's last closed ledger
+  and with RPC's default resource and fee adjustments
+  (`simulate_transaction`, `prepare_transaction`, `sign_transaction`).
+- Apply as Stellar Core does at Protocol 29 (`apply_transaction`): refuse
+  invalid transactions with `TransactionError::Invalid(InvalidTransaction)`
+  and no change (per-transaction limits, footprint key types, duplicates and
+  archived-entry indices, memo or muxed source, resource and inclusion fees,
+  time bounds, source existence, threshold, and available balance, frozen
+  ledger keys); otherwise close the next ledger, charge the source the
+  resource fee plus the inclusion fee capped at the base fee, advance its
+  sequence number, execute with the enforcing footprint and a module cache,
+  fail with Core's result code on archived entries, read, write, event, entry
+  size, or refundable-fee limits (`TransactionError::Rejected`), and refund
+  the unused refundable fee. Receipts carry the result code, the exceeded
+  resource, the fee charged, the ledger, and measured resources and fees.
+- Sign authorization with `Ed25519Signer` (`from_seed`, `from_label`):
+  `sign_authorization` and `authorize` produce the SDKs'
+  `SorobanCredentials::Address`, and `sign_authorization_as` and
+  `authorize_as` also produce `AddressV2` (`AuthorizationFormat`).
   `AuthorizationTree::source_account_authorization` builds source-account
   credentials, and `StrictFork::invoke_with_source` names the transaction
   source for `invoke` without changing `invoke`.
-- Add negative-path helpers: `PreparedTransaction::with_tampered_signature`,
-  `with_authorization`, `without_authorization_entry`,
-  `without_footprint_key`, and `with_transaction_data`, plus
-  `StrictFork::expect_failed_apply`, which requires a failure and proves the
-  ledger digest is unchanged.
-- Add explicit local setup on `StrictFork`: `create_local_account` and
-  `set_contract_data`, and the read helpers `ledger_entry`,
-  `contract_address`, `network_id`, and `ledger_sequence`.
+- Add negative-path helpers on `PreparedTransaction`
+  (`with_tampered_signature`, `with_authorization`,
+  `without_authorization_entry`, `without_footprint_key`,
+  `with_transaction_data`, `with_call`) and `StrictFork::expect_failed_apply`,
+  which requires a network failure and proves it changed nothing, or only the
+  source's fee and sequence number.
+- Add explicit local setup and reads on `StrictFork`: `create_local_account`,
+  which requires the account key to be captured absent, `set_contract_data`,
+  `ledger_entry`, `contract_address`, `network_id`, `ledger_sequence`, and
+  `ledger_close_time`.
 - Add `CaptureBuilder::capture_network_config` and
-  `AutoRunner::capture_network_config`, which capture the Soroban
-  `ConfigSetting` entries in `NetworkConfig::REQUIRED_SETTINGS` coherently
-  with the scenario's ledger. An online runner recaptures a cache that lacks
-  them. Such bundles also carry the `StateArchival` entry, checked against the
-  ledger TTL bounds; Kanatoko releases before 29.2.0 reject them. Without
-  these entries every transaction method fails with
-  `TransactionError::MissingNetworkConfig`.
-- Add the Protocol 29 Mainnet `network-config-p29` capture: the native XLM
-  Stellar Asset Contract and the network settings.
-- New errors use the non-exhaustive `TransactionError`. Existing public types
-  and their variants are unchanged.
+  `AutoRunner::capture_network_config`, which capture the 15 Soroban
+  `ConfigSetting` entries in `NetworkConfig::REQUIRED_SETTINGS` with the
+  scenario's ledger, and `ScenarioFork::capture_signer`, `capture_wasm`,
+  `capture_deployed_contract`, and `capture_ledger_key` for keys only later
+  transactions read. An online runner recaptures a cache without network
+  settings. Such bundles also carry the `StateArchival` entry, checked
+  against the ledger TTL bounds; releases before 29.2.0 reject them.
+- Add the Protocol 29 Mainnet `network-config-p29` capture and the fees of
+  four real Mainnet Soroban transactions, which the recomputed fees match.
+- New errors use the non-exhaustive `TransactionError` and
+  `InvalidTransaction`. Existing public types and their variants are
+  unchanged. Depend on `soroban-simulation` 29 and `ed25519-dalek` under the
+  `capture` feature.
 
 ## 29.1.2 - 2026-11-16
 

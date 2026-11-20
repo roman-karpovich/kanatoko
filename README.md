@@ -363,6 +363,10 @@ mutable state and can be mixed freely.
 | `fork.local_account("label")` | Creates a deterministic local G-address with no ledger entry or funds. |
 | `fork.fund_local_account(account, stroops)` | Explicitly creates or funds that local account through ledger injection. |
 | `fork.mock_all_auths()` | Explicitly enables SDK record-and-mock authorization. |
+| `fork.capture_signer(&signer)` | Captures a test signer's account key, which must be absent for `StrictFork::create_local_account`. |
+| `fork.capture_wasm(wasm)` | Captures the `ContractCode` key a transaction-faithful upload reads. |
+| `fork.capture_deployed_contract(&deployer, salt)` | Captures the instance key at a `CreateContractV2` address and returns that address. |
+| `fork.capture_ledger_key(&key)` | Captures any ledger key, present or absent, for later strict use. |
 
 Addresses belong in the scenario rather than `mainnet(...)` or `testnet(...)`.
 Host execution discovers actual dependencies, including contracts reached only
@@ -419,30 +423,32 @@ Limits to keep in mind:
 
 `run.fixture().fork()` returns a `StrictFork`: an offline copy of the captured
 state that fails closed on any uncaptured key. Besides SDK-style `invoke`, it
-can run a host function the way Stellar Core applies an
-`InvokeHostFunctionOp`: simulated in recording mode, signed, and applied with
-an enforced footprint under the captured network's cost model and
-per-transaction limits. Capture the network settings with the scenario:
+runs a host function as a Stellar transaction: simulated by the same preflight
+library as RPC `simulateTransaction`, signed, then validated, charged, and
+applied as Stellar Core does in the next ledger. The scenario captures the
+network settings and confirms that the test signers' accounts do not exist:
 
 ```rust,ignore
-use kanatoko::{mainnet, Ed25519Signer, InvokeRequest, TransactionCall};
+use kanatoko::{mainnet, Ed25519Signer, InvokeRequest, ReceiptDisposition, TransactionCall};
 use kanatoko::soroban_env_host::xdr::{Int128Parts, ScAddress, ScSymbol, ScVal};
 
 const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 
 #[test]
 fn signed_transfer() -> Result<(), Box<dyn std::error::Error>> {
+    let sender = Ed25519Signer::from_label("sender");
+    let relayer = Ed25519Signer::from_label("relayer");
     let run = mainnet().capture_network_config().run(|fork| {
         let xlm = fork.contract(XLM);
         fork.invoke::<u32>(&xlm, "decimals", ());
+        fork.capture_signer(&sender);
+        fork.capture_signer(&relayer);
     })?;
     let mut fork = run.fixture().fork();
 
-    // Test keys and their accounts are explicit local state.
-    let sender = Ed25519Signer::from_seed([1; 32]);
-    let relayer = Ed25519Signer::from_seed([2; 32]);
-    fork.create_local_account(&sender.account_id(), 100_000_000)?;
-    fork.create_local_account(&relayer.account_id(), 100_000_000)?;
+    // Test accounts are explicit local state at captured-absent keys.
+    fork.create_local_account(&sender, 100_000_000)?;
+    fork.create_local_account(&relayer, 100_000_000)?;
 
     let transfer = InvokeRequest {
         contract: XLM.parse::<ScAddress>()?,
@@ -461,41 +467,39 @@ fn signed_transfer() -> Result<(), Box<dyn std::error::Error>> {
     let transaction = fork.prepare_transaction(&call, authorization)?;
 
     let receipt = fork.apply_transaction(&transaction)?;
-    assert!(receipt.outcome.is_success());
-    println!(
-        "{} instructions, minimum resource fee {} stroops",
-        receipt.resources.instructions,
-        receipt.resources.fee.total()
-    );
+    assert_eq!(receipt.disposition, ReceiptDisposition::Committed);
+    println!("fee charged: {} stroops", receipt.fee_charged);
 
-    // Replaying the same signed transaction reuses its nonce and fails
-    // without changing the ledger.
-    fork.expect_failed_apply(&transaction)?;
+    // Replaying it reuses the nonce: included, charged, and failed.
+    let replay = fork.expect_failed_apply(&transaction)?;
+    assert!(matches!(replay, kanatoko::FailedApply::Rejected(_)));
     Ok(())
 }
 ```
 
-`authorize` signs every authorization tree whose address is a signer's
-account with `AddressV2` credentials over the fork's network ID, and gives the
-transaction source source-account credentials. `sign_authorization` signs one
-tree, including a tree from `Receipt::authorization` of an `invoke`;
-`invoke_with_source` names the transaction source for `invoke` under
-`AuthMode::Enforce`. `sign_transaction` combines simulate, authorize, and
-prepare.
+`authorize` gives the transaction source source-account credentials and
+signs every other tree with the matching signer, in the
+`SorobanCredentials::Address` format the Stellar SDKs use;
+`authorize_as(AuthorizationFormat::AddressV2, ...)` signs `AddressV2`, which
+Core accepts from Protocol 27. `sign_authorization` signs one tree, including
+one from `Receipt::authorization` of an `invoke`, and `invoke_with_source`
+names the transaction source for `invoke` under `AuthMode::Enforce`.
+`sign_transaction` combines simulate, authorize, and prepare.
 
 Upload and `CreateContractV2` run the same way, under the deployer's real
-authorization, and prove the production contract address and constructor:
+authorization, and prove the production contract address and constructor.
+Capture the code key and the deployment address in the scenario with
+`fork.capture_wasm(MY_WASM)` and
+`fork.capture_deployed_contract(&deployer.address(), salt)`:
 
 ```rust,ignore
-let deployer = Ed25519Signer::from_seed([3; 32]);
-fork.create_local_account(&deployer.account_id(), 100_000_000)?;
+fork.create_local_account(&deployer, 10_000_000_000)?;
 let expiration = fork.ledger_sequence() + 100;
 
 let upload = TransactionCall::upload_wasm(&deployer, MY_WASM)?;
 let transaction = fork.sign_transaction(&upload, &[], 0, expiration)?;
 fork.apply_transaction(&transaction)?;
 
-let salt = [7; 32];
 let create = TransactionCall::create_contract(
     &deployer,
     deployer.address(),
@@ -509,19 +513,41 @@ let expected = fork.contract_address(&deployer.address(), salt)?;
 assert_eq!(receipt.outcome, InvokeOutcome::Success(ScVal::Address(expected)));
 ```
 
-`apply_transaction` checks the declared resources, footprint counts, key
-sizes, transaction size, and resource fee against the captured limits before
-execution, and written bytes, events, entry sizes, and the refundable fee
-after it. A key outside the footprint fails inside the Host, as on the network.
-A failed transaction leaves the fork unchanged; `expect_failed_apply` asserts
-that a transaction fails and that the ledger digest did not change. Negative
-tests derive variants with `with_tampered_signature`, `with_authorization`,
-`without_authorization_entry`, `without_footprint_key`, and
-`with_transaction_data`. Without captured network settings every
-transaction method fails with `TransactionError::MissingNetworkConfig`.
+What happens where:
 
-`create_local_account` and `set_contract_data` are explicit local overrides
-for test setup. They are not transactions.
+- Simulation and preparation run against the fork's last closed ledger `N`
+  with RPC's default adjustments: instructions `max(1.04x, +50,000)`, exact
+  read and write bytes, a fee for the largest envelope plus 10% (at least 500
+  bytes), and the refundable fee plus 15%.
+- `apply_transaction` refuses, with `TransactionError::Invalid` and no change,
+  what Core would not include: declared resources, footprint counts, key and
+  envelope sizes above the captured limits; invalid footprint keys, duplicates,
+  or archived-entry indices; a memo or muxed source; a resource fee below the
+  non-refundable fee or an inclusion fee below the base fee; time bounds; a
+  missing source, a source key below its medium threshold, a balance below the
+  full fee, and frozen ledger keys.
+- An included transaction closes ledger `N + 1`, at the previous close time
+  plus the network's target close time. The source pays the resource fee plus
+  the inclusion fee, capped at the 100-stroop base fee, and its sequence
+  number advances. The Host runs with the enforcing footprint; a key outside
+  it fails as on the network. Archived entries not marked for restore, too
+  many read or written bytes, events above the limit, or a refundable fee
+  below events plus rent fail the transaction with Core's result code. The
+  unused refundable fee is refunded; a failed transaction keeps only its
+  non-refundable and inclusion fees charged and returns
+  `TransactionError::Rejected`.
+- `expect_failed_apply` requires a network failure and proves it atomic:
+  nothing changed for a refused transaction, only the source's fee and
+  sequence number for a failed one. Fixture and configuration errors stay
+  errors. Negative tests derive variants with `with_tampered_signature`,
+  `with_authorization`, `without_authorization_entry`,
+  `without_footprint_key`, `with_transaction_data`, and `with_call`.
+
+Without captured network settings every transaction method fails with
+`TransactionError::MissingNetworkConfig`. `create_local_account` and
+`set_contract_data` are explicit local overrides for test setup, not
+transactions; `create_local_account` refuses an account key the capture did
+not confirm absent, so a test never shadows a real account.
 
 ## Roadmap
 
@@ -543,14 +569,13 @@ test mechanics. They prove contract behavior in the Soroban Host; they do not
 emulate transaction envelopes, deployment authorization, signatures, fees,
 Stellar Core consensus, or SDEX execution.
 
-`StrictFork::apply_transaction` does verify authorization signatures, the
-footprint, and the captured network's per-transaction limits, and reports
-resource fees computed with the Host's fee functions. It still does not charge
-fees, consume sequence numbers, verify envelope signatures, or model ledger
-close, transaction sets, or surge pricing. Transactions apply at the fork's
-current ledger sequence. Fee figures are exact for the declared and measured
-resources under the captured rates; the transaction size assumes one
-source-account signature.
+`StrictFork::apply_transaction` verifies authorization signatures, the
+footprint, Core's validity rules, and the captured network's per-transaction
+limits, and charges fees computed with the Host's fee functions; recomputed
+fees of real Mainnet transactions equal what the network charged. It does not
+verify envelope signatures, model transaction sets, surge pricing, or other
+transactions in the same ledger, and assumes the 100-stroop base fee. Ledger
+close times advance by the network's target close time.
 
 Preview resources are the raw local Host estimate, not fee parity. Kanatoko
 keeps typed `ScError` and raw XDR evidence and does not derive stable behavior
