@@ -2,10 +2,11 @@
 //!
 //! Only XDR values cross into a [`StrictFork`], which replaces its
 //! environment on every commit. Arguments and keys are [`IntoScVal`] values;
-//! SDK values, such as contract types, are converted to and from XDR in a
-//! per-thread conversion environment ([`conversion_env`], [`to_sc_val`],
-//! [`from_sc_val`], [`sdk`]). Results, contract data, and event fields are
-//! decoded there too, so no SDK object of a fork's environment escapes.
+//! SDK values, such as contract types, are converted to and from XDR in
+//! fresh environments of their own ([`to_sc_val`], [`from_sc_val`],
+//! [`from_sc_val_in`], [`sdk`]), and a value holding an object of another
+//! environment is refused. Results, contract data, and event fields are
+//! decoded the same way, so no SDK object of a fork's environment escapes.
 
 use std::{
     fmt,
@@ -34,83 +35,161 @@ use crate::{
     StrictForkError,
 };
 
-thread_local! {
-    static CONVERSION_ENV: Env = {
-        let mut env = Env::default();
-        env.set_config(EnvTestConfig {
-            capture_snapshot_at_drop: false,
-        });
-        env
-    };
-}
-
 /// A value that does not convert between the SDK and XDR.
 #[derive(Clone, Copy, Debug, Default, Eq, Error, PartialEq)]
 #[error("the value does not convert between the SDK and XDR")]
 pub struct ConversionError;
 
-/// This thread's conversion environment, a plain SDK `Env` without ledger
-/// state. Build SDK values that [`to_sc_val`] or [`sdk`] convert in it, such
-/// as an `Address::from_str(&env, ...)` field of a contract type; values from
-/// [`from_sc_val`] belong to it too. It never touches a fork.
-#[must_use]
-pub fn conversion_env() -> Env {
-    CONVERSION_ENV.with(Clone::clone)
+/// A fresh SDK `Env` without ledger state, used for one conversion. Every
+/// conversion starts from its own environment with an unlimited budget, so
+/// nothing accumulates over a thread's life and no budget runs out.
+fn fresh_env() -> Env {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    let _ = env.host().budget_cloned().reset_unlimited();
+    env
 }
 
-/// Converts an SDK value of the conversion environment, such as a
-/// `#[contracttype]` struct, enum, vector, or map, to XDR.
+/// The handle the next object of `env` gets.
+fn next_handle(env: &Env) -> u32 {
+    soroban_sdk::Bytes::new(env).to_object().get_handle()
+}
+
+/// Builds and converts a value in `env`, catching a panic of `build`.
+fn convert_in<T, F>(env: &Env, build: &F) -> Result<ScVal, ConversionError>
+where
+    T: IntoVal<Env, Val>,
+    F: Fn(&Env) -> Result<T, ConversionError>,
+{
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = build(env)?;
+        ScVal::try_from_val(env, &value.into_val(env)).map_err(|_| ConversionError)
+    }))
+    .map_err(|_| ConversionError)?
+}
+
+/// The checked conversion behind [`to_sc_val`] and [`sdk`].
+///
+/// An SDK object value carries only a handle into the `Env` that made it,
+/// and the SDK converts an object of another `Env` by its handle alone, so
+/// such a value would silently stand for whatever object has that handle
+/// here. `build` therefore runs twice: once in a fresh environment, and once
+/// in a fresh environment whose first handles, up to the first run's last,
+/// belong to filler objects. Objects `build` makes itself get different
+/// handles in the two runs and convert alike; a handle from elsewhere names
+/// a different object, or none, in at least one run, so the results differ
+/// or a run fails, and the value is refused.
+fn checked_to_sc_val<T, F>(build: F) -> Result<ScVal, ConversionError>
+where
+    T: IntoVal<Env, Val>,
+    F: Fn(&Env) -> Result<T, ConversionError>,
+{
+    let first = fresh_env();
+    let value = convert_in(&first, &build)?;
+    let watermark = next_handle(&first);
+    let second = fresh_env();
+    let mut filler = 0_u32;
+    while next_handle(&second) < watermark {
+        let mut bytes = *b"kanatoko conversion filler \0\0\0\0";
+        bytes[27..].copy_from_slice(&filler.to_be_bytes());
+        let _ = soroban_sdk::Bytes::from_array(&second, &bytes);
+        filler += 1;
+    }
+    if convert_in(&second, &build)? == value {
+        Ok(value)
+    } else {
+        Err(ConversionError)
+    }
+}
+
+/// Converts an SDK value, such as a `#[contracttype]` struct, enum, vector,
+/// or map, to XDR. `build` makes the value in the `Env` it is given; it runs
+/// more than once and must make the same value each time.
+///
+/// Every SDK object the value holds must come from that `Env`: an
+/// `Address`, `Vec`, `Map`, `Bytes`, or `String` built in any other `Env`,
+/// including one captured from outside `build` or decoded by
+/// [`from_sc_val`], is refused rather than converted. Decode inside `build`
+/// with [`from_sc_val_in`] to change a stored value.
 ///
 /// # Errors
 ///
-/// Returns [`ConversionError`] when the value does not convert, for example
-/// because it holds an object of another environment.
-pub fn to_sc_val<T: IntoVal<Env, Val>>(value: &T) -> Result<ScVal, ConversionError> {
-    let env = conversion_env();
-    let _ = env.host().budget_cloned().reset_unlimited();
-    catch_unwind(AssertUnwindSafe(|| {
-        ScVal::try_from_val(&env, &value.into_val(&env))
-    }))
-    .map_err(|_| ConversionError)?
-    .map_err(|_| ConversionError)
+/// Returns [`ConversionError`] when `build` panics, the value does not
+/// convert, or it holds an object of another environment.
+pub fn to_sc_val<T, F>(build: F) -> Result<ScVal, ConversionError>
+where
+    T: IntoVal<Env, Val>,
+    F: Fn(&Env) -> T,
+{
+    checked_to_sc_val(|env| Ok(build(env)))
 }
 
-/// Converts XDR to an SDK value in the conversion environment, such as a
-/// contract type of a `contractimport!` client, `Map<Symbol, Val>`, or a
-/// tuple.
+/// Converts XDR to an SDK value, such as a contract type of a
+/// `contractimport!` client, `Map<Symbol, Val>`, or a tuple, in a fresh
+/// `Env` that the value keeps alive. Pass a decoded value back to a fork as
+/// XDR, or decode it again inside [`to_sc_val`] or [`sdk`] with
+/// [`from_sc_val_in`].
 ///
 /// # Errors
 ///
 /// Returns [`ConversionError`] when the value has another shape.
 pub fn from_sc_val<T: TryFromVal<Env, Val>>(value: &ScVal) -> Result<T, ConversionError> {
-    let env = conversion_env();
-    let _ = env.host().budget_cloned().reset_unlimited();
+    from_sc_val_in(&fresh_env(), value)
+}
+
+/// Converts XDR to an SDK value in `env`, for example the `Env` given to a
+/// [`to_sc_val`] or [`sdk`] closure.
+///
+/// # Errors
+///
+/// Returns [`ConversionError`] when the value has another shape.
+pub fn from_sc_val_in<T: TryFromVal<Env, Val>>(
+    env: &Env,
+    value: &ScVal,
+) -> Result<T, ConversionError> {
     catch_unwind(AssertUnwindSafe(|| {
-        let value = Val::try_from_val(&env, value).map_err(|_| ConversionError)?;
-        T::try_from_val(&env, &value).map_err(|_| ConversionError)
+        let value = Val::try_from_val(env, value).map_err(|_| ConversionError)?;
+        T::try_from_val(env, &value).map_err(|_| ConversionError)
     }))
     .map_err(|_| ConversionError)?
 }
 
 /// An SDK value used as an [`IntoScVal`] argument, key, or value; see
 /// [`sdk`].
-#[derive(Clone, Debug)]
-pub struct Sdk<T>(pub T);
+#[derive(Clone)]
+pub struct Sdk<F>(F);
 
-/// Wraps an SDK value of the conversion environment, for example
-/// `(sdk(routes), &owner, 5_i128)` as call arguments.
-#[must_use]
-pub const fn sdk<T>(value: T) -> Sdk<T> {
-    Sdk(value)
+impl<F> fmt::Debug for Sdk<F> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Sdk(..)")
+    }
 }
 
-impl<T: IntoVal<Env, Val>> IntoScVal for Sdk<T> {
+/// An SDK value built by `build` in the `Env` it is given, as [`to_sc_val`]
+/// converts it, for example
+/// `(sdk(|env| Position { owner: Address::from_str(env, OWNER), amount: 5 }), &owner)`
+/// as call arguments.
+#[must_use]
+pub const fn sdk<T, F>(build: F) -> Sdk<F>
+where
+    T: IntoVal<Env, Val>,
+    F: Fn(&Env) -> T,
+{
+    Sdk(build)
+}
+
+impl<T, F> IntoScVal for Sdk<F>
+where
+    T: IntoVal<Env, Val>,
+    F: Fn(&Env) -> T,
+{
     /// # Panics
     ///
-    /// Panics if the value does not convert; build it in
-    /// [`conversion_env`].
+    /// Panics if [`to_sc_val`] refuses the value, for example because it
+    /// holds an object of another `Env`.
     fn into_sc_val(self) -> ScVal {
-        to_sc_val(&self.0).expect("an SDK argument converts in the conversion environment")
+        to_sc_val(self.0).expect("an SDK value converts from the Env given to its closure")
     }
 }
 
@@ -366,7 +445,7 @@ fn sac_asset(instance: &ScContractInstance) -> Option<SacAsset> {
 
 impl StrictFork {
     /// Calls a read-only `function` on `contract` against the last closed
-    /// ledger and converts its result in the [`conversion_env`]. Nothing is
+    /// ledger and converts its result with [`from_sc_val`]. Nothing is
     /// committed or recorded, and no authorization is given.
     ///
     /// # Errors
@@ -398,11 +477,6 @@ impl StrictFork {
     #[allow(clippy::unused_self)]
     fn decode<R: TryFromVal<Env, Val>>(&self, value: &ScVal) -> Result<R, TransactionError> {
         from_sc_val(value).map_err(|_| conversion_failure())
-    }
-
-    #[allow(clippy::unused_self)]
-    fn encode_value<V: IntoVal<Env, Val>>(&self, value: &V) -> Result<ScVal, TransactionError> {
-        to_sc_val(value).map_err(|_| conversion_failure())
     }
 
     /// The token balance of `holder`, from the token contract's `balance`.
@@ -475,9 +549,20 @@ impl StrictFork {
     where
         V: TryFromVal<Env, Val>,
     {
+        self.stored_contract_data(contract, key.into_sc_val(), durability)?
+            .map(|value| self.decode(&value))
+            .transpose()
+    }
+
+    fn stored_contract_data(
+        &self,
+        contract: &ScAddress,
+        key: ScVal,
+        durability: ContractDataDurability,
+    ) -> Result<Option<ScVal>, TransactionError> {
         let key = LedgerKey::ContractData(LedgerKeyContractData {
             contract: contract.clone(),
-            key: key.into_sc_val(),
+            key,
             durability,
         });
         let Some(value) = self.ledger_entry(&key)? else {
@@ -486,34 +571,45 @@ impl StrictFork {
         let LedgerEntryData::ContractData(data) = value.entry.data else {
             return Err(StrictForkError::HostInspection.into());
         };
-        self.decode(&data.val).map(Some)
+        Ok(Some(data.val))
     }
 
     /// Explicitly rewrites one existing contract data value with `edit`, as
     /// [`Self::set_contract_data`] does. `V` may be a contract type or, for
     /// a foreign structure, `Map<Symbol, Val>`.
     ///
+    /// `edit` receives the `Env` the value was decoded in; build any new SDK
+    /// object it stores there, for example
+    /// `|env, position| position.owner = Address::from_str(env, OWNER)`. It
+    /// runs more than once, as [`to_sc_val`] describes, and an object of
+    /// another `Env` is refused.
+    ///
     /// # Errors
     ///
     /// Returns [`TransactionError::MissingContractData`] for an absent entry,
-    /// [`TransactionError::Invocation`] when the value does not convert, and
+    /// [`TransactionError::Invocation`] when the value does not convert or
+    /// `edit` stores an object of another `Env`, and
     /// [`StrictForkError::UnknownLedgerKeys`] for an uncaptured key.
     pub fn update_contract_data<V>(
         &mut self,
         contract: &ScAddress,
         key: impl IntoScVal,
         durability: ContractDataDurability,
-        edit: impl FnOnce(&mut V),
+        edit: impl Fn(&Env, &mut V),
     ) -> Result<StateChange, TransactionError>
     where
         V: TryFromVal<Env, Val> + IntoVal<Env, Val>,
     {
         let key = key.into_sc_val();
-        let mut value: V = self
-            .contract_data(contract, &key, durability)?
+        let stored = self
+            .stored_contract_data(contract, key.clone(), durability)?
             .ok_or(TransactionError::MissingContractData)?;
-        edit(&mut value);
-        let encoded = self.encode_value(&value)?;
+        let encoded = checked_to_sc_val(|env| {
+            let mut value: V = from_sc_val_in(env, &stored)?;
+            edit(env, &mut value);
+            Ok(value)
+        })
+        .map_err(|_| conversion_failure())?;
         Ok(self.set_contract_data(contract, key, durability, Some(encoded))?)
     }
 
@@ -1037,7 +1133,7 @@ impl PreparedTransaction {
 }
 
 impl DetachedEvent {
-    /// Topic `index` converted in the [`conversion_env`].
+    /// Topic `index` converted by [`from_sc_val`].
     ///
     /// # Errors
     ///
@@ -1046,7 +1142,7 @@ impl DetachedEvent {
         from_sc_val(self.topics().get(index).ok_or(ConversionError)?)
     }
 
-    /// The data converted in the [`conversion_env`].
+    /// The data converted by [`from_sc_val`].
     ///
     /// # Errors
     ///

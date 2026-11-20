@@ -57,7 +57,7 @@ use thiserror::Error;
 pub(crate) use config::network_config_keys;
 pub use config::NetworkConfig;
 pub use typed::{
-    conversion_env, from_sc_val, sdk, symbol, to_sc_val, vec_val, ConversionError, Deployment,
+    from_sc_val, from_sc_val_in, sdk, symbol, to_sc_val, vec_val, ConversionError, Deployment,
     IntoArgs, IntoScVal, Sdk,
 };
 use validate::{

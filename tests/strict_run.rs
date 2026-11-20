@@ -14,7 +14,7 @@ use kanatoko::{
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     ContractDataDurability, ContractExecutable, Hash, HostFunction, InvokeHostFunctionResultCode,
-    ScAddress, ScError, ScErrorCode, ScSymbol,
+    ScAddress, ScError, ScErrorCode, ScSymbol, ScVal,
 };
 
 const CAPTURE: &str = "fixtures/mainnet/strict-run-p29/auto-capture.json";
@@ -115,7 +115,7 @@ fn state(fork: &mut StrictFork) -> Outcome<State> {
     let owner = signer("strict owner");
     let app = setup(fork)?;
     let durability = ContractDataDurability::Persistent;
-    fork.update_contract_data(&app, symbol("value"), durability, |value: &mut i64| {
+    fork.update_contract_data(&app, symbol("value"), durability, |_, value: &mut i64| {
         *value += 100;
     })?;
     let stored = fork
@@ -286,7 +286,8 @@ mod typed {
 
 #[test]
 fn contract_types_convert_without_an_env() {
-    use kanatoko::{conversion_env, from_sc_val, sdk, to_sc_val};
+    use kanatoko::soroban_sdk::{Address, Symbol, TryFromVal};
+    use kanatoko::{from_sc_val, sdk, to_sc_val};
     use typed::{DataKey, Fields, Position};
 
     let run = runner()
@@ -294,23 +295,33 @@ fn contract_types_convert_without_an_env() {
         .run_strict(|fork| -> Result<(), Box<dyn std::error::Error>> {
             let owner = signer("strict owner");
             let app = setup(fork)?;
-            let env = conversion_env();
-            let holder = kanatoko::soroban_sdk::Address::from_str(&env, XLM);
-            let position = Position {
-                owner: holder.clone(),
+            let position = |env: &kanatoko::soroban_sdk::Env| Position {
+                owner: Address::from_str(env, XLM),
                 amount: 7,
             };
-            assert_eq!(from_sc_val::<Position>(&to_sc_val(&position)?)?, position);
+            let encoded = to_sc_val(position)?;
+            let decoded = from_sc_val::<Position>(&encoded)?;
+            assert_eq!(decoded.amount, 7);
+            assert_eq!(decoded.owner, Address::from_str(decoded.owner.env(), XLM));
 
             // An enum key and a struct value, written, read, and updated.
             let durability = ContractDataDurability::Persistent;
-            let key = sdk(DataKey::Position(holder.clone()));
-            fork.set_contract_data(&app, key.clone(), durability, Some(to_sc_val(&position)?))?;
-            fork.update_contract_data(&app, key.clone(), durability, |stored: &mut Position| {
-                stored.amount += 1;
-            })?;
-            let stored = fork.contract_data::<Position>(&app, key, durability)?;
+            let key = to_sc_val(|env| DataKey::Position(Address::from_str(env, XLM)))?;
+            fork.set_contract_data(&app, key.clone(), durability, Some(encoded))?;
+            fork.update_contract_data(
+                &app,
+                key.clone(),
+                durability,
+                |_, stored: &mut Position| {
+                    stored.amount += 1;
+                },
+            )?;
+            let stored = fork.contract_data::<Position>(&app, key.clone(), durability)?;
             assert_eq!(stored.map(|stored| stored.amount), Some(8));
+            let same_key = sdk(|env| DataKey::Position(Address::from_str(env, XLM)));
+            assert!(fork
+                .contract_data::<Position>(&app, same_key, durability)?
+                .is_some());
 
             // Typed events, exactly one, and measured headroom.
             let receipt = fork.apply_signed(&increment(&owner, &app)?, &[&owner])?;
@@ -322,16 +333,8 @@ fn contract_types_convert_without_an_env() {
                 "increment"
             );
             let fields = event.data_as::<Fields>()?;
-            let value: i64 = kanatoko::soroban_sdk::TryFromVal::try_from_val(
-                &conversion_env(),
-                &fields
-                    .get(kanatoko::soroban_sdk::Symbol::new(
-                        &conversion_env(),
-                        "value",
-                    ))
-                    .unwrap(),
-            )
-            .unwrap();
+            let value = fields.get(Symbol::new(fields.env(), "value")).unwrap();
+            let value = i64::try_from_val(fields.env(), &value).unwrap();
             assert_eq!(value, 46);
             assert!(matches!(
                 receipt.single_event(&app, "reject"),
@@ -344,6 +347,64 @@ fn contract_types_convert_without_an_env() {
         })
         .unwrap();
     run.into_value().unwrap();
+}
+
+#[test]
+fn values_holding_objects_of_another_env_are_refused() {
+    use kanatoko::soroban_sdk::{testutils::EnvTestConfig, vec, Address, Env, Map, Symbol};
+    use kanatoko::{from_sc_val, sdk, to_sc_val, ConversionError, IntoScVal};
+    use typed::Position;
+
+    let other = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    // Handle by handle, this address shadows the first object a conversion
+    // makes, so converting it by its handle would name that object instead.
+    let foreign = Address::from_str(&other, XLM);
+    let owner_address = signer("strict owner").address();
+    let owner = owner_address.to_string();
+
+    assert_eq!(to_sc_val(|_| foreign.clone()), Err(ConversionError));
+    assert_eq!(
+        to_sc_val(|env| vec![env, Address::from_str(env, &owner), foreign.clone()]),
+        Err(ConversionError)
+    );
+    assert_eq!(
+        to_sc_val(|env| Map::from_array(env, [(Symbol::new(env, "owner"), foreign.clone())])),
+        Err(ConversionError)
+    );
+    assert_eq!(
+        to_sc_val(|_| Position {
+            owner: foreign.clone(),
+            amount: 1,
+        }),
+        Err(ConversionError)
+    );
+    let whole = vec![&other, foreign.clone()];
+    assert_eq!(to_sc_val(|_| whole.clone()), Err(ConversionError));
+    let decoded: Address =
+        from_sc_val(&to_sc_val(|env| Address::from_str(env, XLM)).unwrap()).unwrap();
+    assert_eq!(to_sc_val(|_| decoded.clone()), Err(ConversionError));
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sdk(|_| foreign.clone()).into_sc_val()
+    }));
+    assert!(refused.is_err());
+
+    // The same values built in the given environment convert.
+    let built = to_sc_val(|env| {
+        vec![
+            env,
+            Address::from_str(env, &owner),
+            Address::from_str(env, XLM),
+        ]
+    })
+    .unwrap();
+    let expected = ScVal::Vec(Some(
+        std::vec![ScVal::Address(owner_address), ScVal::Address(xlm()),]
+            .try_into()
+            .unwrap(),
+    ));
+    assert_eq!(built, expected);
 }
 
 #[test]

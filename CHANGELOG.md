@@ -77,10 +77,12 @@ All notable changes to Kanatoko are documented in this file.
   `DetachedEvent::topics`, `data`, `is_from`, `topic_as`, and `data_as`;
   `TransactionReceipt::single_event`; `ResourceReport::check_within` and
   `TransactionLimits::scaled`; `StrictFork::expect_rejected_with`;
-  `FailedApply::host_error`. `conversion_env`, `to_sc_val`, `from_sc_val`,
-  and `sdk` convert SDK values such as contract types to and from XDR in a
-  per-thread environment, which `view`, `contract_data`, and
-  `update_contract_data` also decode in.
+  `FailedApply::host_error`. `to_sc_val(|env| value)`, `sdk(|env| value)`,
+  `from_sc_val`, and `from_sc_val_in` convert SDK values such as contract
+  types to and from XDR in fresh environments of their own, which `view`,
+  `contract_data`, `update_contract_data`, and the event helpers also use. A
+  value holding an SDK object of any other environment is refused with
+  `ConversionError` rather than converted by its handle.
   `set_contract_data` takes any `IntoScVal` key.
 - Add the Protocol 29 Mainnet `strict-run-p29` capture of one `run_strict`
   flow, replayed in parts offline.
