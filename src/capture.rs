@@ -415,8 +415,10 @@ impl CaptureBuilder {
             let fixture = self.captured_fixture(materialized, round)?;
             let mut added = 0_usize;
             for id in pass(&fixture, fetch) {
+                // A requested key is in the coverage, so a pass never
+                // discovers it again.
                 if keys.contains_key(&id) {
-                    continue;
+                    return Err(CaptureError::InternalInvariant);
                 }
                 let key = LedgerKey::from_xdr(id.clone(), Limits::none())
                     .map_err(|_| CaptureError::InternalInvariant)?;
@@ -433,17 +435,23 @@ impl CaptureBuilder {
     }
 
     /// Reads keys at the anchor ledger of `materialized` with the same
-    /// validation as a coherent materialization; `None` once the network
-    /// moved past the anchor or a read fails.
+    /// validation as a coherent materialization; `None` when a read fails,
+    /// and without another request for the rest of the pass once the
+    /// network has moved past the anchor.
     fn anchored_fetch(&self, materialized: &Materialized) -> crate::strict::Fetch {
         let transport = self.transport.clone();
         let anchor = materialized.anchor.sequence;
         let max_entry_ttl = materialized.ledger_info.max_entry_ttl;
+        let moved = Cell::new(false);
         Box::new(move |keys: &[LedgerKey]| {
+            if moved.get() {
+                return None;
+            }
             let mut states = Vec::new();
             for chunk in keys.chunks(MAX_KEYS_PER_BATCH) {
                 let batch = transport.ledger_entries(chunk).ok()?;
                 if batch.latest_ledger != anchor {
+                    moved.set(true);
                     return None;
                 }
                 let mut returned = validate_batch(chunk, batch.entries).ok()?;
@@ -3021,6 +3029,73 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_network_defers_reads_to_the_next_round() {
+        use crate::Ed25519Signer;
+
+        let signers: Vec<Ed25519Signer> = (0..20)
+            .map(|index| Ed25519Signer::from_label(&format!("moved {index}")))
+            .collect();
+        let accounts = signers
+            .iter()
+            .map(|signer| LedgerEntry {
+                last_modified_ledger_seq: 0,
+                data: LedgerEntryData::Account(soroban_env_host::xdr::AccountEntry {
+                    account_id: signer.account_id(),
+                    balance: 100_000_000,
+                    seq_num: soroban_env_host::xdr::SequenceNumber(1),
+                    num_sub_entries: 0,
+                    inflation_dest: None,
+                    flags: 0,
+                    home_domain: soroban_env_host::xdr::String32::default(),
+                    thresholds: soroban_env_host::xdr::Thresholds([1, 0, 0, 0]),
+                    signers: soroban_env_host::xdr::VecM::default(),
+                    ext: soroban_env_host::xdr::AccountEntryExt::V0,
+                }),
+                ext: LedgerEntryExt::V0,
+            })
+            .collect();
+        let fake = FakeTransport::with_network_config_and(accounts);
+        let present = |fork: &mut StrictFork| -> Result<usize, crate::StrictForkError> {
+            let mut known = 0;
+            for signer in &signers {
+                known += usize::from(fork.ledger_entry(&signer.account_key())?.is_some());
+            }
+            Ok(known)
+        };
+        let passes = Cell::new(0_u32);
+        let reads_in_moved_pass = Cell::new(0_u64);
+        let captured = builder(&fake)
+            .capture_network_config()
+            .capture_strict(BTreeMap::new(), |fixture, fetch| {
+                passes.set(passes.get() + 1);
+                // The network closes a ledger right after the first
+                // materialization.
+                let moved = passes.get() == 1;
+                fake.ahead.set(u32::from(moved));
+                let before = fake.reads.get();
+                let discovery = Rc::new(crate::strict::Discovery::new(Some(fetch)));
+                let mut fork = fixture.discovering_fork(discovery.clone());
+                let known = present(&mut fork).unwrap();
+                drop(fork);
+                if moved {
+                    // One doomed read, then every other key is absent for
+                    // the rest of the pass without another request.
+                    reads_in_moved_pass.set(fake.reads.get() - before);
+                    assert_eq!(known, 0);
+                }
+                fake.ahead.set(0);
+                discovery.pending()
+            })
+            .unwrap();
+        assert_eq!(reads_in_moved_pass.get(), 1);
+        // The next round materializes the deferred keys at a new anchor and
+        // its pass reads nothing more.
+        assert_eq!(captured.report().discovery_rounds(), 2);
+        assert_eq!(passes.get(), 2);
+        assert_eq!(present(&mut captured.fork()).unwrap(), 20);
+    }
+
+    #[test]
     fn strict_bundles_beyond_sixteen_rounds_read_back() {
         use crate::Ed25519Signer;
 
@@ -5275,6 +5350,8 @@ mod tests {
         mix_second_large_batch_once: Cell<bool>,
         large_batches_seen: Cell<usize>,
         mixed_once: Cell<bool>,
+        /// Ledgers the network is ahead of `anchor` in `getLedgerEntries`.
+        ahead: Cell<u32>,
     }
 
     impl FakeTransport {
@@ -5397,6 +5474,7 @@ mod tests {
                 mix_second_large_batch_once: Cell::new(false),
                 large_batches_seen: Cell::new(0),
                 mixed_once: Cell::new(false),
+                ahead: Cell::new(0),
             })
         }
 
@@ -5433,7 +5511,7 @@ mod tests {
             {
                 return Err(TransportFailure::undecodable_xdr("getLedgerEntries", None));
             }
-            let mut latest_ledger = self.anchor.sequence;
+            let mut latest_ledger = self.anchor.sequence + self.ahead.get();
             if keys.len() == MAX_KEYS_PER_BATCH && self.mix_second_large_batch_once.get() {
                 let seen = self.large_batches_seen.get() + 1;
                 self.large_batches_seen.set(seen);
