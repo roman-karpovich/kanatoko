@@ -912,7 +912,10 @@ impl StrictFork {
             None if is_local_key(key, &self.local_contracts, &self.local_code_hashes, false) => {
                 Ok(None)
             }
-            None => Err(self.report_unknown(vec![id])),
+            None => {
+                self.unknown_or_absent(vec![id])?;
+                Ok(None)
+            }
         }
     }
 
@@ -955,7 +958,7 @@ impl StrictFork {
         match self.coverage.get(&id) {
             Some(LookupState::Absent) => {}
             Some(LookupState::Present(_, _)) => return Err(TransactionError::LocalAccountExists),
-            None => return Err(self.report_unknown(vec![id]).into()),
+            None => self.unknown_or_absent(vec![id])?,
         }
         let ledger = self.ledger_info();
         let minimum = i64::from(ledger.base_reserve).saturating_mul(2);
@@ -1544,9 +1547,7 @@ impl StrictFork {
         .map_err(|_| TransactionError::InvalidNetworkConfig)?;
         let unknown_keys = source.unknown.borrow().clone();
         if !unknown_keys.is_empty() {
-            return Err(self
-                .report_unknown(unknown_keys.into_iter().collect())
-                .into());
+            self.unknown_or_absent(unknown_keys.into_iter().collect())?;
         }
 
         let transaction_data = simulated
@@ -1681,7 +1682,10 @@ impl StrictFork {
             Some(LookupState::Absent) => {
                 return Err(InvalidTransaction::SourceAccountMissing.into())
             }
-            None => return Err(self.report_unknown(vec![key_id(&source_key)?]).into()),
+            None => {
+                self.unknown_or_absent(vec![key_id(&source_key)?])?;
+                return Err(InvalidTransaction::SourceAccountMissing.into());
+            }
         };
         let [master, _, medium, _] = account.thresholds.0;
         if master == 0 || master < medium {
@@ -1744,7 +1748,7 @@ impl StrictFork {
             .flatten()
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            return Err(self.report_unknown(missing).into());
+            self.unknown_or_absent(missing)?;
         }
 
         // Fee and sequence-number processing, before the operation applies.

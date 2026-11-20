@@ -442,15 +442,18 @@ impl AutoRunner {
     /// Runs `scenario` on a [`StrictFork`] of the network and freezes every
     /// ledger key it needs, so a transaction-faithful flow is written once.
     ///
-    /// Online, each pass runs on a fresh strict fork of a coherent ledger.
-    /// Every uncaptured key a pass fails on, in simulation, apply, reads,
-    /// overrides, or local account creation, is fetched for the next pass at
-    /// a new coherent ledger, until a pass fails on none. Failure-only keys
-    /// are found too, because negative tests run inside the scenario.
-    /// Discovery never softens strictness: each pass fails exactly where a
-    /// plain strict fork fails, and only the runner reacts. A key a
-    /// transaction leaves out of its declared footprint is a Host failure,
-    /// as in Stellar Core, and is never fetched. The bundle is then written
+    /// Online, each discovery pass runs on a fresh strict fork of a coherent
+    /// ledger. Every uncaptured key the pass meets, in simulation, apply,
+    /// reads, overrides, or local account creation, is recorded and treated
+    /// as absent for the rest of that pass, so the pass runs on and one
+    /// round learns every key the flow reaches. The recorded keys are
+    /// fetched at a new coherent ledger and the pass reruns until it records
+    /// none; another round is only needed where a later step depends on a
+    /// value fetched in the previous one. Failure-only keys are found too,
+    /// because negative tests run inside the scenario. A key a transaction
+    /// leaves out of its declared footprint never reaches a lookup: it fails
+    /// in the Host, as in Stellar Core, and is never fetched. Discovery
+    /// passes only collect keys; strictness is decided by the final pass. The bundle is then written
     /// to the cache, read back, and `scenario` runs once more on that frozen
     /// fixture; its value is the result. The bundle reaches the cache only
     /// after that pass, through a temporary file next to it; without a cache
