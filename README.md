@@ -554,10 +554,13 @@ assert_eq!(receipt.outcome, InvokeOutcome::Success(ScVal::Address(expected)));
 
 What happens where:
 
-- Simulation and preparation run against the fork's last closed ledger `N`
-  with RPC's default adjustments: instructions `max(1.04x, +50,000)`, exact
-  read and write bytes, a fee for the largest envelope plus 10% (at least 500
-  bytes), and the refundable fee plus 15%.
+- Simulation and preparation run against the fork's last closed ledger `N`,
+  as RPC simulates against its latest ledger, with RPC's default
+  adjustments: instructions `max(1.04x, +50,000)`, exact read and write
+  bytes, a fee for the largest envelope plus 10% (at least 500 bytes), and
+  the refundable fee plus 15%. An entry or signature that lives until `N`
+  is therefore live in simulation but expired when the transaction applies
+  in `N + 1`, as on the network.
 - `apply_transaction` refuses, with `TransactionError::Invalid` and no change,
   what Core would not include: declared resources, footprint counts, key and
   envelope sizes above the captured limits; invalid footprint keys, duplicates,
@@ -569,8 +572,10 @@ What happens where:
   plus the network's target close time. The source pays the resource fee plus
   the inclusion fee, capped at the 100-stroop base fee, and its sequence
   number advances. The Host runs with the enforcing footprint; a key outside
-  it fails as on the network. Archived entries not marked for restore, too
-  many read or written bytes, events above the limit, or a refundable fee
+  it fails as on the network. Of the entries marked for restore, only those
+  still archived are restored. Archived entries not marked for restore, too
+  many read or written bytes, entries above the size limits (restored ones
+  included), events above the limit, or a refundable fee
   below events plus rent fail the transaction with Core's result code. The
   unused refundable fee is refunded; a failed transaction keeps only its
   non-refundable and inclusion fees charged and returns

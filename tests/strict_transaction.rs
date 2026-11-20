@@ -368,6 +368,22 @@ fn signed_address_authorization_is_applied_in_the_next_ledger() {
     rejected_with(&replay, &ScError::Auth(ScErrorCode::ExistingValue));
     assert_eq!(fork.ledger_sequence(), ledger + 2);
     assert_eq!(value(&mut fork, &candidate), ScVal::I64(46));
+
+    // apply_transaction reports the same failure as an error after charging.
+    let (balance, sequence) = account(&fork, &relayer);
+    let Err(TransactionError::Rejected(receipt)) = fork.apply_transaction(&prepared) else {
+        panic!("a failed transaction is an error");
+    };
+    assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+    assert_eq!(receipt.result, InvokeHostFunctionResultCode::Trapped);
+    assert!(receipt.fee_charged > 0);
+    assert_eq!(
+        account(&fork, &relayer),
+        (balance - receipt.fee_charged, sequence + 1)
+    );
+    assert_eq!(fork.ledger_sequence(), ledger + 3);
+    assert_eq!(fork.ledger_digest().unwrap(), receipt.after_digest);
+    assert_eq!(value(&mut fork, &candidate), ScVal::I64(46));
 }
 
 #[test]

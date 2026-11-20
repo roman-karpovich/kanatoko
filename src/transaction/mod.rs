@@ -844,6 +844,9 @@ struct FootprintRead {
     entries: Vec<(Option<Vec<u8>>, Option<TtlLedgerEntryMeta>)>,
     disk_read_bytes: u32,
     cached_code: Vec<Vec<u8>>,
+    /// Read-write indices of the marked entries that were actually archived;
+    /// Core restores only these.
+    restored: Vec<u32>,
 }
 
 impl StrictFork {
@@ -1835,7 +1838,7 @@ impl StrictFork {
             true,
             encode(&call.function)?,
             encode(resources)?,
-            restored,
+            &read.restored,
             encode(&call.source)?,
             encoded_auth.into_iter(),
             next.clone(),
@@ -1966,16 +1969,17 @@ impl StrictFork {
             entries: Vec::new(),
             disk_read_bytes: 0,
             cached_code: Vec::new(),
+            restored: Vec::new(),
         };
-        let keys = footprint.read_only.iter().map(|key| (key, false)).chain(
-            footprint.read_write.iter().enumerate().map(|(index, key)| {
-                (
-                    key,
-                    u32::try_from(index).is_ok_and(|index| restored.contains(&index)),
-                )
-            }),
+        let keys = footprint.read_only.iter().map(|key| (key, None)).chain(
+            footprint
+                .read_write
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (key, u32::try_from(index).ok())),
         );
-        for (key, is_restored) in keys {
+        for (key, read_write_index) in keys {
+            let is_restored = read_write_index.is_some_and(|index| restored.contains(&index));
             let Some(LookupState::Present(entry, live_until)) = state.get(&key_id(key)?) else {
                 read.entries.push((None, None));
                 continue;
@@ -1999,20 +2003,23 @@ impl StrictFork {
                     InvokeHostFunctionResultCode::EntryArchived,
                 )));
             }
-            if is_restored && archived {
+            if let Some(excess) = check_entry_size(key, encoded.len(), limits) {
+                return Ok(Err(Failure::limit(excess)));
+            }
+            if archived {
                 // Core restores the entry before the Host runs: it lives for
-                // the minimum persistent TTL from the applying ledger.
+                // the minimum persistent TTL from the applying ledger. A
+                // marked entry that is still live is not restored.
                 read.disk_read_bytes = read.disk_read_bytes.saturating_add(size);
                 live_until_ledger = next
                     .min_live_until_ledger_checked(ContractDataDurability::Persistent)
                     .ok_or(TransactionError::InvalidNetworkConfig)?;
-            } else if let Some(excess) = check_entry_size(key, encoded.len(), limits) {
-                return Ok(Err(Failure::limit(excess)));
+                read.restored.extend(read_write_index);
             }
             if let LedgerEntryData::ContractCode(code) = &entry.data {
-                if !archived {
-                    read.cached_code.push(code.code.to_vec());
-                }
+                // Core's module cache holds all contract code until it is
+                // evicted; code that expired on the fork is not evicted yet.
+                read.cached_code.push(code.code.to_vec());
             }
             read.entries.push((
                 Some(encoded),
