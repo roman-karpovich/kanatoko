@@ -2,6 +2,52 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 29.2.0 - Unreleased
+
+- Add transaction-faithful execution on `StrictFork`. `TransactionCall`
+  describes one `InvokeHostFunctionOp` (`invoke`, `upload_wasm`,
+  `create_contract` for `CreateContractV2` with constructor arguments, or any
+  `HostFunction`) from a source account whose key the test holds.
+  `simulate_transaction` runs the Host's recording mode and returns the
+  authorization trees; `prepare_transaction` re-simulates with the supplied,
+  enforced entries and declares the recorded footprint, resources, and minimum
+  resource fee; `apply_transaction` executes through the Host's enforcing
+  entry point with that footprint, the captured cost model, and a module cache
+  of the footprint's WASM, and commits only on success. `sign_transaction`
+  combines the three steps.
+- Check transactions against the captured network's per-transaction limits:
+  instructions, footprint, disk-read and write entries and bytes, ledger key
+  and entry sizes, contract code size, events plus return value, transaction
+  size, and the declared resource fee. Measured resources and the
+  non-refundable, refundable, and rent fees are reported in `ResourceReport`.
+- Sign authorization: `Ed25519Signer`, `StrictFork::sign_authorization` for
+  one `AuthorizationTree` (also from `Receipt::authorization`), and
+  `StrictFork::authorize` for a whole simulation, with `AddressV2` credentials
+  in the Stellar account contract's signature shape.
+  `AuthorizationTree::source_account_authorization` builds source-account
+  credentials, and `StrictFork::invoke_with_source` names the transaction
+  source for `invoke` without changing `invoke`.
+- Add negative-path helpers: `PreparedTransaction::with_tampered_signature`,
+  `with_authorization`, `without_authorization_entry`,
+  `without_footprint_key`, and `with_transaction_data`, plus
+  `StrictFork::expect_failed_apply`, which requires a failure and proves the
+  ledger digest is unchanged.
+- Add explicit local setup on `StrictFork`: `create_local_account` and
+  `set_contract_data`, and the read helpers `ledger_entry`,
+  `contract_address`, `network_id`, and `ledger_sequence`.
+- Add `CaptureBuilder::capture_network_config` and
+  `AutoRunner::capture_network_config`, which capture the Soroban
+  `ConfigSetting` entries in `NetworkConfig::REQUIRED_SETTINGS` coherently
+  with the scenario's ledger. An online runner recaptures a cache that lacks
+  them. Such bundles also carry the `StateArchival` entry, checked against the
+  ledger TTL bounds; Kanatoko releases before 29.2.0 reject them. Without
+  these entries every transaction method fails with
+  `TransactionError::MissingNetworkConfig`.
+- Add the Protocol 29 Mainnet `network-config-p29` capture: the native XLM
+  Stellar Asset Contract and the network settings.
+- New errors use the non-exhaustive `TransactionError`. Existing public types
+  and their variants are unchanged.
+
 ## 30.0.0 - 2026-11-24
 
 - Move the Protocol 30 line to stable `soroban-sdk` and
