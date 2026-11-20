@@ -420,10 +420,19 @@ fn rejections_are_asserted_in_one_call() {
             let receipt =
                 fork.expect_rejected_with(&wrong, &ScError::Auth(ScErrorCode::InvalidAction))?;
             assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+
+            // Another error leaves the fork as it was, fee and sequence
+            // number included, so the same transaction still applies.
+            let again = fork.sign(&call, &[&owner])?.resigned_by(fork, 0, &other)?;
+            let before = fork.ledger_digest().unwrap();
             assert!(matches!(
-                fork.expect_rejected_with(&wrong, &ScError::Contract(1)),
-                Err(TransactionError::UnexpectedFailure(_))
+                fork.expect_rejected_with(&again, &ScError::Contract(1)),
+                Err(TransactionError::UnexpectedFailure(failure))
+                    if matches!(*failure, FailedApply::Rejected(_))
             ));
+            assert_eq!(fork.ledger_digest().unwrap(), before);
+            fork.expect_rejected_with(&again, &ScError::Auth(ScErrorCode::InvalidAction))?;
+            assert_ne!(fork.ledger_digest().unwrap(), before);
             Ok(())
         })
         .unwrap()

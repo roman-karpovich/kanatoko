@@ -77,7 +77,8 @@ All notable changes to Kanatoko are documented in this file.
   `DetachedEvent::topics`, `data`, `is_from`, `topic_as`, and `data_as`;
   `TransactionReceipt::single_event`; `ResourceReport::check_within` and
   `TransactionLimits::scaled`; `StrictFork::expect_rejected_with`;
-  `FailedApply::host_error`. `to_sc_val(|env| value)`, `sdk(|env| value)`,
+  `FailedApply::host_error`; `expect_rejected_with` leaves the fork
+  unchanged on any error. `to_sc_val(|env| value)`, `sdk(|env| value)`,
   `from_sc_val`, and `from_sc_val_in` convert SDK values such as contract
   types to and from XDR in fresh environments of their own, which `view`,
   `contract_data`, `update_contract_data`, and the event helpers also use. A
