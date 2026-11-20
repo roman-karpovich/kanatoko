@@ -69,6 +69,14 @@ not upload/create transaction evidence. Likewise, record and mock-exact auth
 are mock-satisfied behavioral evidence; only enforce mode applies supplied Host
 authorization entries, and none of these modes invents a sender abstraction.
 
+Transaction-faithful execution is the evidence path for upload, create, and
+signed calls: the strict fork simulates and applies a host function through the
+Host's own end-to-end entry points with signed authorization, an enforced
+footprint, and the captured network's cost model and per-transaction limits.
+Its transaction source is always an account whose key the test holds, and
+local test identities are injected explicitly, never borrowed from real
+accounts.
+
 A compatible local JSON-RPC server may follow, but it is not the foundation.
 
 ## Independence

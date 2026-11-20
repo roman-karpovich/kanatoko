@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "kanatoko"
-version = "29.1.2"
+version = "29.2.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
