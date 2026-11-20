@@ -161,6 +161,7 @@ pub struct AutoRunner {
     network_passphrase: String,
     rpc_rate_limit: u32,
     protocol_policy: ProtocolPolicy,
+    network_config: bool,
     cache: Option<PathBuf>,
     offline: bool,
     refresh: bool,
@@ -183,6 +184,7 @@ impl AutoRunner {
             network_passphrase: network_passphrase.into(),
             rpc_rate_limit: 0,
             protocol_policy: ProtocolPolicy::Exact,
+            network_config: false,
             cache: None,
             offline: false,
             refresh: false,
@@ -199,6 +201,7 @@ impl AutoRunner {
             network_passphrase: network_passphrase.into(),
             rpc_rate_limit: 0,
             protocol_policy: ProtocolPolicy::Exact,
+            network_config: false,
             cache: None,
             offline: false,
             refresh: false,
@@ -277,6 +280,20 @@ impl AutoRunner {
         self
     }
 
+    /// Also captures the Soroban `ConfigSetting` entries that the
+    /// transaction-faithful [`crate::StrictFork`] methods need, as
+    /// [`CaptureBuilder::capture_network_config`] describes.
+    ///
+    /// An online run treats a cache without them as stale and recaptures it.
+    /// Offline replay never adds them: a cache captured without this option
+    /// still replays, and transaction-faithful execution on its fork fails
+    /// closed with [`crate::TransactionError::MissingNetworkConfig`].
+    #[must_use]
+    pub const fn capture_network_config(mut self) -> Self {
+        self.network_config = true;
+        self
+    }
+
     /// Ignores both cached values and its key inventory, then performs a cold
     /// capture from a fresh coherent ledger.
     #[must_use]
@@ -341,6 +358,9 @@ impl AutoRunner {
                 if self.protocol_policy == ProtocolPolicy::AllowNewer {
                     builder = builder.allow_newer_protocol();
                 }
+                if self.network_config {
+                    builder = builder.capture_network_config();
+                }
                 self.run_online(&builder, &scenario)
             }
             #[cfg(test)]
@@ -360,7 +380,8 @@ impl AutoRunner {
                     &self.network_passphrase,
                     self.protocol_policy,
                 )?;
-                if builder.cached_anchor_is_current(&cached)? {
+                let config_ready = !self.network_config || cached.has_network_config()?;
+                if config_ready && builder.cached_anchor_is_current(&cached)? {
                     match replay(&cached, scenario) {
                         Ok(()) => {
                             return Ok(AutoRun {

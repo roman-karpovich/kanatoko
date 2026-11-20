@@ -110,6 +110,7 @@ pub struct CaptureBuilder {
     transport: Rc<dyn Transport>,
     rpc_rate_limiter: Option<Rc<RequestRateLimiter>>,
     protocol_policy: ProtocolPolicy,
+    network_config: bool,
     max_coherence_attempts: usize,
     max_discovery_rounds: usize,
 }
@@ -152,6 +153,7 @@ impl CaptureBuilder {
             transport,
             rpc_rate_limiter: Some(rpc_rate_limiter),
             protocol_policy: ProtocolPolicy::Exact,
+            network_config: false,
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         })
@@ -189,6 +191,24 @@ impl CaptureBuilder {
     #[must_use]
     pub const fn allow_newer_protocol(mut self) -> Self {
         self.protocol_policy = ProtocolPolicy::AllowNewer;
+        self
+    }
+
+    /// Also captures the network's Soroban `ConfigSetting` entries listed in
+    /// [`crate::NetworkConfig::REQUIRED_SETTINGS`].
+    ///
+    /// They are read in the same coherent ledger batches as every other key,
+    /// so they describe the captured ledger exactly. The Host never reads
+    /// them during contract execution; the transaction-faithful methods of
+    /// [`StrictFork`], such as [`StrictFork::apply_transaction`], take their
+    /// cost model, per-transaction limits, and fee rates from them and fail
+    /// closed when a fixture lacks them. A bundle captured with this option
+    /// carries those entries as ordinary present ledger entries, including
+    /// the `StateArchival` setting that every capture also derives its TTL
+    /// bounds from; older Kanatoko releases reject such a bundle.
+    #[must_use]
+    pub const fn capture_network_config(mut self) -> Self {
+        self.network_config = true;
         self
     }
 
@@ -256,6 +276,11 @@ impl CaptureBuilder {
     {
         self.validate_network()?;
 
+        if self.network_config {
+            for key in crate::transaction::network_config_keys() {
+                keys.insert(key_id(&key)?, key);
+            }
+        }
         let mut materialized = self.materialize(&keys)?;
         materialized = self.expand_code_closure(&mut keys, materialized)?;
 
@@ -380,6 +405,9 @@ impl CaptureBuilder {
     fn materialize(&self, keys: &BTreeMap<KeyId, LedgerKey>) -> Result<Materialized, CaptureError> {
         let config_key = state_archival_key();
         let config_id = key_id(&config_key)?;
+        // Network-config captures keep the StateArchival entry itself; every
+        // capture reads it to derive the ledger TTL bounds.
+        let keep_archival_entry = keys.contains_key(&config_id);
         let mut requested = keys.clone();
         requested.insert(config_id.clone(), config_key);
         let requested: Vec<(KeyId, LedgerKey)> = requested.into_iter().collect();
@@ -409,6 +437,14 @@ impl CaptureBuilder {
                     let value = returned.get(id).cloned();
                     if id == &config_id {
                         archival = Some(extract_archival(value.as_ref())?);
+                        if keep_archival_entry {
+                            if let Some(entry) = value {
+                                coverage.insert(
+                                    id.clone(),
+                                    LookupState::Present(entry.entry, entry.live_until),
+                                );
+                            }
+                        }
                     } else {
                         coverage.insert(
                             id.clone(),
@@ -516,6 +552,7 @@ impl CaptureBuilder {
             transport,
             rpc_rate_limiter: None,
             protocol_policy: ProtocolPolicy::Exact,
+            network_config: false,
             max_coherence_attempts: MAX_COHERENCE_ATTEMPTS,
             max_discovery_rounds: MAX_DISCOVERY_ROUNDS,
         }
@@ -711,12 +748,26 @@ impl CapturedFixture {
             .map(|id| {
                 let key = LedgerKey::from_xdr(id.clone(), Limits::none())
                     .map_err(|_| CaptureError::MalformedCaptureBundle)?;
-                if key_id(&key)? != *id || is_state_archival_key(&key) {
+                if key_id(&key)? != *id {
                     return Err(CaptureError::MalformedCaptureBundle);
                 }
                 Ok((id.clone(), key))
             })
             .collect()
+    }
+
+    /// Whether every entry of [`crate::NetworkConfig::REQUIRED_SETTINGS`] is
+    /// present in this fixture.
+    pub(crate) fn has_network_config(&self) -> Result<bool, CaptureError> {
+        for key in crate::transaction::network_config_keys() {
+            if !matches!(
+                self.coverage.get(&key_id(&key)?),
+                Some(LookupState::Present(_, _))
+            ) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn anchor(&self) -> Anchor {
@@ -1061,7 +1112,7 @@ fn bundle_coverage(
     let mut coverage = BTreeMap::new();
     for (_, (entry, live_until)) in &snapshot.ledger_entries {
         let key = entry.to_key();
-        if is_state_archival_key(&key) {
+        if is_state_archival_key(&key) && !archival_entry_matches(entry, snapshot) {
             return Err(CaptureError::MalformedCaptureBundle);
         }
         let id = key_id(&key)?;
@@ -1872,9 +1923,23 @@ fn validate_entry_metadata(
             }
             ContractDataDurability::Temporary => live_until.is_some_and(live_contract_ttl),
         },
-        LedgerEntryData::Account(_) | LedgerEntryData::Trustline(_) => live_until.is_none(),
+        LedgerEntryData::Account(_)
+        | LedgerEntryData::Trustline(_)
+        | LedgerEntryData::ConfigSetting(_) => live_until.is_none(),
         _ => false,
     }
+}
+
+/// Whether a bundled `StateArchival` entry agrees with the TTL bounds its
+/// ledger snapshot was built from.
+fn archival_entry_matches(entry: &LedgerEntry, snapshot: &LedgerSnapshot) -> bool {
+    matches!(
+        &entry.data,
+        LedgerEntryData::ConfigSetting(ConfigSettingEntry::StateArchival(settings))
+            if settings.max_entry_ttl == snapshot.max_entry_ttl
+                && settings.min_temporary_ttl == snapshot.min_temp_entry_ttl
+                && settings.min_persistent_ttl == snapshot.min_persistent_entry_ttl
+    )
 }
 
 fn ensure_legacy_root_present(
@@ -1983,7 +2048,7 @@ fn snapshot_from_materialized(materialized: &Materialized) -> Result<LedgerSnaps
             continue;
         };
         let key = entry.to_key();
-        if is_state_archival_key(&key) || id != &key_id(&key)? {
+        if id != &key_id(&key)? {
             return Err(CaptureError::InternalInvariant);
         }
         entries.push((Box::new(key), (Box::new((**entry).clone()), *live_until)));

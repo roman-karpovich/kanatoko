@@ -1089,6 +1089,7 @@ name = "kanatoko"
 version = "30.0.0"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
