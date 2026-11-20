@@ -2718,6 +2718,96 @@ mod tests {
     }
 
     #[test]
+    fn network_config_capture_keeps_the_archival_entry_and_round_trips() {
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let captured = builder(&fake)
+            .capture_network_config()
+            .capture(|_| {})
+            .unwrap();
+        let archival = key_id(&state_archival_key()).unwrap();
+        assert!(matches!(
+            captured.coverage.get(&archival),
+            Some(LookupState::Present(_, None))
+        ));
+        // The fake network has no other setting; each is confirmed absent.
+        assert_eq!(captured.report().present_entries(), 1);
+        assert_eq!(captured.report().absent_entries(), 12);
+        assert!(!captured.has_network_config().unwrap());
+        assert!(matches!(
+            captured.fork().network_config(),
+            Err(crate::TransactionError::MissingNetworkConfig { missing }) if missing.len() == 12
+        ));
+
+        let path = test_bundle_path("network-config");
+        captured.write_file(&path).unwrap();
+        let reloaded = CapturedFixture::from_file(&path, MAINNET_PASSPHRASE).unwrap();
+        assert_eq!(
+            reloaded.coverage.keys().collect::<Vec<_>>(),
+            captured.coverage.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reloaded.frozen_fixture().ledger_digest(),
+            captured.frozen_fixture().ledger_digest()
+        );
+        fs::remove_file(path).unwrap();
+
+        let without = builder(&fake).capture(|_| {}).unwrap();
+        assert!(without.coverage.is_empty());
+    }
+
+    #[test]
+    fn bundled_state_archival_entry_must_match_the_ledger_ttl_bounds() {
+        let fake = FakeTransport::from_soroswap_snapshot();
+        let captured = builder(&fake)
+            .capture_network_config()
+            .capture(|_| {})
+            .unwrap();
+        let mut snapshot = captured.fixture.ledger_snapshot().clone();
+        assert!(bundle_coverage(&snapshot, &[]).is_ok());
+        snapshot.max_entry_ttl += 1;
+        assert!(matches!(
+            bundle_coverage(&snapshot, &[]),
+            Err(CaptureError::MalformedCaptureBundle)
+        ));
+    }
+
+    #[test]
+    fn auto_runner_recaptures_a_cache_without_network_config() {
+        use crate::auto::{AutoRunner, CacheStatus};
+
+        let fake = FakeTransport::with_network_config();
+        let path = test_bundle_path("auto-runner-network-config");
+        let plain = AutoRunner::with_builder(builder(&fake), MAINNET_PASSPHRASE)
+            .cache(&path)
+            .run(|_| {})
+            .unwrap();
+        assert_eq!(plain.cache_status(), CacheStatus::Created);
+        assert!(!plain.fixture().has_network_config().unwrap());
+
+        let with_config = || {
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .capture_network_config()
+                .cache(&path)
+        };
+        let refreshed = with_config().run(|_| {}).unwrap();
+        assert_eq!(refreshed.cache_status(), CacheStatus::Refreshed);
+        assert!(refreshed.fixture().has_network_config().unwrap());
+        let limits = refreshed
+            .fixture()
+            .fork()
+            .network_config()
+            .unwrap()
+            .limits();
+        assert_eq!(limits.instructions, 400_000_000);
+
+        let hit = with_config().run(|_| {}).unwrap();
+        assert_eq!(hit.cache_status(), CacheStatus::Hit);
+        let offline = with_config().offline().run(|_| {}).unwrap();
+        assert_eq!(offline.cache_status(), CacheStatus::Hit);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn auto_runner_cache_hit_ignores_invalid_rpc_override() {
         use crate::auto::{mainnet, AutoRunError, AutoRunner, CacheStatus};
 
@@ -4632,6 +4722,33 @@ mod tests {
     impl FakeTransport {
         fn from_soroswap_snapshot() -> Rc<Self> {
             Self::from_soroswap_snapshot_at(SUPPORTED_PROTOCOL_VERSION)
+        }
+
+        /// The Soroswap fake plus every network `ConfigSetting` entry of the
+        /// committed network-config capture, keeping the fake's own
+        /// `StateArchival` entry.
+        fn with_network_config() -> Rc<Self> {
+            let mut fake = Rc::try_unwrap(Self::from_soroswap_snapshot())
+                .unwrap_or_else(|_| unreachable!("the fake was just created"));
+            let bundle: CaptureBundleV2 = serde_json::from_slice(
+                &fs::read("fixtures/mainnet/network-config-p29/auto-capture.json").unwrap(),
+            )
+            .unwrap();
+            for (_, (mut entry, live_until)) in bundle.ledger_snapshot.ledger_entries {
+                let key = entry.to_key();
+                if matches!(key, LedgerKey::ConfigSetting(_)) && !is_state_archival_key(&key) {
+                    // The fake ledger is older than the config capture.
+                    entry.last_modified_ledger_seq = fake.anchor.sequence;
+                    fake.entries.insert(
+                        key_id(&key).unwrap(),
+                        FetchedEntry {
+                            entry: Rc::new(*entry),
+                            live_until,
+                        },
+                    );
+                }
+            }
+            Rc::new(fake)
         }
 
         fn from_soroswap_snapshot_at(protocol_version: u32) -> Rc<Self> {
