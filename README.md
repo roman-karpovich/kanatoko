@@ -483,14 +483,30 @@ The typed helpers sit on the explicit transaction API below them:
 | `fork.view::<R>(&contract, "fn", args)` | A read-only call against the last closed ledger, converted with `TryFromVal`. |
 | `fork.token_balance(&token, &holder)` / `fork.account_balance(&account)` | Token and native balances. |
 | `fork.set_token_balance(&token, &holder, amount)` | Explicit override of a Stellar Asset Contract balance (contract `Balance`, account, or trustline) to a state the network can reach, with the issuer's flags. |
-| `fork.contract_data::<V>(…)` / `fork.update_contract_data(…, \|v: &mut V\| …)` | Typed contract data; `Map<Symbol, Val>` works for foreign types. |
+| `fork.contract_data::<V>(…)` / `fork.update_contract_data(…, \|env, v: &mut V\| …)` | Typed contract data; `Map<Symbol, Val>` works for foreign types. |
 | `fork.contract_instance(&contract)` | Executable and instance storage. |
 | `fork.create_local_accounts(&signers, stroops)` / `fork.scoped(\|fork\| …)` | Several accounts; a block reverted afterwards. |
 | `prepared.resigned_by(&fork, i, &signer)`, `.with_function(f)`, `.with_args(args)` | Negative variants of a prepared transaction. |
 | `receipt.events_from(&contract, "topic")`, `receipt.single_event(&contract, "topic")` | Matching events; `event.topic_as::<T>(i)` and `event.data_as::<T>()` decode them. |
 | `fork.expect_rejected_with(&prepared, &error)`, `failure.host_error()` | An included failure with exactly this Host error and only the fee and sequence charged. |
 | `receipt.resources.check_within(&limits.scaled(80))` | Asserts measured resources against the limits, here with 20% headroom; receipts print a one-line summary. |
-| `conversion_env()`, `sdk(value)`, `to_sc_val(&value)`, `from_sc_val::<T>(&val)` | `#[contracttype]` structs, enums, vectors, and maps without an `Env` of your own; only XDR crosses into the fork. |
+| `sdk(\|env\| value)`, `to_sc_val(\|env\| value)`, `from_sc_val::<T>(&val)`, `from_sc_val_in::<T>(env, &val)` | `#[contracttype]` structs, enums, vectors, and maps without an `Env` of your own; only XDR crosses into the fork. |
+
+An SDK object such as an `Address` or `Vec` is only a handle into the `Env`
+that made it, and the SDK converts it by that handle alone, so a value from
+another `Env` would silently stand for a different object. Build SDK values
+inside the closure, in the `Env` it is given; the closure runs more than once,
+and a value holding an object of any other environment, including one
+returned by `from_sc_val`, is refused with `ConversionError`:
+
+```rust,ignore
+use kanatoko::soroban_sdk::Address;
+use kanatoko::{sdk, to_sc_val};
+
+let key = sdk(|env| DataKey::Position(Address::from_str(env, OWNER)));
+let value = to_sc_val(|env| Position { owner: Address::from_str(env, OWNER), amount: 7 })?;
+fork.set_contract_data(&app, key, durability, Some(value))?;
+```
 
 The explicit flow is available underneath. From a fixture captured with
 `.capture_network_config()`:
