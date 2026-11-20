@@ -52,10 +52,13 @@ All notable changes to Kanatoko are documented in this file.
   transactions read. An online runner recaptures a cache without network
   settings. Such bundles also carry the `StateArchival` entry, checked
   against the ledger TTL bounds; releases before 29.2.0 reject them.
-- Add `AutoRunner::run_strict`, which runs a scenario on a `StrictFork`
-  that records every uncaptured key it fails on, refetches them at a new
-  coherent ledger and reruns until no pass fails on one, then replays the
-  frozen bundle strictly; offline it only replays. Network settings, signer
+- Add `AutoRunner::run_strict`, which runs a scenario on a discovering
+  `StrictFork` that records every uncaptured key and treats it as absent for
+  the rest of the pass, refetches the recorded keys at a new coherent ledger
+  and reruns until a pass records none, then replays the frozen bundle
+  strictly; offline it only replays. A round only adds keys that depend on
+  values fetched in the round before, and bundles may record up to 64
+  rounds. Network settings, signer
   account absence, uploaded code, deployment addresses, and failure-path
   keys are discovered without `capture_*` calls; keys missing from a
   declared footprint still fail in the Host. The bundle reaches the cache

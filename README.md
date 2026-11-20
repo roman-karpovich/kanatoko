@@ -466,8 +466,10 @@ ledger key the fixture lacks, and executes host functions as Stellar
 transactions: simulated by the preflight library of RPC
 `simulateTransaction`, signed, then validated, charged, and applied as
 Stellar Core does in the next ledger. The scenario is written once: online,
-every key a pass fails on is fetched and the pass reruns, until the flow
-needs nothing more; the frozen fixture then replays strictly offline.
+a discovery pass records every key the fixture lacks, treats it as absent,
+and runs on; the recorded keys are fetched and the pass reruns until it
+records none, usually after two or three rounds. The frozen fixture then
+replays strictly offline.
 
 ```rust,ignore
 use kanatoko::{mainnet, Ed25519Signer, TransactionCall};
@@ -500,9 +502,10 @@ fn signed_deploy_and_call() {
 keys: the signer's account must be absent on the network, and the uploaded
 code and the deployment address are captured like any other key. Negative
 paths run inside the scenario, so the keys only they read are captured too.
-Discovery never softens strictness: a pass fails exactly where a plain
-strict fork fails, and a key missing from a transaction's declared footprint
-fails in the Host as in Core and is never fetched. The scenario must be
+Discovery passes only collect keys; the final pass on the frozen fixture
+is a plain strict run. A key missing from a transaction's declared
+footprint never reaches a lookup: it fails in the Host as in Core and is
+never fetched. The scenario must be
 deterministic; each test freezes its own cache, or several tests replay
 parts of one flow offline against a fixture that one refresh test captured
 (see `tests/strict_run.rs`).
