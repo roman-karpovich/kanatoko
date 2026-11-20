@@ -512,11 +512,11 @@ The typed helpers sit on the explicit transaction API below them:
 | API | Meaning |
 | --- | --- |
 | `TransactionCall::invoke_fn(&source, &contract, "fn", args)` | A contract call with tuple arguments of `IntoScVal` values. |
-| `fork.sign(&call, &signers)` / `fork.apply_signed(&call, &signers)` | Simulate, authorize with unique nonces and a 100-ledger expiry, prepare, and apply; only a commit is `Ok`. |
+| `fork.sign(&call, &signers)` / `fork.apply_signed(&call, &signers)` | Simulate, authorize with deterministic hashed nonces and a 100-ledger expiry, prepare, and apply; only a commit is `Ok`. |
 | `fork.deploy(&deployer, wasm, salt, args)` | Upload and `CreateContractV2` with the constructor, both signed by the deployer. |
 | `fork.view::<R>(&contract, "fn", args)` | A read-only call against the last closed ledger, converted with `TryFromVal`. |
 | `fork.token_balance(&token, &holder)` / `fork.account_balance(&account)` | Token and native balances. |
-| `fork.set_token_balance(&token, &holder, amount)` | Explicit override of a Stellar Asset Contract balance: contract `Balance`, account, or trustline. |
+| `fork.set_token_balance(&token, &holder, amount)` | Explicit override of a Stellar Asset Contract balance (contract `Balance`, account, or trustline) to a state the network can reach, with the issuer's flags. |
 | `fork.contract_data::<V>(…)` / `fork.update_contract_data(…, \|v: &mut V\| …)` | Typed contract data; `Map<Symbol, Val>` works for foreign types. |
 | `fork.contract_instance(&contract)` | Executable and instance storage. |
 | `fork.create_local_accounts(&signers, stroops)` / `fork.scoped(\|fork\| …)` | Several accounts; a block reverted afterwards. |
