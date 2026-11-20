@@ -966,23 +966,33 @@ impl StrictFork {
 
     /// [`Self::expect_failed_apply`] that also requires the transaction to be
     /// included and fail with exactly `expected` from the Host; the fork
-    /// keeps only the fee and sequence-number change.
+    /// then keeps only the fee and sequence-number change. On any error the
+    /// fork is unchanged.
     ///
     /// # Errors
     ///
     /// Returns [`TransactionError::UnexpectedFailure`] for another failure,
     /// and the errors of [`Self::expect_failed_apply`].
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the checkpoint belongs to this fork.
     pub fn expect_rejected_with(
         &mut self,
         transaction: &PreparedTransaction,
         expected: &ScError,
     ) -> Result<TransactionReceipt, TransactionError> {
+        let checkpoint = self.checkpoint();
         let failure = self.expect_failed_apply(transaction)?;
         match failure {
             FailedApply::Rejected(receipt) if failure_error(&receipt) == Some(expected) => {
                 Ok(*receipt)
             }
-            other => Err(TransactionError::UnexpectedFailure(Box::new(other))),
+            other => {
+                self.revert(checkpoint)
+                    .expect("a fork's own checkpoint always reverts");
+                Err(TransactionError::UnexpectedFailure(Box::new(other)))
+            }
         }
     }
 

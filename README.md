@@ -488,7 +488,7 @@ The typed helpers sit on the explicit transaction API below them:
 | `fork.create_local_accounts(&signers, stroops)` / `fork.scoped(\|fork\| …)` | Several accounts; a block reverted afterwards. |
 | `prepared.resigned_by(&fork, i, &signer)`, `.with_function(f)`, `.with_args(args)` | Negative variants of a prepared transaction. |
 | `receipt.events_from(&contract, "topic")`, `receipt.single_event(&contract, "topic")` | Matching events; `event.topic_as::<T>(i)` and `event.data_as::<T>()` decode them. |
-| `fork.expect_rejected_with(&prepared, &error)`, `failure.host_error()` | An included failure with exactly this Host error and only the fee and sequence charged. |
+| `fork.expect_rejected_with(&prepared, &error)`, `failure.host_error()` | An included failure with exactly this Host error and only the fee and sequence charged; on any error the fork is unchanged. |
 | `receipt.resources.check_within(&limits.scaled(80))` | Asserts measured resources against the limits, here with 20% headroom; receipts print a one-line summary. |
 | `sdk(\|env\| value)`, `to_sc_val(\|env\| value)`, `from_sc_val::<T>(&val)`, `from_sc_val_in::<T>(env, &val)` | `#[contracttype]` structs, enums, vectors, and maps without an `Env` of your own; only XDR crosses into the fork. |
 
