@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     panic::{catch_unwind, AssertUnwindSafe, Location},
@@ -12,6 +12,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use soroban_env_host::{
+    testutils::call_with_suppressed_panic_hook,
     xdr::{
         AccountEntry, AccountEntryExt, AccountId, ContractExecutable, ContractId, Hash,
         LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount,
@@ -39,7 +40,7 @@ use crate::{
     transaction::contract_address,
     AppliedAuthMode, AuthorizationTree, CaptureBuilder, CaptureError, CapturedFixture,
     Ed25519Signer, InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest, Receipt,
-    ReceiptDisposition, StateChange, StrictForkError,
+    ReceiptDisposition, StateChange, StrictFork, StrictForkError,
 };
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
@@ -434,6 +435,181 @@ impl AutoRunner {
             fixture: captured,
             cache_status,
         })
+    }
+}
+
+impl AutoRunner {
+    /// Runs `scenario` on a [`StrictFork`] of the network and freezes every
+    /// ledger key it needs, so a transaction-faithful flow is written once.
+    ///
+    /// Online, each pass runs on a fresh strict fork of a coherent ledger.
+    /// Every uncaptured key a pass fails on, in simulation, apply, reads,
+    /// overrides, or local account creation, is fetched for the next pass at
+    /// a new coherent ledger, until a pass fails on none. Failure-only keys
+    /// are found too, because negative tests run inside the scenario.
+    /// Discovery never softens strictness: each pass fails exactly where a
+    /// plain strict fork fails, and only the runner reacts. A key a
+    /// transaction leaves out of its declared footprint is a Host failure,
+    /// as in Stellar Core, and is never fetched. The bundle is then written
+    /// to the cache, read back, and `scenario` runs once more on that frozen
+    /// fixture; its value is the result. Offline, `scenario` only runs on the
+    /// cached fixture.
+    ///
+    /// The network settings are always captured, as with
+    /// [`Self::capture_network_config`]. Each runner has its own cache: the
+    /// default path is derived from the test and the call site, so every
+    /// test freezes its own fixture.
+    ///
+    /// `scenario` runs several times online and must be deterministic: the
+    /// same calls, keys, signers, salts, and nonces on every pass. Discovery
+    /// passes may see newer ledgers; only the last pass is the result.
+    /// Panics during discovery are caught silently; a panic in the final
+    /// pass is reported with the standard panic hook and returned as
+    /// [`CaptureError::ScenarioPanicked`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a capture, cache, or offline-cache error, or
+    /// [`CaptureError::ScenarioPanicked`] when the final pass panics.
+    pub fn run_strict<F, R>(&self, scenario: F) -> Result<StrictRun<R>, AutoRunError>
+    where
+        F: Fn(&mut StrictFork) -> R,
+    {
+        let final_pass = |fixture: &CapturedFixture| -> Result<R, CaptureError> {
+            let mut fork = fixture.fork();
+            catch_unwind(AssertUnwindSafe(|| scenario(&mut fork)))
+                .map_err(|_| CaptureError::ScenarioPanicked)
+        };
+        let cached = match self.cache.as_deref().filter(|_| !self.refresh) {
+            Some(path) if path.exists() => Some(CapturedFixture::from_file_with_policy(
+                path,
+                &self.network_passphrase,
+                self.protocol_policy,
+            )?),
+            _ => None,
+        };
+        if self.offline {
+            let Some(cached) = cached else {
+                return Err(AutoRunError::OfflineCacheMissing {
+                    path: self.cache.clone().unwrap_or_default(),
+                });
+            };
+            let value = final_pass(&cached)?;
+            return Ok(StrictRun {
+                value,
+                fixture: cached,
+                cache_status: CacheStatus::Hit,
+            });
+        }
+
+        let discover = |fixture: &CapturedFixture| {
+            let discovery = Rc::new(RefCell::new(BTreeSet::new()));
+            let mut fork = fixture.discovering_fork(discovery.clone());
+            let _ = call_with_suppressed_panic_hook(AssertUnwindSafe(|| scenario(&mut fork)));
+            drop(fork);
+            Rc::try_unwrap(discovery)
+                .map_or_else(|shared| shared.borrow().clone(), RefCell::into_inner)
+        };
+        let http;
+        let builder = match &self.source {
+            CaptureSource::Http { rpc_url } => {
+                let mut builder =
+                    CaptureBuilder::rpc(rpc_url.clone(), self.network_passphrase.clone())?
+                        .rpc_rate_limit(self.rpc_rate_limit);
+                if self.protocol_policy == ProtocolPolicy::AllowNewer {
+                    builder = builder.allow_newer_protocol();
+                }
+                http = builder;
+                &http
+            }
+            #[cfg(test)]
+            CaptureSource::Builder(builder) => builder,
+        };
+        let cache_existed = self.cache.as_deref().is_some_and(Path::exists);
+        if let Some(cached) = &cached {
+            if cached.has_network_config()?
+                && builder.cached_anchor_is_current(cached)?
+                && discover(cached).is_empty()
+            {
+                let value = final_pass(cached)?;
+                return Ok(StrictRun {
+                    value,
+                    fixture: cached.clone(),
+                    cache_status: CacheStatus::Hit,
+                });
+            }
+        }
+        let inventory = match &cached {
+            Some(cached) => cached.inventory_keys()?,
+            None => BTreeMap::new(),
+        };
+        let captured = builder.capture_strict(inventory, discover)?;
+        let (frozen, cache_status) = match self.cache.as_deref() {
+            Some(path) => {
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    fs::create_dir_all(parent).map_err(|source| CaptureError::CaptureBundleIo {
+                        operation: "create-cache-directory",
+                        source,
+                    })?;
+                }
+                captured.write_file(path)?;
+                let frozen = CapturedFixture::from_file_with_policy(
+                    path,
+                    &self.network_passphrase,
+                    self.protocol_policy,
+                )?;
+                let status = if cache_existed {
+                    CacheStatus::Refreshed
+                } else {
+                    CacheStatus::Created
+                };
+                (frozen, status)
+            }
+            None => (captured, CacheStatus::Disabled),
+        };
+        let value = final_pass(&frozen)?;
+        Ok(StrictRun {
+            value,
+            fixture: frozen,
+            cache_status,
+        })
+    }
+}
+
+/// Result of [`AutoRunner::run_strict`]: the scenario's value from the final
+/// strict pass and the frozen fixture it ran on.
+#[derive(Debug)]
+pub struct StrictRun<R> {
+    value: R,
+    fixture: CapturedFixture,
+    cache_status: CacheStatus,
+}
+
+impl<R> StrictRun<R> {
+    /// The scenario's value from the final strict pass.
+    #[must_use]
+    pub const fn value(&self) -> &R {
+        &self.value
+    }
+
+    /// The scenario's value, consuming the run.
+    #[must_use]
+    pub fn into_value(self) -> R {
+        self.value
+    }
+
+    /// The frozen fixture of the final pass.
+    #[must_use]
+    pub const fn fixture(&self) -> &CapturedFixture {
+        &self.fixture
+    }
+
+    #[must_use]
+    pub const fn cache_status(&self) -> CacheStatus {
+        self.cache_status
     }
 }
 

@@ -14,6 +14,7 @@
 mod config;
 #[cfg(test)]
 mod tests;
+mod typed;
 mod validate;
 
 use std::{collections::BTreeMap, fmt, rc::Rc};
@@ -55,6 +56,7 @@ use thiserror::Error;
 
 pub(crate) use config::network_config_keys;
 pub use config::NetworkConfig;
+pub use typed::{symbol, vec_val, Deployment, IntoArgs, IntoScVal};
 use validate::{
     available_balance, check_entry_size, check_events, check_soroban_resources, check_time_bounds,
     check_writes, footprint_counts, is_soroban_key, restored_indices,
@@ -64,8 +66,9 @@ use crate::{
     canonical_ledger_digest,
     capture::{KeyId, LookupState},
     strict::{is_local_key, key_id, state_diff, strict_env, update_coverage, StrictSource},
-    AuthorizationTree, DetachedEvent, InvokeErrorKind, InvokeOutcome, InvokeRequest, LedgerValue,
-    Receipt, ReceiptDisposition, StateChange, StrictFork, StrictForkError,
+    AuthorizationTree, DetachedEvent, InvocationFailure, InvokeErrorKind, InvokeOutcome,
+    InvokeRequest, LedgerValue, Receipt, ReceiptDisposition, StateChange, StrictFork,
+    StrictForkError,
 };
 
 const PRNG_SEED_DOMAIN: &[u8] = b"KANATOKO\0TRANSACTION-PRNG\0V1\0";
@@ -784,6 +787,10 @@ pub enum TransactionError {
     LocalAccountExists,
     #[error("a new local account needs at least {minimum} stroops")]
     LocalAccountBalanceTooLow { minimum: i64 },
+    #[error(transparent)]
+    Invocation(InvocationFailure),
+    #[error("cannot set the token balance: {reason}")]
+    UnsupportedTokenBalance { reason: &'static str },
 }
 
 impl TransactionError {
@@ -903,7 +910,7 @@ impl StrictFork {
             None if is_local_key(key, &self.local_contracts, &self.local_code_hashes, false) => {
                 Ok(None)
             }
-            None => Err(unknown(vec![id])),
+            None => Err(self.report_unknown(vec![id])),
         }
     }
 
@@ -946,7 +953,7 @@ impl StrictFork {
         match self.coverage.get(&id) {
             Some(LookupState::Absent) => {}
             Some(LookupState::Present(_, _)) => return Err(TransactionError::LocalAccountExists),
-            None => return Err(unknown(vec![id]).into()),
+            None => return Err(self.report_unknown(vec![id]).into()),
         }
         let ledger = self.ledger_info();
         let minimum = i64::from(ledger.base_reserve).saturating_mul(2);
@@ -992,10 +999,11 @@ impl StrictFork {
     pub fn set_contract_data(
         &mut self,
         contract: &ScAddress,
-        key: ScVal,
+        key: impl IntoScVal,
         durability: ContractDataDurability,
         value: Option<ScVal>,
     ) -> Result<StateChange, StrictForkError> {
+        let key = key.into_sc_val();
         let ledger_key = LedgerKey::ContractData(LedgerKeyContractData {
             contract: contract.clone(),
             key: key.clone(),
@@ -1049,7 +1057,7 @@ impl StrictFork {
         execution: crate::ExecutionMode,
         auth: crate::AuthMode,
     ) -> Result<Receipt, StrictForkError> {
-        self.invoke_from(Some(source.account_id()), request, execution, auth)
+        self.invoke_from(Some(source.account_id()), request, execution, auth, true)
     }
 
     /// Signs `tree` for its address with `signer` in
@@ -1513,7 +1521,9 @@ impl StrictFork {
         .map_err(|_| TransactionError::InvalidNetworkConfig)?;
         let unknown_keys = source.unknown.borrow().clone();
         if !unknown_keys.is_empty() {
-            return Err(unknown(unknown_keys.into_iter().collect()).into());
+            return Err(self
+                .report_unknown(unknown_keys.into_iter().collect())
+                .into());
         }
 
         let transaction_data = simulated
@@ -1648,7 +1658,7 @@ impl StrictFork {
             Some(LookupState::Absent) => {
                 return Err(InvalidTransaction::SourceAccountMissing.into())
             }
-            None => return Err(unknown(vec![key_id(&source_key)?]).into()),
+            None => return Err(self.report_unknown(vec![key_id(&source_key)?]).into()),
         };
         let [master, _, medium, _] = account.thresholds.0;
         if master == 0 || master < medium {
@@ -1711,7 +1721,7 @@ impl StrictFork {
             .flatten()
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            return Err(unknown(missing).into());
+            return Err(self.report_unknown(missing).into());
         }
 
         // Fee and sequence-number processing, before the operation applies.
@@ -2189,13 +2199,6 @@ pub(crate) fn contract_address(
     Ok(ScAddress::Contract(ContractId(Hash(
         Sha256::digest(encode(&preimage)?).into(),
     ))))
-}
-
-fn unknown(keys: Vec<KeyId>) -> StrictForkError {
-    StrictForkError::UnknownLedgerKeys {
-        count: keys.len(),
-        keys,
-    }
 }
 
 fn encoded_events_size<'a>(
