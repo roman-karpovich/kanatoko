@@ -318,6 +318,11 @@ impl StrictFork {
     /// child. This deliberately uses the SDK test-only registration path and
     /// does not emulate upload/create transaction semantics.
     ///
+    /// The SDK registration gives the contract instance a TTL ending in the
+    /// next ledger. Transaction-faithful applies close ledgers, after which
+    /// the instance is archived; deploy with [`crate::TransactionCall::upload_wasm`]
+    /// and [`crate::TransactionCall::create_contract`] instead for those.
+    ///
     /// # Errors
     ///
     /// Returns [`StrictForkError`] when the hash/address is invalid, the

@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 use soroban_env_host::{
     xdr::{
         AccountEntry, AccountEntryExt, AccountId, ContractExecutable, ContractId, Hash,
-        LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey,
-        ScAddress, ScSymbol, ScVal, SequenceNumber, String32, Thresholds, Uint256, VecM,
+        LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount,
+        LedgerKeyContractCode, PublicKey, ScAddress, ScSymbol, ScVal, SequenceNumber, String32,
+        Thresholds, Uint256, VecM,
     },
     InvocationResources,
 };
@@ -35,9 +36,10 @@ use crate::{
         detached_diagnostics, detached_snapshot_evidence, invocation_values, invoke_once,
         invoke_outcome, is_nonce_data, state_diff, strip_new_mock_nonces,
     },
+    transaction::contract_address,
     AppliedAuthMode, AuthorizationTree, CaptureBuilder, CaptureError, CapturedFixture,
-    InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest, Receipt, ReceiptDisposition,
-    StateChange, StrictForkError,
+    Ed25519Signer, InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest, Receipt,
+    ReceiptDisposition, StateChange, StrictForkError,
 };
 
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
@@ -933,6 +935,51 @@ impl<'a> ScenarioFork<'a> {
             .expect("the Host must accept the local code override");
 
         wasm_sha256
+    }
+
+    /// Reads `key` so that the capture records it, present or absent.
+    ///
+    /// Use it for keys that a later transaction-faithful
+    /// [`crate::StrictFork`] call needs but the scenario itself never
+    /// touches. Strict replay fails closed until the capture holds the key;
+    /// an online run then recaptures it.
+    pub fn capture_ledger_key(&self, key: &LedgerKey) {
+        // A read failure is recorded by the tracking source and reported by
+        // the runner; the value itself is not needed here.
+        let _ = self.env.host().get_ledger_entry(&Rc::new(key.clone()));
+    }
+
+    /// Captures the account of `signer`, which
+    /// [`crate::StrictFork::create_local_account`] requires to be absent on
+    /// the network.
+    pub fn capture_signer(&self, signer: &Ed25519Signer) {
+        self.capture_ledger_key(&signer.account_key());
+    }
+
+    /// Captures the `ContractCode` key of `wasm`, which a transaction-faithful
+    /// upload of it reads.
+    pub fn capture_wasm(&self, wasm: &[u8]) {
+        self.capture_ledger_key(&LedgerKey::ContractCode(LedgerKeyContractCode {
+            hash: Hash(Sha256::digest(wasm).into()),
+        }));
+    }
+
+    /// Captures the contract instance key at the address `CreateContractV2`
+    /// derives from `deployer` and `salt`, and returns that address.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the scenario environment has no ledger metadata.
+    pub fn capture_deployed_contract(&self, deployer: &ScAddress, salt: [u8; 32]) -> ScAddress {
+        let network_id = self
+            .env
+            .host()
+            .with_ledger_info(|ledger| Ok(ledger.network_id))
+            .expect("the scenario environment must have ledger metadata");
+        let address = contract_address(network_id, deployer, salt)
+            .expect("a contract ID preimage must encode");
+        self.capture_ledger_key(&contract_instance_key(address.clone()));
+        address
     }
 
     /// Enables the SDK's explicit record-and-mock authorization mode.

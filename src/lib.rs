@@ -57,8 +57,9 @@ pub use strict::{
 };
 #[cfg(feature = "capture")]
 pub use transaction::{
-    Ed25519Signer, FailedApply, NetworkConfig, PreparedTransaction, ResourceFee, ResourceReport,
-    TransactionCall, TransactionError, TransactionLimits, TransactionReceipt, TransactionResource,
+    AuthorizationFormat, Ed25519Signer, FailedApply, InvalidTransaction, NetworkConfig,
+    PreparedTransaction, ResourceExcess, ResourceFee, ResourceReport, TransactionCall,
+    TransactionError, TransactionLimits, TransactionReceipt, TransactionResource,
     TransactionSimulation,
 };
 

@@ -14,7 +14,14 @@ categories = ["development-tools::testing"]
 
 [features]
 default = []
-capture = ["dep:base64", "dep:ed25519-dalek", "dep:serde", "dep:serde_json", "dep:ureq"]
+capture = [
+    "dep:base64",
+    "dep:ed25519-dalek",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:soroban-simulation",
+    "dep:ureq",
+]
 
 [dependencies]
 base64 = { version = "=0.22.1", optional = true }
@@ -27,6 +34,8 @@ sha2 = "=0.10.9"
 soroban-env-host = "30"
 soroban-ledger-snapshot = "30"
 soroban-sdk = { version = "30", features = ["testutils"] }
+# The preflight library behind Stellar RPC simulateTransaction.
+soroban-simulation = { version = "30", optional = true }
 thiserror = "2"
 ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
 
