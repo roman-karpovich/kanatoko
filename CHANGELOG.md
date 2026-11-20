@@ -58,14 +58,17 @@ All notable changes to Kanatoko are documented in this file.
   frozen bundle strictly; offline it only replays. Network settings, signer
   account absence, uploaded code, deployment addresses, and failure-path
   keys are discovered without `capture_*` calls; keys missing from a
-  declared footprint still fail in the Host. `StrictRun` holds the value and
-  the fixture.
+  declared footprint still fail in the Host. The bundle reaches the cache
+  only after a final pass that does not panic. `StrictRun` holds the value
+  and the fixture.
 - Add a typed layer: `IntoScVal` and `IntoArgs` for `Env`-free arguments,
   `symbol`, `vec_val`, `TransactionCall::invoke_fn`, and on `StrictFork`
   `sign`, `apply_signed`, `deploy` (`Deployment`), `create_local_accounts`,
   `view`, `token_balance`, `account_balance`, `set_token_balance`,
   `contract_data`, `update_contract_data`, `contract_instance`, and
-  `scoped`; `PreparedTransaction::resigned_by`, `with_function`, and
+  `scoped`. `sign` derives nonces from the network, the signing address, and
+  a counter; `set_token_balance` mirrors the contract's and Core's flags,
+  reserves, and liabilities and refuses unreachable balances; `PreparedTransaction::resigned_by`, `with_function`, and
   `with_args`; `TransactionReceipt::events_from` and `Display`;
   `DetachedEvent::topics`, `data`, and `is_from`; `FailedApply::host_error`.
   `set_contract_data` takes any `IntoScVal` key.
