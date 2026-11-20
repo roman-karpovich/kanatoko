@@ -791,6 +791,8 @@ pub enum TransactionError {
     Invocation(InvocationFailure),
     #[error("cannot set the token balance: {reason}")]
     UnsupportedTokenBalance { reason: &'static str },
+    #[error("the contract data entry does not exist")]
+    MissingContractData,
 }
 
 impl TransactionError {
@@ -1177,6 +1179,30 @@ impl StrictFork {
         first_nonce: i64,
         signature_expiration_ledger: u32,
     ) -> Result<Vec<SorobanAuthorizationEntry>, TransactionError> {
+        self.authorize_with(
+            format,
+            simulation,
+            signers,
+            signature_expiration_ledger,
+            |index, _| {
+                i64::try_from(index)
+                    .ok()
+                    .and_then(|index| first_nonce.checked_add(index))
+                    .ok_or(TransactionError::NonceOverflow)
+            },
+        )
+    }
+
+    /// [`Self::authorize_as`] with the nonce of each signed tree from
+    /// `nonce(index, tree)`.
+    pub(crate) fn authorize_with(
+        &self,
+        format: AuthorizationFormat,
+        simulation: &TransactionSimulation,
+        signers: &[&Ed25519Signer],
+        signature_expiration_ledger: u32,
+        mut nonce: impl FnMut(usize, &AuthorizationTree) -> Result<i64, TransactionError>,
+    ) -> Result<Vec<SorobanAuthorizationEntry>, TransactionError> {
         let source = ScAddress::Account(simulation.receipt.call.source.clone());
         let mut entries = Vec::with_capacity(simulation.authorization.len());
         for (index, tree) in simulation.authorization.iter().enumerate() {
@@ -1190,10 +1216,7 @@ impl StrictFork {
                 .ok_or_else(|| TransactionError::MissingSigner {
                     address: tree.address.clone(),
                 })?;
-            let nonce = i64::try_from(index)
-                .ok()
-                .and_then(|index| first_nonce.checked_add(index))
-                .ok_or(TransactionError::NonceOverflow)?;
+            let nonce = nonce(index, tree)?;
             entries.push(self.sign_authorization_as(
                 format,
                 tree,
