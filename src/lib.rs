@@ -7,7 +7,14 @@
 //! same body replays strictly offline. Imported client WASM supplies ABI
 //! bindings only; captured network instances and WASM always execute.
 //!
-//! Kanatoko does not emulate transactions or claim network-faithful execution.
+//! Contract calls through the scenario facade and [`StrictFork::invoke`] are
+//! SDK test-environment executions, not transactions. With the `capture`
+//! feature, [`StrictFork`] can also run a host function transaction-faithfully:
+//! simulated and applied through the Host's end-to-end entry points with
+//! signed authorization, an enforced footprint, and the captured network's cost
+//! model and per-transaction limits ([`StrictFork::apply_transaction`]). Fees
+//! are reported, never charged; consensus and envelope signatures are not
+//! emulated.
 //!
 //! Loaders and capture accept exactly [`SUPPORTED_PROTOCOL_VERSION`] by
 //! default. An explicit newer-protocol opt-in (for example
@@ -29,6 +36,8 @@ mod auto;
 mod capture;
 #[cfg(feature = "capture")]
 mod strict;
+#[cfg(feature = "capture")]
+mod transaction;
 
 #[cfg(feature = "capture")]
 pub use auto::{
@@ -45,6 +54,12 @@ pub use strict::{
     DetachedEvent, ExecutionMode, InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest,
     LedgerValue, Receipt, ReceiptDisposition, StateChange, StrictCheckpoint, StrictFork,
     StrictForkError,
+};
+#[cfg(feature = "capture")]
+pub use transaction::{
+    Ed25519Signer, FailedApply, NetworkConfig, PreparedTransaction, ResourceFee, ResourceReport,
+    TransactionCall, TransactionError, TransactionLimits, TransactionReceipt, TransactionResource,
+    TransactionSimulation,
 };
 
 pub use fixture::{

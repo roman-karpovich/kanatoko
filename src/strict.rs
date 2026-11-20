@@ -10,7 +10,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
-    ContractDataDurability, ContractEvent, ContractEventType, LedgerEntry, LedgerKey,
+    AccountId, ContractDataDurability, ContractEvent, ContractEventType, LedgerEntry, LedgerKey,
     LedgerKeyContractData, Limits, ScAddress, ScError, ScSymbol, ScVal, SorobanAuthorizationEntry,
     SorobanAuthorizedInvocation, WriteXdr,
 };
@@ -191,11 +191,14 @@ pub struct StrictCheckpoint {
 /// silently treated as absent.
 pub struct StrictFork {
     id: u64,
-    env: Env,
-    network_protocol_version: u32,
-    coverage: BTreeMap<KeyId, LookupState>,
-    local_contracts: BTreeSet<ScAddress>,
-    local_code_hashes: BTreeSet<[u8; 32]>,
+    pub(crate) env: Env,
+    pub(crate) network_protocol_version: u32,
+    pub(crate) coverage: BTreeMap<KeyId, LookupState>,
+    /// Addresses whose contract data, and for accounts trustlines, are local
+    /// knowledge: locally installed contracts, contracts created by a
+    /// transaction-faithful apply, and local accounts.
+    pub(crate) local_contracts: BTreeSet<ScAddress>,
+    pub(crate) local_code_hashes: BTreeSet<[u8; 32]>,
     receipts: Vec<Receipt>,
 }
 
@@ -249,7 +252,7 @@ impl StrictFork {
         executed_protocol_version(self.network_protocol_version)
     }
 
-    fn ledger_snapshot(&self) -> LedgerSnapshot {
+    pub(crate) fn ledger_snapshot(&self) -> LedgerSnapshot {
         network_ledger_snapshot(&self.env, self.network_protocol_version)
     }
 
@@ -422,6 +425,18 @@ impl StrictFork {
         execution: ExecutionMode,
         auth: AuthMode,
     ) -> Result<Receipt, StrictForkError> {
+        self.invoke_from(None, request, execution, auth)
+    }
+
+    /// [`Self::invoke`] with the Host's transaction source account set, so
+    /// that `SorobanCredentials::SourceAccount` entries authorize it.
+    pub(crate) fn invoke_from(
+        &mut self,
+        transaction_source: Option<AccountId>,
+        request: InvokeRequest,
+        execution: ExecutionMode,
+        auth: AuthMode,
+    ) -> Result<Receipt, StrictForkError> {
         let before = self.ledger_snapshot();
         let before_digest = canonical_ledger_digest(&before)?;
         let allow_mock_nonces = matches!(&auth, AuthMode::Record | AuthMode::MockExact(_));
@@ -434,6 +449,12 @@ impl StrictFork {
         );
 
         let (contract, function, args) = invocation_values(&child, &request)?;
+        if let Some(account) = transaction_source {
+            child
+                .host()
+                .set_source_account(account)
+                .map_err(|_| StrictForkError::HostInspection)?;
+        }
         let (applied_auth, expected_auth) = match auth {
             AuthMode::Record => {
                 child.mock_all_auths();
@@ -640,12 +661,29 @@ impl AddressValue {
 }
 
 #[derive(Clone)]
-struct StrictSource {
+pub(crate) struct StrictSource {
     coverage: BTreeMap<KeyId, LookupState>,
     local_contracts: BTreeSet<ScAddress>,
     local_code_hashes: BTreeSet<[u8; 32]>,
     allow_mock_nonces: bool,
-    unknown: Rc<RefCell<BTreeSet<KeyId>>>,
+    pub(crate) unknown: Rc<RefCell<BTreeSet<KeyId>>>,
+}
+
+impl StrictSource {
+    pub(crate) fn new(
+        coverage: &BTreeMap<KeyId, LookupState>,
+        local_contracts: &BTreeSet<ScAddress>,
+        local_code_hashes: &BTreeSet<[u8; 32]>,
+        allow_mock_nonces: bool,
+    ) -> Self {
+        Self {
+            coverage: coverage.clone(),
+            local_contracts: local_contracts.clone(),
+            local_code_hashes: local_code_hashes.clone(),
+            allow_mock_nonces,
+            unknown: Rc::new(RefCell::new(BTreeSet::new())),
+        }
+    }
 }
 
 impl SnapshotSource for StrictSource {
@@ -676,20 +714,19 @@ impl SnapshotSource for StrictSource {
     }
 }
 
-fn strict_env(
+pub(crate) fn strict_env(
     snapshot: &LedgerSnapshot,
     coverage: &BTreeMap<KeyId, LookupState>,
     local_contracts: &BTreeSet<ScAddress>,
     local_code_hashes: &BTreeSet<[u8; 32]>,
     allow_mock_nonces: bool,
 ) -> (Env, Rc<StrictSource>) {
-    let source = Rc::new(StrictSource {
-        coverage: coverage.clone(),
-        local_contracts: local_contracts.clone(),
-        local_code_hashes: local_code_hashes.clone(),
+    let source = Rc::new(StrictSource::new(
+        coverage,
+        local_contracts,
+        local_code_hashes,
         allow_mock_nonces,
-        unknown: Rc::new(RefCell::new(BTreeSet::new())),
-    });
+    ));
     let env = fork_env(ForkEnvSeed::Ledger(SnapshotSourceInput {
         source: source.clone(),
         ledger_info: Some(snapshot.ledger_info()),
@@ -722,7 +759,7 @@ fn unknown_keys(
     Ok(unknown)
 }
 
-fn is_local_key(
+pub(crate) fn is_local_key(
     key: &LedgerKey,
     local_contracts: &BTreeSet<ScAddress>,
     local_code_hashes: &BTreeSet<[u8; 32]>,
@@ -733,6 +770,9 @@ fn is_local_key(
             local_contracts.contains(&data.contract) || (allow_mock_nonces && is_nonce_data(data))
         }
         LedgerKey::ContractCode(code) => local_code_hashes.contains(&code.hash.0),
+        LedgerKey::Trustline(trustline) => {
+            local_contracts.contains(&ScAddress::Account(trustline.account_id.clone()))
+        }
         _ => false,
     }
 }
@@ -774,7 +814,7 @@ pub(crate) fn strip_new_mock_nonces(
     Ok(())
 }
 
-fn contract_instance_key(contract: ScAddress) -> LedgerKey {
+pub(crate) fn contract_instance_key(contract: ScAddress) -> LedgerKey {
     LedgerKey::ContractData(LedgerKeyContractData {
         contract,
         key: ScVal::LedgerKeyContractInstance,
@@ -782,7 +822,7 @@ fn contract_instance_key(contract: ScAddress) -> LedgerKey {
     })
 }
 
-fn key_id(key: &LedgerKey) -> Result<KeyId, StrictForkError> {
+pub(crate) fn key_id(key: &LedgerKey) -> Result<KeyId, StrictForkError> {
     key.to_xdr(Limits::none()).map_err(|_| StrictForkError::Xdr)
 }
 
@@ -844,7 +884,7 @@ pub(crate) fn state_diff(
     Ok(changes)
 }
 
-fn update_coverage(
+pub(crate) fn update_coverage(
     coverage: &mut BTreeMap<KeyId, LookupState>,
     changes: &[StateChange],
 ) -> Result<(), StrictForkError> {
