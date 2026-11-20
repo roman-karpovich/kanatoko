@@ -54,8 +54,9 @@ All notable changes to Kanatoko are documented in this file.
   against the ledger TTL bounds; releases before 29.2.0 reject them.
 - Add `AutoRunner::run_strict`, which runs a scenario on a discovering
   `StrictFork`: every uncaptured key is recorded and read from the network
-  at the round's anchor ledger, or treated as absent if the anchor moved, so
-  one pass follows dependency chains. The recorded keys are rematerialized
+  at the round's anchor ledger, or treated as absent once the network has
+  moved past the anchor, with no further reads in that pass, so one pass
+  follows dependency chains. The recorded keys are rematerialized
   at a new coherent ledger and the pass reruns until it records none, then
   the frozen bundle replays strictly; offline it only replays. Bundles may
   record up to 64 rounds. Network settings, signer
