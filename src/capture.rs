@@ -2929,38 +2929,229 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn token_balances_are_set_for_contracts_native_accounts_and_trustlines() {
-        use crate::{auto::AutoRunner, Ed25519Signer};
+        use crate::{auto::AutoRunner, transaction::symbol, Ed25519Signer, TransactionError};
+
+        fn flags_of(fork: &StrictFork, account: &soroban_env_host::xdr::AccountId) -> u32 {
+            let key = LedgerKey::Account(soroban_env_host::xdr::LedgerKeyAccount {
+                account_id: account.clone(),
+            });
+            match fork.ledger_entry(&key).unwrap().unwrap().entry.data {
+                LedgerEntryData::Account(account) => account.flags,
+                _ => unreachable!(),
+            }
+        }
 
         let fake = FakeTransport::with_network_config();
         let path = test_bundle_path("token-balances");
         let run =
             AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
                 .cache(&path)
-                .run_strict(
-                    |fork| -> Result<(i128, i128, i128, Option<i64>), crate::TransactionError> {
-                        let holder = Ed25519Signer::from_label("token holder");
-                        fork.create_local_account(&holder, 100_000_000)?;
-                        let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
-                        let usdc = parse_legacy_contract_address(USDC_ID).unwrap();
-                        let pair = parse_legacy_contract_address(PAIR_ID).unwrap();
-                        fork.set_token_balance(&usdc, &holder.address(), 7_000)?;
-                        fork.set_token_balance(&xlm, &holder.address(), 250_000_000)?;
-                        fork.set_token_balance(&usdc, &pair, 11)?;
-                        Ok((
-                            fork.token_balance(&usdc, &holder.address())?,
-                            fork.token_balance(&xlm, &holder.address())?,
-                            fork.token_balance(&usdc, &pair)?,
-                            fork.account_balance(&holder.account_id())?,
-                        ))
-                    },
-                )
+                .run_strict(|fork| -> Result<(), TransactionError> {
+                    let holder = Ed25519Signer::from_label("token holder");
+                    let reserve_only = Ed25519Signer::from_label("token reserve only");
+                    fork.create_local_account(&holder, 100_000_000)?;
+                    fork.create_local_account(&reserve_only, 10_000_000)?;
+                    let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
+                    let usdc = parse_legacy_contract_address(USDC_ID).unwrap();
+                    let pair = parse_legacy_contract_address(PAIR_ID).unwrap();
+                    let fresh =
+                        ScAddress::Contract(soroban_env_host::xdr::ContractId(Hash([0x42; 32])));
+                    let usdc_issuer = match fork.contract_instance(&usdc)?.unwrap().storage {
+                        Some(storage) => {
+                            let info = storage
+                                .iter()
+                                .find(|entry| {
+                                    entry.key == crate::transaction::vec_val((symbol("AssetInfo"),))
+                                })
+                                .unwrap()
+                                .val
+                                .clone();
+                            let ScVal::Vec(Some(parts)) = info else {
+                                unreachable!()
+                            };
+                            let ScVal::Map(Some(fields)) = &parts[1] else {
+                                unreachable!()
+                            };
+                            let issuer = fields
+                                .iter()
+                                .find(|entry| entry.key == symbol("issuer"))
+                                .unwrap();
+                            let ScVal::Bytes(bytes) = &issuer.val else {
+                                unreachable!()
+                            };
+                            soroban_env_host::xdr::AccountId(
+                                soroban_env_host::xdr::PublicKey::PublicKeyTypeEd25519(
+                                    soroban_env_host::xdr::Uint256(
+                                        bytes.as_slice().try_into().unwrap(),
+                                    ),
+                                ),
+                            )
+                        }
+                        None => unreachable!(),
+                    };
+                    let issuer_flags = flags_of(fork, &usdc_issuer);
+
+                    // A new trustline: one sub-entry, issuer-derived flags.
+                    fork.set_token_balance(&usdc, &holder.address(), 7_000)?;
+                    assert_eq!(fork.token_balance(&usdc, &holder.address())?, 7_000);
+                    let trustline = trustline_of(fork, &holder);
+                    let LedgerEntryData::Trustline(line) =
+                        fork.ledger_entry(&trustline)?.unwrap().entry.data
+                    else {
+                        unreachable!()
+                    };
+                    let mut expected = 0;
+                    if issuer_flags & 1 == 0 {
+                        expected |= 1;
+                    }
+                    if issuer_flags & 8 != 0 {
+                        expected |= 4;
+                    }
+                    assert_eq!(line.flags, expected);
+                    assert_eq!(line.limit, i64::MAX);
+                    let LedgerEntryData::Account(account) = fork
+                        .ledger_entry(&holder.account_key())?
+                        .unwrap()
+                        .entry
+                        .data
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(account.num_sub_entries, 1);
+
+                    // Native balances stay above the reserve, now three entries.
+                    assert!(matches!(
+                        fork.set_token_balance(&xlm, &holder.address(), 14_999_999),
+                        Err(TransactionError::UnsupportedTokenBalance { .. })
+                    ));
+                    fork.set_token_balance(&xlm, &holder.address(), 15_000_000)?;
+                    assert_eq!(
+                        fork.account_balance(&holder.account_id())?,
+                        Some(15_000_000)
+                    );
+                    // An account at its minimum balance cannot reserve a trustline.
+                    assert!(matches!(
+                        fork.set_token_balance(&usdc, &reserve_only.address(), 1),
+                        Err(TransactionError::UnsupportedTokenBalance { .. })
+                    ));
+
+                    // A new contract balance takes the issuer's flags; an
+                    // existing one keeps its own.
+                    fork.set_token_balance(&usdc, &fresh, 5)?;
+                    let value = fork
+                        .contract_data::<soroban_sdk::Map<soroban_sdk::Symbol, soroban_sdk::Val>>(
+                            &usdc,
+                            crate::transaction::vec_val((symbol("Balance"), &fresh)),
+                            ContractDataDurability::Persistent,
+                        )?
+                        .unwrap();
+                    let flag = |name: &str| -> bool {
+                        let env = value.env();
+                        soroban_sdk::TryFromVal::try_from_val(
+                            env,
+                            &value.get(soroban_sdk::Symbol::new(env, name)).unwrap(),
+                        )
+                        .unwrap()
+                    };
+                    assert!(flag("authorized"));
+                    assert_eq!(flag("clawback"), issuer_flags & 8 != 0);
+                    fork.set_token_balance(&usdc, &pair, 11)?;
+                    assert_eq!(fork.token_balance(&usdc, &pair)?, 11);
+                    assert!(matches!(
+                        fork.set_token_balance(&usdc, &fresh, -1),
+                        Err(TransactionError::UnsupportedTokenBalance { .. })
+                    ));
+                    Ok(())
+                })
                 .unwrap();
-        assert_eq!(
-            run.into_value().unwrap(),
-            (7_000, 250_000_000, 11, Some(250_000_000))
-        );
+        run.into_value().unwrap();
         fs::remove_file(path).unwrap();
+    }
+
+    /// The single trustline key of `signer`'s account in the fork.
+    fn trustline_of(fork: &StrictFork, signer: &crate::Ed25519Signer) -> LedgerKey {
+        let snapshot = fork.ledger_snapshot();
+        snapshot
+            .ledger_entries
+            .iter()
+            .map(|(key, _)| (**key).clone())
+            .find(|key| {
+                matches!(key, LedgerKey::Trustline(line) if line.account_id == signer.account_id())
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_footprint_miss_of_a_captured_key_fails_and_is_never_discovered() {
+        use crate::{auto::AutoRunner, Ed25519Signer, FailedApply, TransactionCall};
+        use soroban_env_host::xdr::{ScError, ScErrorCode};
+
+        let xlm = parse_legacy_contract_address(XLM_ID).unwrap();
+        let instance = contract_instance_key(xlm.clone());
+        let flow = |fork: &mut StrictFork| -> Result<FailedApply, crate::TransactionError> {
+            let (sender, receiver) = (
+                Ed25519Signer::from_label("miss sender"),
+                Ed25519Signer::from_label("miss receiver"),
+            );
+            fork.create_local_accounts(&[&sender, &receiver], 100_000_000)?;
+            let call = TransactionCall::invoke_fn(
+                &receiver,
+                &xlm,
+                "transfer",
+                (&sender, &receiver, 25_i128),
+            )?;
+            let prepared = fork.sign(&call, &[&sender])?;
+            assert!(prepared.footprint_contains(&instance));
+            fork.expect_failed_apply(&prepared.without_footprint_key(&instance))
+        };
+        let fake = FakeTransport::with_network_config();
+        let path = test_bundle_path("footprint-miss");
+        let run =
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+                .run_strict(flow)
+                .unwrap();
+        let failed = run.value().as_ref().unwrap();
+        assert_eq!(
+            failed.host_error(),
+            Some(&ScError::Storage(ScErrorCode::ExceededLimit))
+        );
+
+        // On the frozen fixture the same flow records no key at all.
+        let discovered = Rc::new(RefCell::new(BTreeSet::new()));
+        let mut fork = run.fixture().discovering_fork(discovered.clone());
+        let failed = flow(&mut fork).unwrap();
+        assert!(matches!(failed, FailedApply::Rejected(_)));
+        assert!(!discovered.borrow().contains(&key_id(&instance).unwrap()));
+        assert!(discovered.borrow().is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_final_pass_writes_no_cache() {
+        use crate::{auto::AutoRunError, auto::AutoRunner, Ed25519Signer};
+
+        let fake = FakeTransport::with_network_config();
+        let directory = test_bundle_path("panicking-final-pass").with_extension("dir");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("cache.json");
+        let result =
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+                .run_strict(|fork| {
+                    fork.create_local_account(&Ed25519Signer::from_label("panicking"), 100_000_000)
+                        .unwrap();
+                    panic!("the scenario fails after discovery");
+                });
+        assert!(matches!(
+            result,
+            Err(AutoRunError::Capture(CaptureError::ScenarioPanicked))
+        ));
+        // Neither the cache nor its temporary bundle remains.
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir(directory).unwrap();
     }
 
     #[test]

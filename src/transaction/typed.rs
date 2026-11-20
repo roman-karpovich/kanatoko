@@ -10,12 +10,12 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
-    AccountEntry, AccountId, AlphaNum12, AlphaNum4, AssetCode12, AssetCode4,
-    ContractDataDurability, ContractEventBody, ContractExecutable, HostFunction, LedgerEntry,
-    LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount, LedgerKeyContractData,
-    LedgerKeyTrustLine, PublicKey, ScAddress, ScContractInstance, ScError, ScMap, ScMapEntry,
-    ScSymbol, ScVal, ScVec, SorobanCredentials, TrustLineAsset, TrustLineEntry, TrustLineEntryExt,
-    Uint256,
+    AccountEntry, AccountEntryExt, AccountEntryExtensionV1Ext, AccountId, AlphaNum12, AlphaNum4,
+    AssetCode12, AssetCode4, ContractDataDurability, ContractEventBody, ContractExecutable,
+    HostFunction, LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount,
+    LedgerKeyContractData, LedgerKeyTrustLine, PublicKey, ScAddress, ScContractInstance, ScError,
+    ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, SorobanCredentials, TrustLineAsset, TrustLineEntry,
+    TrustLineEntryExt, Uint256,
 };
 use soroban_sdk::{Env, IntoVal, TryFromVal, Val};
 
@@ -31,8 +31,15 @@ use crate::{
 
 /// Ledgers a signature from [`StrictFork::sign`] stays valid for.
 pub(crate) const SIGNATURE_LEDGERS: u32 = 100;
-/// The trustline flag that authorizes holding and transacting an asset.
+/// Issuer account flags that Stellar Asset Contracts read.
+const AUTH_REQUIRED_FLAG: u32 = 1;
+const AUTH_CLAWBACK_ENABLED_FLAG: u32 = 8;
+/// Trustline flags.
 const AUTHORIZED_FLAG: u32 = 1;
+const TRUSTLINE_CLAWBACK_ENABLED_FLAG: u32 = 4;
+/// Core's limit of account sub-entries.
+const MAX_ACCOUNT_SUBENTRIES: u32 = 1000;
+const NONCE_DOMAIN: &[u8] = b"KANATOKO\0AUTHORIZATION-NONCE\0V1\0";
 
 /// A value that becomes one XDR [`ScVal`] without an `Env`.
 ///
@@ -402,9 +409,9 @@ impl StrictFork {
     ///
     /// # Errors
     ///
-    /// Returns [`TransactionError::Invocation`] when the value does not
-    /// convert, and [`StrictForkError::UnknownLedgerKeys`] for an uncaptured
-    /// or absent key.
+    /// Returns [`TransactionError::MissingContractData`] for an absent entry,
+    /// [`TransactionError::Invocation`] when the value does not convert, and
+    /// [`StrictForkError::UnknownLedgerKeys`] for an uncaptured key.
     pub fn update_contract_data<V>(
         &mut self,
         contract: &ScAddress,
@@ -418,7 +425,7 @@ impl StrictFork {
         let key = key.into_sc_val();
         let mut value: V = self
             .contract_data(contract, &key, durability)?
-            .ok_or_else(|| invocation_failure(None, InvokeErrorKind::Abort))?;
+            .ok_or(TransactionError::MissingContractData)?;
         edit(&mut value);
         let encoded = self.encode_value(&value)?;
         Ok(self.set_contract_data(contract, key, durability, Some(encoded))?)
@@ -427,32 +434,53 @@ impl StrictFork {
     /// Explicitly sets the balance of `holder` in the Stellar Asset Contract
     /// `token`, as a local override for test setup, not a payment or mint.
     ///
-    /// A contract holder's `Balance` entry is written, keeping its flags.
-    /// An account holder's native balance is its account balance; for a
-    /// classic asset, its trustline balance, creating an authorized trustline
-    /// with the maximum limit when the account has none.
+    /// The result is a state the network can reach, with the flags the
+    /// contract and Stellar Core would give it:
+    ///
+    /// - a contract holder's `Balance` entry keeps its flags; a new one is
+    ///   authorized and has clawback when the issuer enables clawback;
+    /// - an account's native balance must stay within its minimum balance
+    ///   plus selling liabilities and the maximum minus buying liabilities;
+    /// - an account's classic-asset balance is its trustline balance, within
+    ///   the trustline's selling and buying liabilities and limit. A missing
+    ///   trustline is created as the contract creates one: maximum limit,
+    ///   authorized unless the issuer requires authorization, clawback when
+    ///   the issuer enables it, one more account sub-entry, and only if the
+    ///   account can reserve it.
+    ///
+    /// A balance that is not authorized cannot change.
     ///
     /// # Errors
     ///
-    /// Returns [`TransactionError::UnsupportedTokenBalance`] for a token that
-    /// is not a Stellar Asset Contract, a missing account, the issuer, or an
-    /// amount out of range, and [`StrictForkError::UnknownLedgerKeys`] for an
-    /// uncaptured key.
+    /// Returns [`TransactionError::UnsupportedTokenBalance`] with the reason
+    /// for a state the network cannot reach or a token that is not a Stellar
+    /// Asset Contract, and [`StrictForkError::UnknownLedgerKeys`] for an
+    /// uncaptured key, such as the issuer account.
+    #[allow(clippy::too_many_lines)]
     pub fn set_token_balance(
         &mut self,
         token: &ScAddress,
         holder: &ScAddress,
         amount: i128,
     ) -> Result<StateChange, TransactionError> {
-        let unsupported = |reason| TransactionError::UnsupportedTokenBalance { reason };
         let instance = self
             .contract_instance(token)?
             .ok_or_else(|| unsupported("the token contract does not exist"))?;
         let asset = sac_asset(&instance)
             .ok_or_else(|| unsupported("the token is not a Stellar Asset Contract"))?;
+        let issuer_flags = match &asset {
+            SacAsset::Native => 0,
+            SacAsset::Credit(_, issuer) => {
+                self.account(issuer)?
+                    .ok_or_else(|| unsupported("the issuer account does not exist"))?
+                    .flags
+            }
+        };
         let account_id = match holder {
             ScAddress::Account(account_id) => account_id.clone(),
-            ScAddress::Contract(_) => return self.set_contract_balance(token, holder, amount),
+            ScAddress::Contract(_) => {
+                return self.set_contract_balance(token, holder, amount, issuer_flags)
+            }
             _ => {
                 return Err(unsupported(
                     "the holder is neither an account nor a contract",
@@ -466,17 +494,23 @@ impl StrictFork {
         let account_key = LedgerKey::Account(LedgerKeyAccount {
             account_id: account_id.clone(),
         });
-        let mut account_entry = self
-            .ledger_entry(&account_key)?
-            .ok_or_else(|| unsupported("the holder account does not exist"))?
-            .entry;
-        let LedgerEntryData::Account(account) = &mut account_entry.data else {
-            return Err(StrictForkError::HostInspection.into());
-        };
+        let mut account = self
+            .account(&account_id)?
+            .ok_or_else(|| unsupported("the holder account does not exist"))?;
+        let base_reserve = i64::from(self.ledger_info().base_reserve);
         let (asset, issuer) = match asset {
             SacAsset::Native => {
+                let (minimum, maximum) = account_balance_bounds(&account, base_reserve);
+                if amount < minimum || amount > maximum {
+                    return Err(unsupported(
+                        "the native balance leaves the account's reserve and liabilities range",
+                    ));
+                }
                 account.balance = amount;
-                return Ok(self.override_entry(account_key, Some((account_entry, None)))?);
+                return Ok(self.override_entry(
+                    account_key,
+                    Some((account_entry(account, self.ledger_sequence()), None)),
+                )?);
             }
             SacAsset::Credit(asset, issuer) => (asset, issuer),
         };
@@ -488,31 +522,69 @@ impl StrictFork {
             asset: asset.clone(),
         });
         let existing = self.ledger_entry(&trustline_key)?;
-        let mut trustline = if let Some(existing) = existing {
-            existing.entry
+        let mut line = if let Some(existing) = existing {
+            match existing.entry.data {
+                LedgerEntryData::Trustline(line) => line,
+                _ => return Err(StrictForkError::HostInspection.into()),
+            }
         } else {
-            account_sub_entry_added(account);
-            self.override_entry(account_key, Some((account_entry, None)))?;
-            LedgerEntry {
-                last_modified_ledger_seq: self.ledger_sequence(),
-                data: LedgerEntryData::Trustline(TrustLineEntry {
-                    account_id,
-                    asset,
-                    balance: 0,
-                    limit: i64::MAX,
-                    flags: AUTHORIZED_FLAG,
-                    ext: TrustLineEntryExt::V0,
-                }),
-                ext: LedgerEntryExt::V0,
+            if account.num_sub_entries >= MAX_ACCOUNT_SUBENTRIES {
+                return Err(unsupported("the account has the maximum of sub-entries"));
+            }
+            let (minimum, _) = account_balance_bounds(&account, base_reserve);
+            if account.balance < minimum.saturating_add(base_reserve) {
+                return Err(unsupported("the account cannot reserve a new trustline"));
+            }
+            let mut flags = 0;
+            if issuer_flags & AUTH_REQUIRED_FLAG == 0 {
+                flags |= AUTHORIZED_FLAG;
+            }
+            if issuer_flags & AUTH_CLAWBACK_ENABLED_FLAG != 0 {
+                flags |= TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+            }
+            account.num_sub_entries += 1;
+            let sequence = self.ledger_sequence();
+            self.override_entry(account_key, Some((account_entry(account, sequence), None)))?;
+            TrustLineEntry {
+                account_id,
+                asset,
+                balance: 0,
+                limit: i64::MAX,
+                flags,
+                ext: TrustLineEntryExt::V0,
             }
         };
-        if let LedgerEntryData::Trustline(line) = &mut trustline.data {
-            if amount > line.limit {
-                return Err(unsupported("the amount exceeds the trustline limit"));
-            }
-            line.balance = amount;
+        // Only a fully authorized trustline receives or sends; one authorized
+        // to maintain liabilities keeps its balance.
+        if line.flags & AUTHORIZED_FLAG == 0 && amount != line.balance {
+            return Err(unsupported("the trustline is not authorized"));
         }
-        Ok(self.override_entry(trustline_key, Some((trustline, None)))?)
+        let (minimum, maximum) = trustline_balance_bounds(&line)
+            .ok_or_else(|| unsupported("the trustline limit is below its buying liabilities"))?;
+        if amount < minimum || amount > maximum {
+            return Err(unsupported(
+                "the balance leaves the trustline's liabilities and limit range",
+            ));
+        }
+        line.balance = amount;
+        let entry = LedgerEntry {
+            last_modified_ledger_seq: self.ledger_sequence(),
+            data: LedgerEntryData::Trustline(line),
+            ext: LedgerEntryExt::V0,
+        };
+        Ok(self.override_entry(trustline_key, Some((entry, None)))?)
+    }
+
+    fn account(&self, account_id: &AccountId) -> Result<Option<AccountEntry>, StrictForkError> {
+        let key = LedgerKey::Account(LedgerKeyAccount {
+            account_id: account_id.clone(),
+        });
+        Ok(self
+            .ledger_entry(&key)?
+            .and_then(|value| match value.entry.data {
+                LedgerEntryData::Account(account) => Some(account),
+                _ => None,
+            }))
     }
 
     fn set_contract_balance(
@@ -520,7 +592,11 @@ impl StrictFork {
         token: &ScAddress,
         holder: &ScAddress,
         amount: i128,
+        issuer_flags: u32,
     ) -> Result<StateChange, TransactionError> {
+        if amount < 0 {
+            return Err(unsupported("a balance is not negative"));
+        }
         let key = sac_key("Balance", holder);
         let durability = ContractDataDurability::Persistent;
         let existing: Option<ScVal> = self
@@ -533,15 +609,36 @@ impl StrictFork {
                 LedgerEntryData::ContractData(data) => Some(data.val),
                 _ => None,
             });
-        let flag = |name: &str, default: bool| {
-            match &existing {
-                Some(ScVal::Map(Some(map))) => map
-                    .iter()
-                    .find(|entry| entry.key == symbol(name))
-                    .map(|entry| entry.val.clone()),
-                _ => None,
+        let field = |name: &str| match &existing {
+            Some(ScVal::Map(Some(map))) => map
+                .iter()
+                .find(|entry| entry.key == symbol(name))
+                .map(|entry| entry.val.clone()),
+            _ => None,
+        };
+        let (authorized, clawback) = if existing.is_some() {
+            let current = field("amount");
+            if field("authorized") == Some(ScVal::Bool(false))
+                && current != Some(ScVal::from(amount))
+            {
+                return Err(unsupported("the contract balance is not authorized"));
             }
-            .unwrap_or(ScVal::Bool(default))
+            (
+                field("authorized").unwrap_or(ScVal::Bool(true)),
+                field("clawback").unwrap_or(ScVal::Bool(false)),
+            )
+        } else {
+            // A new balance comes from a receipt, which needs authorization:
+            // the contract then writes it authorized.
+            if issuer_flags & AUTH_REQUIRED_FLAG != 0 && amount != 0 {
+                return Err(unsupported(
+                    "the issuer requires authorization for a new balance",
+                ));
+            }
+            (
+                ScVal::Bool(true),
+                ScVal::Bool(issuer_flags & AUTH_CLAWBACK_ENABLED_FLAG != 0),
+            )
         };
         let value = ScVal::Map(Some(ScMap(
             vec![
@@ -551,11 +648,11 @@ impl StrictFork {
                 },
                 ScMapEntry {
                     key: symbol("authorized"),
-                    val: flag("authorized", true),
+                    val: authorized,
                 },
                 ScMapEntry {
                     key: symbol("clawback"),
-                    val: flag("clawback", false),
+                    val: clawback,
                 },
             ]
             .try_into()
@@ -564,12 +661,15 @@ impl StrictFork {
         Ok(self.set_contract_data(token, key, durability, Some(value))?)
     }
 
-    /// [`Self::sign_transaction`] with unique nonces from a counter of this
-    /// fork and signatures valid for 100 ledgers.
+    /// [`Self::sign_transaction`] with derived nonces and signatures valid
+    /// for 100 ledgers.
     ///
-    /// The counter starts at 1 on every fork, so a deterministic scenario
-    /// signs the same nonces on every pass of
-    /// [`crate::AutoRunner::run_strict`].
+    /// The nonce of each signed tree is SHA-256 of the network ID, the
+    /// signing address, and a counter of this fork, truncated to a
+    /// non-negative `i64`: unique within the fork, unlikely to meet a live
+    /// nonce of a captured account, and the same on every pass of
+    /// [`crate::AutoRunner::run_strict`] and every replay of a deterministic
+    /// scenario.
     ///
     /// # Errors
     ///
@@ -585,17 +685,36 @@ impl StrictFork {
                 simulation.receipt,
             )));
         }
-        let first_nonce = self.next_nonce.get();
-        let trees = i64::try_from(simulation.authorization.len())
-            .map_err(|_| TransactionError::NonceOverflow)?;
+        let expiration = self.ledger_sequence().saturating_add(SIGNATURE_LEDGERS);
+        let authorization = self.authorize_with(
+            AuthorizationFormat::Address,
+            &simulation,
+            signers,
+            expiration,
+            |_, tree| self.derived_nonce(&tree.address),
+        )?;
+        self.prepare_transaction(call, authorization)
+    }
+
+    fn derived_nonce(&self, address: &ScAddress) -> Result<i64, TransactionError> {
+        let counter = self.next_nonce.get();
         self.next_nonce.set(
-            first_nonce
-                .checked_add(trees)
+            counter
+                .checked_add(1)
                 .ok_or(TransactionError::NonceOverflow)?,
         );
-        let expiration = self.ledger_sequence().saturating_add(SIGNATURE_LEDGERS);
-        let authorization = self.authorize(&simulation, signers, first_nonce, expiration)?;
-        self.prepare_transaction(call, authorization)
+        let mut digest = Sha256::new();
+        digest.update(NONCE_DOMAIN);
+        digest.update(self.network_id());
+        digest.update(
+            soroban_env_host::xdr::WriteXdr::to_xdr(address, soroban_env_host::xdr::Limits::none())
+                .map_err(|_| StrictForkError::Xdr)?,
+        );
+        digest.update(counter.to_be_bytes());
+        let bytes: [u8; 8] = digest.finalize()[..8]
+            .try_into()
+            .map_err(|_| StrictForkError::Xdr)?;
+        Ok(i64::from_be_bytes(bytes) & i64::MAX)
     }
 
     /// Signs and applies `call`; only a committed transaction is `Ok`.
@@ -679,14 +798,54 @@ impl StrictFork {
     }
 }
 
-fn account_sub_entry_added(account: &mut AccountEntry) {
-    account.num_sub_entries = account.num_sub_entries.saturating_add(1);
+fn unsupported(reason: &'static str) -> TransactionError {
+    TransactionError::UnsupportedTokenBalance { reason }
+}
+
+fn account_entry(account: AccountEntry, sequence: u32) -> LedgerEntry {
+    LedgerEntry {
+        last_modified_ledger_seq: sequence,
+        data: LedgerEntryData::Account(account),
+        ext: LedgerEntryExt::V0,
+    }
+}
+
+/// The Host's `get_min_max_account_balance`: the minimum balance plus
+/// selling liabilities, and the maximum minus buying liabilities.
+fn account_balance_bounds(account: &AccountEntry, base_reserve: i64) -> (i64, i64) {
+    let (entries, selling, buying) = match &account.ext {
+        AccountEntryExt::V0 => (2 + i64::from(account.num_sub_entries), 0, 0),
+        AccountEntryExt::V1(v1) => {
+            let entries = match &v1.ext {
+                AccountEntryExtensionV1Ext::V0 => 2 + i64::from(account.num_sub_entries),
+                AccountEntryExtensionV1Ext::V2(v2) => {
+                    2 + i64::from(account.num_sub_entries) + i64::from(v2.num_sponsoring)
+                        - i64::from(v2.num_sponsored)
+                }
+            };
+            (entries, v1.liabilities.selling, v1.liabilities.buying)
+        }
+    };
+    (
+        entries.saturating_mul(base_reserve).saturating_add(selling),
+        i64::MAX.saturating_sub(buying),
+    )
+}
+
+/// The Host's `get_min_max_trustline_balance`; `None` when the limit is
+/// below the buying liabilities.
+fn trustline_balance_bounds(line: &TrustLineEntry) -> Option<(i64, i64)> {
+    match &line.ext {
+        TrustLineEntryExt::V0 => Some((0, line.limit)),
+        TrustLineEntryExt::V1(v1) => (line.limit >= v1.liabilities.buying)
+            .then(|| (v1.liabilities.selling, line.limit - v1.liabilities.buying)),
+    }
 }
 
 impl PreparedTransaction {
-    /// The same transaction with authorization entry `index` signed again
-    /// by `signer`, keeping its credentials format, nonce, and expiration;
-    /// for example a wrong signer.
+    /// The same transaction with the signature of authorization entry
+    /// `index` replaced by one from `signer`, keeping the credentials kind,
+    /// nonce, expiration, and any delegates; for example a wrong signer.
     ///
     /// # Errors
     ///
@@ -704,16 +863,18 @@ impl PreparedTransaction {
     ) -> Result<Self, TransactionError> {
         let entry = self
             .authorization
-            .get(index)
+            .get_mut(index)
             .expect("authorization entry index out of range");
-        let (format, credentials) = match &entry.credentials {
+        let invocation = entry.root_invocation.clone();
+        // AddressV2 and delegated credentials sign the address-bound payload.
+        let (format, credentials) = match &mut entry.credentials {
             SorobanCredentials::Address(credentials) => (AuthorizationFormat::Address, credentials),
             SorobanCredentials::AddressV2(credentials) => {
                 (AuthorizationFormat::AddressV2, credentials)
             }
             SorobanCredentials::AddressWithDelegates(credentials) => (
                 AuthorizationFormat::AddressV2,
-                &credentials.address_credentials,
+                &mut credentials.address_credentials,
             ),
             SorobanCredentials::SourceAccount => {
                 panic!("source-account credentials carry no signature")
@@ -721,16 +882,21 @@ impl PreparedTransaction {
         };
         let tree = AuthorizationTree {
             address: credentials.address.clone(),
-            invocation: entry.root_invocation.clone(),
+            invocation,
         };
-        let entry = fork.sign_authorization_as(
+        let replacement = fork.sign_authorization_as(
             format,
             &tree,
             signer,
             credentials.nonce,
             credentials.signature_expiration_ledger,
         )?;
-        self.authorization[index] = entry;
+        let (SorobanCredentials::Address(fresh) | SorobanCredentials::AddressV2(fresh)) =
+            replacement.credentials
+        else {
+            unreachable!("signing produces address credentials");
+        };
+        credentials.signature = fresh.signature;
         Ok(self)
     }
 

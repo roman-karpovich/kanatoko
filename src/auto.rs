@@ -452,7 +452,10 @@ impl AutoRunner {
     /// transaction leaves out of its declared footprint is a Host failure,
     /// as in Stellar Core, and is never fetched. The bundle is then written
     /// to the cache, read back, and `scenario` runs once more on that frozen
-    /// fixture; its value is the result. Offline, `scenario` only runs on the
+    /// fixture; its value is the result. The bundle reaches the cache only
+    /// after that pass, through a temporary file next to it; without a cache
+    /// the final pass still runs on a bundle written to and read back from
+    /// the system temporary directory. Offline, `scenario` only runs on the
     /// cached fixture.
     ///
     /// The network settings are always captured, as with
@@ -471,6 +474,7 @@ impl AutoRunner {
     ///
     /// Returns a capture, cache, or offline-cache error, or
     /// [`CaptureError::ScenarioPanicked`] when the final pass panics.
+    #[allow(clippy::too_many_lines)]
     pub fn run_strict<F, R>(&self, scenario: F) -> Result<StrictRun<R>, AutoRunError>
     where
         F: Fn(&mut StrictFork) -> R,
@@ -544,38 +548,69 @@ impl AutoRunner {
             None => BTreeMap::new(),
         };
         let captured = builder.capture_strict(inventory, discover)?;
-        let (frozen, cache_status) = match self.cache.as_deref() {
-            Some(path) => {
-                if let Some(parent) = path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                {
-                    fs::create_dir_all(parent).map_err(|source| CaptureError::CaptureBundleIo {
-                        operation: "create-cache-directory",
-                        source,
-                    })?;
-                }
-                captured.write_file(path)?;
-                let frozen = CapturedFixture::from_file_with_policy(
-                    path,
-                    &self.network_passphrase,
-                    self.protocol_policy,
-                )?;
-                let status = if cache_existed {
-                    CacheStatus::Refreshed
-                } else {
-                    CacheStatus::Created
-                };
-                (frozen, status)
+        // The bundle is written to a temporary file and read back, so the
+        // final pass always runs on the frozen fixture. Only a final pass
+        // that does not panic moves it into the cache.
+        let temporary = temporary_bundle_path(self.cache.as_deref());
+        if let Some(parent) = temporary
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(|source| CaptureError::CaptureBundleIo {
+                operation: "create-cache-directory",
+                source,
+            })?;
+        }
+        let frozen = captured.write_file(&temporary).and_then(|()| {
+            CapturedFixture::from_file_with_policy(
+                &temporary,
+                &self.network_passphrase,
+                self.protocol_policy,
+            )
+        });
+        let outcome = frozen.and_then(|frozen| final_pass(&frozen).map(|value| (frozen, value)));
+        let (frozen, value) = match outcome {
+            Ok(done) => done,
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
             }
-            None => (captured, CacheStatus::Disabled),
         };
-        let value = final_pass(&frozen)?;
+        let cache_status = if let Some(path) = self.cache.as_deref() {
+            fs::rename(&temporary, path).map_err(|source| CaptureError::CaptureBundleIo {
+                operation: "rename-cache",
+                source,
+            })?;
+            if cache_existed {
+                CacheStatus::Refreshed
+            } else {
+                CacheStatus::Created
+            }
+        } else {
+            let _ = fs::remove_file(&temporary);
+            CacheStatus::Disabled
+        };
         Ok(StrictRun {
             value,
             fixture: frozen,
             cache_status,
         })
+    }
+}
+
+/// A fresh temporary bundle path next to the cache, or in the system
+/// temporary directory without one.
+fn temporary_bundle_path(cache: Option<&Path>) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = format!(
+        ".kanatoko-strict-run-{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    match cache.and_then(Path::parent) {
+        Some(parent) => parent.join(name),
+        None => std::env::temp_dir().join(name),
     }
 }
 
