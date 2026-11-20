@@ -45,8 +45,8 @@ pub(crate) const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; Sep
 pub(crate) const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 const MAX_COHERENCE_ATTEMPTS: usize = 8;
 const MAX_DISCOVERY_ROUNDS: usize = 16;
-/// A strict pass usually stops at the first uncaptured key, so a flow of
-/// many transactions takes about one round per step.
+/// A discovering pass treats uncaptured keys as absent and runs on, so a
+/// round only adds keys that depend on values fetched in the round before.
 const MAX_STRICT_DISCOVERY_ROUNDS: usize = 64;
 const MAX_EXECUTABLE_CLOSURE_ROUNDS: usize = 16;
 const MAX_KEYS_PER_BATCH: usize = 200;
@@ -1122,7 +1122,9 @@ fn validate_bundle_metadata(
         || provenance.protocol_version != ledger_snapshot.protocol_version
         || provenance.ledger_hash.is_empty()
         || discovery_rounds == 0
-        || discovery_rounds > MAX_DISCOVERY_ROUNDS
+        // Strict runs allow more rounds than closure captures; a bundle from
+        // either is valid up to the larger bound.
+        || discovery_rounds > MAX_DISCOVERY_ROUNDS.max(MAX_STRICT_DISCOVERY_ROUNDS)
         || report.final_replay_rpc_reads != 0
     {
         return Err(CaptureError::CaptureBundleIntegrity);
@@ -2924,6 +2926,87 @@ mod tests {
         assert!(matches!(
             unknown.into_value(),
             Err(crate::StrictForkError::UnknownLedgerKeys { count: 1, .. })
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_multi_step_flow_needs_far_fewer_rounds_than_steps() {
+        use crate::auto::AutoRunner;
+
+        let fake = FakeTransport::with_network_config();
+        let path = test_bundle_path("few-rounds");
+        let run =
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+                .run_strict(strict_flow)
+                .unwrap();
+        run.value().as_ref().unwrap();
+        // Account, upload, create, sign, failed apply, balance, apply, view:
+        // eight steps, one round to learn their keys and one to confirm.
+        assert!(run.fixture().report().discovery_rounds() <= 2);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn strict_bundles_beyond_sixteen_rounds_read_back() {
+        use crate::{auto::AutoRunner, Ed25519Signer};
+
+        // Twenty network accounts, each read only once the previous one is
+        // known to exist: every round can learn just one of them.
+        let signers: Vec<Ed25519Signer> = (0..20)
+            .map(|index| Ed25519Signer::from_label(&format!("chain {index}")))
+            .collect();
+        let accounts = signers
+            .iter()
+            .map(|signer| LedgerEntry {
+                last_modified_ledger_seq: 0,
+                data: LedgerEntryData::Account(soroban_env_host::xdr::AccountEntry {
+                    account_id: signer.account_id(),
+                    balance: 100_000_000,
+                    seq_num: soroban_env_host::xdr::SequenceNumber(1),
+                    num_sub_entries: 0,
+                    inflation_dest: None,
+                    flags: 0,
+                    home_domain: soroban_env_host::xdr::String32::default(),
+                    thresholds: soroban_env_host::xdr::Thresholds([1, 0, 0, 0]),
+                    signers: soroban_env_host::xdr::VecM::default(),
+                    ext: soroban_env_host::xdr::AccountEntryExt::V0,
+                }),
+                ext: LedgerEntryExt::V0,
+            })
+            .collect();
+        let fake = FakeTransport::with_network_config_and(accounts);
+        let path = test_bundle_path("many-rounds");
+        let chain = |fork: &mut StrictFork| -> Result<usize, crate::StrictForkError> {
+            let mut known = 0;
+            for signer in &signers {
+                if fork.ledger_entry(&signer.account_key())?.is_none() {
+                    break;
+                }
+                known += 1;
+            }
+            Ok(known)
+        };
+        let run =
+            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
+                .cache(&path)
+                .run_strict(chain)
+                .unwrap();
+        assert!(run.fixture().report().discovery_rounds() > MAX_DISCOVERY_ROUNDS);
+        assert_eq!(run.into_value().unwrap(), 20);
+        let reloaded = CapturedFixture::from_file(&path, MAINNET_PASSPHRASE).unwrap();
+        assert_eq!(reloaded.report().discovery_rounds(), 21);
+
+        // The bound that produced it still caps what a bundle may claim.
+        let mut bundle: CaptureBundleV2 =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        bundle.report.discovery_rounds = u32::try_from(MAX_STRICT_DISCOVERY_ROUNDS + 1).unwrap();
+        refresh_bundle_digests(&mut bundle);
+        fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert!(matches!(
+            CapturedFixture::from_file(&path, MAINNET_PASSPHRASE),
+            Err(CaptureError::CaptureBundleIntegrity)
         ));
         fs::remove_file(path).unwrap();
     }
@@ -5111,6 +5194,11 @@ mod tests {
         /// committed network-config capture; `StateArchival` keeps the fake
         /// ledger's TTL bounds.
         fn with_network_config() -> Rc<Self> {
+            Self::with_network_config_and(Vec::new())
+        }
+
+        /// [`Self::with_network_config`] plus `extra` network entries.
+        fn with_network_config_and(extra: Vec<LedgerEntry>) -> Rc<Self> {
             let mut fake = Rc::try_unwrap(Self::from_soroswap_snapshot())
                 .unwrap_or_else(|_| unreachable!("the fake was just created"));
             let bundle: CaptureBundleV2 = serde_json::from_slice(
@@ -5139,6 +5227,16 @@ mod tests {
                         },
                     );
                 }
+            }
+            for mut entry in extra {
+                entry.last_modified_ledger_seq = fake.anchor.sequence;
+                fake.entries.insert(
+                    key_id(&entry.to_key()).unwrap(),
+                    FetchedEntry {
+                        entry: Rc::new(entry),
+                        live_until: None,
+                    },
+                );
             }
             Rc::new(fake)
         }

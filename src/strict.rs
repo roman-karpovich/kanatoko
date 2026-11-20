@@ -208,8 +208,10 @@ pub struct StrictFork {
 }
 
 impl StrictFork {
-    /// A fork that also records every uncaptured key it fails on in
-    /// `discovery`. Strictness is unchanged: the failure still happens.
+    /// A discovering fork: every uncaptured key is recorded in `discovery`
+    /// and treated as absent for the rest of the pass. Keys left out of a
+    /// transaction's declared footprint never reach a lookup, so they still
+    /// fail in the Host and are never recorded.
     pub(crate) fn discovering(
         snapshot: &LedgerSnapshot,
         coverage: BTreeMap<KeyId, LookupState>,
@@ -220,15 +222,19 @@ impl StrictFork {
         fork
     }
 
-    /// The fail-closed error for uncaptured `keys`, recorded for discovery.
-    pub(crate) fn report_unknown(&self, keys: Vec<KeyId>) -> StrictForkError {
+    /// Handles uncaptured `keys`. A strict fork fails closed. A discovering
+    /// fork records them and continues as if they were absent, so one pass
+    /// learns every key the flow reaches; its results are discarded, and only
+    /// the final strict pass on the frozen fixture counts.
+    pub(crate) fn unknown_or_absent(&self, keys: Vec<KeyId>) -> Result<(), StrictForkError> {
         if let Some(discovery) = &self.discovery {
-            discovery.borrow_mut().extend(keys.iter().cloned());
+            discovery.borrow_mut().extend(keys);
+            return Ok(());
         }
-        StrictForkError::UnknownLedgerKeys {
+        Err(StrictForkError::UnknownLedgerKeys {
             count: keys.len(),
             keys,
-        }
+        })
     }
 
     pub(crate) fn from_captured(
@@ -417,7 +423,7 @@ impl StrictFork {
             false,
         )?;
         if !unknown.is_empty() {
-            return Err(self.report_unknown(unknown.into_iter().collect()));
+            self.unknown_or_absent(unknown.into_iter().collect())?;
         }
         let installed = installed.map_err(|_| StrictForkError::CandidateRegistrationFailed)?;
         let installed: ScAddress = (&installed).into();
@@ -515,7 +521,7 @@ impl StrictFork {
             allow_mock_nonces,
         )?;
         if !unknown.is_empty() {
-            return Err(self.report_unknown(unknown.into_iter().collect()));
+            self.unknown_or_absent(unknown.into_iter().collect())?;
         }
 
         let (authorization, events) = detached_snapshot_evidence(&child);
