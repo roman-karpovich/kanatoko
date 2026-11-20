@@ -444,12 +444,14 @@ impl AutoRunner {
     ///
     /// Online, each discovery pass runs on a fresh strict fork of a coherent
     /// ledger. Every uncaptured key the pass meets, in simulation, apply,
-    /// reads, overrides, or local account creation, is recorded and treated
-    /// as absent for the rest of that pass, so the pass runs on and one
-    /// round learns every key the flow reaches. The recorded keys are
-    /// fetched at a new coherent ledger and the pass reruns until it records
-    /// none; another round is only needed where a later step depends on a
-    /// value fetched in the previous one. Failure-only keys are found too,
+    /// reads, overrides, or local account creation, is recorded and read
+    /// from the network at that round's ledger, so the pass runs on with the
+    /// real value and follows dependency chains (an instance, its code and
+    /// storage, the contracts it calls). If the network has moved past the
+    /// round's ledger, the key is treated as absent for the rest of the pass
+    /// instead. The recorded keys are rematerialized at a new coherent ledger
+    /// and the pass reruns until it records none; values read during a pass
+    /// are never frozen. Failure-only keys are found too,
     /// because negative tests run inside the scenario. A key a transaction
     /// leaves out of its declared footprint never reaches a lookup: it fails
     /// in the Host, as in Stellar Core, and is never fetched. Discovery
@@ -509,13 +511,12 @@ impl AutoRunner {
             });
         }
 
-        let discover = |fixture: &CapturedFixture| {
-            let discovery = Rc::new(RefCell::new(BTreeSet::new()));
+        let discover = |fixture: &CapturedFixture, fetch: Option<crate::strict::Fetch>| {
+            let discovery = Rc::new(crate::strict::Discovery::new(fetch));
             let mut fork = fixture.discovering_fork(discovery.clone());
             let _ = call_with_suppressed_panic_hook(AssertUnwindSafe(|| scenario(&mut fork)));
             drop(fork);
-            Rc::try_unwrap(discovery)
-                .map_or_else(|shared| shared.borrow().clone(), RefCell::into_inner)
+            discovery.pending()
         };
         let http;
         let builder = match &self.source {
@@ -536,7 +537,7 @@ impl AutoRunner {
         if let Some(cached) = &cached {
             if cached.has_network_config()?
                 && builder.cached_anchor_is_current(cached)?
-                && discover(cached).is_empty()
+                && discover(cached, None).is_empty()
             {
                 let value = final_pass(cached)?;
                 return Ok(StrictRun {
@@ -550,7 +551,8 @@ impl AutoRunner {
             Some(cached) => cached.inventory_keys()?,
             None => BTreeMap::new(),
         };
-        let captured = builder.capture_strict(inventory, discover)?;
+        let captured =
+            builder.capture_strict(inventory, |fixture, fetch| discover(fixture, Some(fetch)))?;
         // The bundle is written to a temporary file and read back, so the
         // final pass always runs on the frozen fixture. Only a final pass
         // that does not panic moves it into the cache.

@@ -264,3 +264,108 @@ fn views_report_typed_failures() {
         ))
     );
 }
+
+mod typed {
+    use kanatoko::soroban_sdk::{self, contracttype, Address, Map, Symbol, Val};
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct Position {
+        pub owner: Address,
+        pub amount: i128,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum DataKey {
+        Position(Address),
+    }
+
+    pub type Fields = Map<Symbol, Val>;
+}
+
+#[test]
+fn contract_types_convert_without_an_env() {
+    use kanatoko::{conversion_env, from_sc_val, sdk, to_sc_val};
+    use typed::{DataKey, Fields, Position};
+
+    let run = runner()
+        .offline()
+        .run_strict(|fork| -> Result<(), Box<dyn std::error::Error>> {
+            let owner = signer("strict owner");
+            let app = setup(fork)?;
+            let env = conversion_env();
+            let holder = kanatoko::soroban_sdk::Address::from_str(&env, XLM);
+            let position = Position {
+                owner: holder.clone(),
+                amount: 7,
+            };
+            assert_eq!(from_sc_val::<Position>(&to_sc_val(&position)?)?, position);
+
+            // An enum key and a struct value, written, read, and updated.
+            let durability = ContractDataDurability::Persistent;
+            let key = sdk(DataKey::Position(holder.clone()));
+            fork.set_contract_data(&app, key.clone(), durability, Some(to_sc_val(&position)?))?;
+            fork.update_contract_data(&app, key.clone(), durability, |stored: &mut Position| {
+                stored.amount += 1;
+            })?;
+            let stored = fork.contract_data::<Position>(&app, key, durability)?;
+            assert_eq!(stored.map(|stored| stored.amount), Some(8));
+
+            // Typed events, exactly one, and measured headroom.
+            let receipt = fork.apply_signed(&increment(&owner, &app)?, &[&owner])?;
+            let event = receipt.single_event(&app, "increment")?;
+            assert_eq!(
+                event
+                    .topic_as::<kanatoko::soroban_sdk::Symbol>(0)?
+                    .to_string(),
+                "increment"
+            );
+            let fields = event.data_as::<Fields>()?;
+            let value: i64 = kanatoko::soroban_sdk::TryFromVal::try_from_val(
+                &conversion_env(),
+                &fields
+                    .get(kanatoko::soroban_sdk::Symbol::new(
+                        &conversion_env(),
+                        "value",
+                    ))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(value, 46);
+            assert!(matches!(
+                receipt.single_event(&app, "reject"),
+                Err(TransactionError::EventCount { found: 0 })
+            ));
+            let limits = fork.network_config()?.limits();
+            receipt.resources.check_within(&limits.scaled(50))?;
+            assert!(receipt.resources.check_within(&limits.scaled(0)).is_err());
+            Ok(())
+        })
+        .unwrap();
+    run.into_value().unwrap();
+}
+
+#[test]
+fn rejections_are_asserted_in_one_call() {
+    runner()
+        .offline()
+        .run_strict(|fork| -> Outcome<()> {
+            let (owner, other) = (signer("strict owner"), signer("strict other"));
+            let app = setup(fork)?;
+            let call =
+                TransactionCall::invoke_fn(&other, &app, "authorized_increment", (&owner, 5_i64))?;
+            let wrong = fork.sign(&call, &[&owner])?.resigned_by(fork, 0, &other)?;
+            let receipt =
+                fork.expect_rejected_with(&wrong, &ScError::Auth(ScErrorCode::InvalidAction))?;
+            assert_eq!(receipt.disposition, ReceiptDisposition::Rejected);
+            assert!(matches!(
+                fork.expect_rejected_with(&wrong, &ScError::Contract(1)),
+                Err(TransactionError::UnexpectedFailure(_))
+            ));
+            Ok(())
+        })
+        .unwrap()
+        .into_value()
+        .unwrap();
+}

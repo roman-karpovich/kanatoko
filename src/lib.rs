@@ -57,9 +57,10 @@ pub use strict::{
 };
 #[cfg(feature = "capture")]
 pub use transaction::{
-    symbol, vec_val, AuthorizationFormat, Deployment, Ed25519Signer, FailedApply, IntoArgs,
-    IntoScVal, InvalidTransaction, NetworkConfig, PreparedTransaction, ResourceExcess, ResourceFee,
-    ResourceReport, TransactionCall, TransactionError, TransactionLimits, TransactionReceipt,
+    conversion_env, from_sc_val, sdk, symbol, to_sc_val, vec_val, AuthorizationFormat,
+    ConversionError, Deployment, Ed25519Signer, FailedApply, IntoArgs, IntoScVal,
+    InvalidTransaction, NetworkConfig, PreparedTransaction, ResourceExcess, ResourceFee,
+    ResourceReport, Sdk, TransactionCall, TransactionError, TransactionLimits, TransactionReceipt,
     TransactionResource, TransactionSimulation,
 };
 

@@ -56,7 +56,10 @@ use thiserror::Error;
 
 pub(crate) use config::network_config_keys;
 pub use config::NetworkConfig;
-pub use typed::{symbol, vec_val, Deployment, IntoArgs, IntoScVal};
+pub use typed::{
+    conversion_env, from_sc_val, sdk, symbol, to_sc_val, vec_val, ConversionError, Deployment,
+    IntoArgs, IntoScVal, Sdk,
+};
 use validate::{
     available_balance, check_entry_size, check_events, check_soroban_resources, check_time_bounds,
     check_writes, footprint_counts, is_soroban_key, restored_indices,
@@ -233,7 +236,8 @@ pub enum TransactionResource {
 }
 
 /// A resource above its declared amount or network limit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("{resource:?} of {used} exceeds {limit}")]
 #[non_exhaustive]
 pub struct ResourceExcess {
     pub resource: TransactionResource,
@@ -793,6 +797,10 @@ pub enum TransactionError {
     UnsupportedTokenBalance { reason: &'static str },
     #[error("the contract data entry does not exist")]
     MissingContractData,
+    #[error("the transaction failed differently than expected: {0:?}")]
+    UnexpectedFailure(Box<FailedApply>),
+    #[error("expected exactly one matching event, found {found}")]
+    EventCount { found: usize },
 }
 
 impl TransactionError {
@@ -912,10 +920,13 @@ impl StrictFork {
             None if is_local_key(key, &self.local_contracts, &self.local_code_hashes, false) => {
                 Ok(None)
             }
-            None => {
-                self.unknown_or_absent(vec![id])?;
-                Ok(None)
-            }
+            None => match self.resolve_unknown(vec![id.clone()])?.remove(&id) {
+                Some(LookupState::Present(entry, live_until)) => Ok(Some(LedgerValue {
+                    entry: (*entry).clone(),
+                    live_until_ledger: live_until,
+                })),
+                _ => Ok(None),
+            },
         }
     }
 
@@ -958,7 +969,13 @@ impl StrictFork {
         match self.coverage.get(&id) {
             Some(LookupState::Absent) => {}
             Some(LookupState::Present(_, _)) => return Err(TransactionError::LocalAccountExists),
-            None => self.unknown_or_absent(vec![id])?,
+            None => {
+                if let Some(LookupState::Present(_, _)) =
+                    self.resolve_unknown(vec![id.clone()])?.remove(&id)
+                {
+                    return Err(TransactionError::LocalAccountExists);
+                }
+            }
         }
         let ledger = self.ledger_info();
         let minimum = i64::from(ledger.base_reserve).saturating_mul(2);
@@ -1468,6 +1485,7 @@ impl StrictFork {
             &self.local_contracts,
             &self.local_code_hashes,
             false,
+            self.discovery.clone(),
         );
         self.coverage = coverage;
         self.env = env;
@@ -1480,6 +1498,7 @@ impl StrictFork {
             &self.known_contracts(),
             &self.local_code_hashes,
             allow_mock_nonces,
+            self.discovery.clone(),
         ))
     }
 
@@ -1547,7 +1566,7 @@ impl StrictFork {
         .map_err(|_| TransactionError::InvalidNetworkConfig)?;
         let unknown_keys = source.unknown.borrow().clone();
         if !unknown_keys.is_empty() {
-            self.unknown_or_absent(unknown_keys.into_iter().collect())?;
+            self.resolve_unknown(unknown_keys.into_iter().collect())?;
         }
 
         let transaction_data = simulated
@@ -1683,8 +1702,14 @@ impl StrictFork {
                 return Err(InvalidTransaction::SourceAccountMissing.into())
             }
             None => {
-                self.unknown_or_absent(vec![key_id(&source_key)?])?;
-                return Err(InvalidTransaction::SourceAccountMissing.into());
+                let id = key_id(&source_key)?;
+                match self.resolve_unknown(vec![id.clone()])?.remove(&id) {
+                    Some(LookupState::Present(entry, _)) => match &entry.data {
+                        LedgerEntryData::Account(account) => account.clone(),
+                        _ => return Err(InvalidTransaction::SourceAccountMissing.into()),
+                    },
+                    _ => return Err(InvalidTransaction::SourceAccountMissing.into()),
+                }
             }
         };
         let [master, _, medium, _] = account.thresholds.0;
@@ -1747,9 +1772,11 @@ impl StrictFork {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            self.unknown_or_absent(missing)?;
-        }
+        let resolved = if missing.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.resolve_unknown(missing)?
+        };
 
         // Fee and sequence-number processing, before the operation applies.
         let counts = footprint_counts(footprint, restored);
@@ -1771,6 +1798,7 @@ impl StrictFork {
             Some((charged_account.clone(), None)),
         )?;
         let mut state = self.coverage.clone();
+        state.extend(resolved);
         state.insert(
             key_id(&source_key)?,
             LookupState::Present(Rc::new(charged_account), None),

@@ -402,7 +402,7 @@ impl CaptureBuilder {
         pass: F,
     ) -> Result<CapturedFixture, CaptureError>
     where
-        F: Fn(&CapturedFixture) -> BTreeSet<KeyId>,
+        F: Fn(&CapturedFixture, crate::strict::Fetch) -> BTreeSet<KeyId>,
     {
         self.validate_network()?;
         for key in crate::transaction::network_config_keys() {
@@ -411,9 +411,10 @@ impl CaptureBuilder {
         for round in 1..=MAX_STRICT_DISCOVERY_ROUNDS {
             let mut materialized = self.materialize(&keys)?;
             materialized = self.expand_code_closure(&mut keys, materialized)?;
+            let fetch = self.anchored_fetch(&materialized);
             let fixture = self.captured_fixture(materialized, round)?;
             let mut added = 0_usize;
-            for id in pass(&fixture) {
+            for id in pass(&fixture, fetch) {
                 if keys.contains_key(&id) {
                     continue;
                 }
@@ -428,6 +429,36 @@ impl CaptureBuilder {
         }
         Err(CaptureError::FixedPointLimit {
             rounds: MAX_STRICT_DISCOVERY_ROUNDS,
+        })
+    }
+
+    /// Reads keys at the anchor ledger of `materialized` with the same
+    /// validation as a coherent materialization; `None` once the network
+    /// moved past the anchor or a read fails.
+    fn anchored_fetch(&self, materialized: &Materialized) -> crate::strict::Fetch {
+        let transport = self.transport.clone();
+        let anchor = materialized.anchor.sequence;
+        let max_entry_ttl = materialized.ledger_info.max_entry_ttl;
+        Box::new(move |keys: &[LedgerKey]| {
+            let mut states = Vec::new();
+            for chunk in keys.chunks(MAX_KEYS_PER_BATCH) {
+                let batch = transport.ledger_entries(chunk).ok()?;
+                if batch.latest_ledger != anchor {
+                    return None;
+                }
+                let mut returned = validate_batch(chunk, batch.entries).ok()?;
+                let mut coverage = BTreeMap::new();
+                for key in chunk {
+                    let id = key_id(key).ok()?;
+                    let state = returned.remove(&id).map_or(LookupState::Absent, |entry| {
+                        LookupState::Present(entry.entry, entry.live_until)
+                    });
+                    coverage.insert(id, state);
+                }
+                validate_coverage(&coverage, anchor, max_entry_ttl).ok()?;
+                states.extend(coverage);
+            }
+            Some(states)
         })
     }
 
@@ -839,7 +870,7 @@ impl CapturedFixture {
     }
 
     /// [`Self::fork`] that records the uncaptured keys it fails on.
-    pub(crate) fn discovering_fork(&self, discovery: Rc<RefCell<BTreeSet<KeyId>>>) -> StrictFork {
+    pub(crate) fn discovering_fork(&self, discovery: Rc<crate::strict::Discovery>) -> StrictFork {
         StrictFork::discovering(
             self.fixture.ledger_snapshot(),
             self.coverage.clone(),
@@ -2949,11 +2980,52 @@ mod tests {
     }
 
     #[test]
+    fn a_dependency_chain_is_fetched_within_one_round() {
+        use crate::transaction::vec_val;
+
+        // The router's instance leads to its code and storage, then to the
+        // pair's instance, code, and reserves, and to the token contracts.
+        let quote = |fork: &mut StrictFork| -> Result<ScVal, crate::TransactionError> {
+            let router = parse_legacy_contract_address(ROUTER_ID).unwrap();
+            let path = vec_val((
+                parse_legacy_contract_address(USDC_ID).unwrap(),
+                parse_legacy_contract_address(XLM_ID).unwrap(),
+            ));
+            fork.view::<soroban_sdk::Val>(&router, "router_get_amounts_out", (ONE_USDC, path))
+                .map(|_| ScVal::Void)
+        };
+        let rounds = |lazy: bool| {
+            let fake = FakeTransport::with_network_config();
+            builder(&fake)
+                .capture_network_config()
+                .capture_strict(BTreeMap::new(), |fixture, fetch| {
+                    let discovery = Rc::new(crate::strict::Discovery::new(lazy.then_some(fetch)));
+                    let mut fork = fixture.discovering_fork(discovery.clone());
+                    let _ = quote(&mut fork);
+                    drop(fork);
+                    discovery.pending()
+                })
+                .unwrap()
+        };
+        let collect_only = rounds(false);
+        let lazy = rounds(true);
+        assert!(lazy.report().discovery_rounds() <= 2);
+        assert!(collect_only.report().discovery_rounds() > lazy.report().discovery_rounds());
+        assert_eq!(
+            lazy.coverage.keys().collect::<Vec<_>>(),
+            collect_only.coverage.keys().collect::<Vec<_>>()
+        );
+        // The frozen fixture answers the quote strictly.
+        let mut fork = lazy.fork();
+        assert!(quote(&mut fork).is_ok());
+    }
+
+    #[test]
     fn strict_bundles_beyond_sixteen_rounds_read_back() {
-        use crate::{auto::AutoRunner, Ed25519Signer};
+        use crate::Ed25519Signer;
 
         // Twenty network accounts, each read only once the previous one is
-        // known to exist: every round can learn just one of them.
+        // known to exist.
         let signers: Vec<Ed25519Signer> = (0..20)
             .map(|index| Ed25519Signer::from_label(&format!("chain {index}")))
             .collect();
@@ -2988,15 +3060,35 @@ mod tests {
             }
             Ok(known)
         };
-        let run =
-            AutoRunner::with_builder(builder(&fake).capture_network_config(), MAINNET_PASSPHRASE)
-                .cache(&path)
-                .run_strict(chain)
-                .unwrap();
-        assert!(run.fixture().report().discovery_rounds() > MAX_DISCOVERY_ROUNDS);
-        assert_eq!(run.into_value().unwrap(), 20);
+        // Without reads during a pass, every round learns one account.
+        let captured = builder(&fake)
+            .capture_network_config()
+            .capture_strict(BTreeMap::new(), |fixture, _| {
+                let discovery = Rc::new(crate::strict::Discovery::new(None));
+                let mut fork = fixture.discovering_fork(discovery.clone());
+                let _ = chain(&mut fork);
+                drop(fork);
+                discovery.pending()
+            })
+            .unwrap();
+        assert_eq!(captured.report().discovery_rounds(), 21);
+        captured.write_file(&path).unwrap();
         let reloaded = CapturedFixture::from_file(&path, MAINNET_PASSPHRASE).unwrap();
         assert_eq!(reloaded.report().discovery_rounds(), 21);
+        assert_eq!(chain(&mut reloaded.fork()).unwrap(), 20);
+
+        // run_strict reads the chain during its first pass instead.
+        let lazy_path = test_bundle_path("many-rounds-lazy");
+        let run = crate::auto::AutoRunner::with_builder(
+            builder(&fake).capture_network_config(),
+            MAINNET_PASSPHRASE,
+        )
+        .cache(&lazy_path)
+        .run_strict(chain)
+        .unwrap();
+        assert!(run.fixture().report().discovery_rounds() <= 2);
+        assert_eq!(run.into_value().unwrap(), 20);
+        fs::remove_file(lazy_path).unwrap();
 
         // The bound that produced it still caps what a bundle may claim.
         let mut bundle: CaptureBundleV2 =
@@ -3203,12 +3295,12 @@ mod tests {
         );
 
         // On the frozen fixture the same flow records no key at all.
-        let discovered = Rc::new(RefCell::new(BTreeSet::new()));
-        let mut fork = run.fixture().discovering_fork(discovered.clone());
+        let discovery = Rc::new(crate::strict::Discovery::new(None));
+        let mut fork = run.fixture().discovering_fork(discovery.clone());
         let failed = flow(&mut fork).unwrap();
         assert!(matches!(failed, FailedApply::Rejected(_)));
-        assert!(!discovered.borrow().contains(&key_id(&instance).unwrap()));
-        assert!(discovered.borrow().is_empty());
+        assert!(!discovery.pending().contains(&key_id(&instance).unwrap()));
+        assert!(discovery.pending().is_empty());
         fs::remove_file(path).unwrap();
     }
 

@@ -1,12 +1,16 @@
 //! A small typed layer over transaction-faithful execution.
 //!
-//! Arguments and keys are XDR values built without an `Env` ([`IntoScVal`],
-//! [`IntoArgs`]): a [`StrictFork`] replaces its environment on every commit,
-//! so SDK values bound to another environment could not cross into it.
-//! Results are converted with the SDK's `TryFromVal` in the fork's current
-//! environment.
+//! Only XDR values cross into a [`StrictFork`], which replaces its
+//! environment on every commit. Arguments and keys are [`IntoScVal`] values;
+//! SDK values, such as contract types, are converted to and from XDR in a
+//! per-thread conversion environment ([`conversion_env`], [`to_sc_val`],
+//! [`from_sc_val`], [`sdk`]). Results, contract data, and event fields are
+//! decoded there too, so no SDK object of a fork's environment escapes.
 
-use std::fmt;
+use std::{
+    fmt,
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
@@ -17,7 +21,8 @@ use soroban_env_host::xdr::{
     ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, SorobanCredentials, TrustLineAsset, TrustLineEntry,
     TrustLineEntryExt, Uint256,
 };
-use soroban_sdk::{Env, IntoVal, TryFromVal, Val};
+use soroban_sdk::{testutils::EnvTestConfig, Env, IntoVal, TryFromVal, Val};
+use thiserror::Error;
 
 use super::{
     AuthorizationFormat, Ed25519Signer, FailedApply, PreparedTransaction, TransactionCall,
@@ -28,6 +33,86 @@ use crate::{
     InvocationFailure, InvokeErrorKind, InvokeOutcome, InvokeRequest, StateChange, StrictFork,
     StrictForkError,
 };
+
+thread_local! {
+    static CONVERSION_ENV: Env = {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        env
+    };
+}
+
+/// A value that does not convert between the SDK and XDR.
+#[derive(Clone, Copy, Debug, Default, Eq, Error, PartialEq)]
+#[error("the value does not convert between the SDK and XDR")]
+pub struct ConversionError;
+
+/// This thread's conversion environment, a plain SDK `Env` without ledger
+/// state. Build SDK values that [`to_sc_val`] or [`sdk`] convert in it, such
+/// as an `Address::from_str(&env, ...)` field of a contract type; values from
+/// [`from_sc_val`] belong to it too. It never touches a fork.
+#[must_use]
+pub fn conversion_env() -> Env {
+    CONVERSION_ENV.with(Clone::clone)
+}
+
+/// Converts an SDK value of the conversion environment, such as a
+/// `#[contracttype]` struct, enum, vector, or map, to XDR.
+///
+/// # Errors
+///
+/// Returns [`ConversionError`] when the value does not convert, for example
+/// because it holds an object of another environment.
+pub fn to_sc_val<T: IntoVal<Env, Val>>(value: &T) -> Result<ScVal, ConversionError> {
+    let env = conversion_env();
+    let _ = env.host().budget_cloned().reset_unlimited();
+    catch_unwind(AssertUnwindSafe(|| {
+        ScVal::try_from_val(&env, &value.into_val(&env))
+    }))
+    .map_err(|_| ConversionError)?
+    .map_err(|_| ConversionError)
+}
+
+/// Converts XDR to an SDK value in the conversion environment, such as a
+/// contract type of a `contractimport!` client, `Map<Symbol, Val>`, or a
+/// tuple.
+///
+/// # Errors
+///
+/// Returns [`ConversionError`] when the value has another shape.
+pub fn from_sc_val<T: TryFromVal<Env, Val>>(value: &ScVal) -> Result<T, ConversionError> {
+    let env = conversion_env();
+    let _ = env.host().budget_cloned().reset_unlimited();
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = Val::try_from_val(&env, value).map_err(|_| ConversionError)?;
+        T::try_from_val(&env, &value).map_err(|_| ConversionError)
+    }))
+    .map_err(|_| ConversionError)?
+}
+
+/// An SDK value used as an [`IntoScVal`] argument, key, or value; see
+/// [`sdk`].
+#[derive(Clone, Debug)]
+pub struct Sdk<T>(pub T);
+
+/// Wraps an SDK value of the conversion environment, for example
+/// `(sdk(routes), &owner, 5_i128)` as call arguments.
+#[must_use]
+pub const fn sdk<T>(value: T) -> Sdk<T> {
+    Sdk(value)
+}
+
+impl<T: IntoVal<Env, Val>> IntoScVal for Sdk<T> {
+    /// # Panics
+    ///
+    /// Panics if the value does not convert; build it in
+    /// [`conversion_env`].
+    fn into_sc_val(self) -> ScVal {
+        to_sc_val(&self.0).expect("an SDK argument converts in the conversion environment")
+    }
+}
 
 /// Ledgers a signature from [`StrictFork::sign`] stays valid for.
 pub(crate) const SIGNATURE_LEDGERS: u32 = 100;
@@ -281,8 +366,8 @@ fn sac_asset(instance: &ScContractInstance) -> Option<SacAsset> {
 
 impl StrictFork {
     /// Calls a read-only `function` on `contract` against the last closed
-    /// ledger and converts its result. Nothing is committed or recorded,
-    /// and no authorization is given.
+    /// ledger and converts its result in the [`conversion_env`]. Nothing is
+    /// committed or recorded, and no authorization is given.
     ///
     /// # Errors
     ///
@@ -310,13 +395,14 @@ impl StrictFork {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn decode<R: TryFromVal<Env, Val>>(&self, value: &ScVal) -> Result<R, TransactionError> {
-        let value = Val::try_from_val(&self.env, value).map_err(|_| conversion_failure())?;
-        R::try_from_val(&self.env, &value).map_err(|_| conversion_failure())
+        from_sc_val(value).map_err(|_| conversion_failure())
     }
 
+    #[allow(clippy::unused_self)]
     fn encode_value<V: IntoVal<Env, Val>>(&self, value: &V) -> Result<ScVal, TransactionError> {
-        ScVal::try_from_val(&self.env, &value.into_val(&self.env)).map_err(|_| conversion_failure())
+        to_sc_val(value).map_err(|_| conversion_failure())
     }
 
     /// The token balance of `holder`, from the token contract's `balance`.
@@ -782,6 +868,28 @@ impl StrictFork {
         })
     }
 
+    /// [`Self::expect_failed_apply`] that also requires the transaction to be
+    /// included and fail with exactly `expected` from the Host; the fork
+    /// keeps only the fee and sequence-number change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransactionError::UnexpectedFailure`] for another failure,
+    /// and the errors of [`Self::expect_failed_apply`].
+    pub fn expect_rejected_with(
+        &mut self,
+        transaction: &PreparedTransaction,
+        expected: &ScError,
+    ) -> Result<TransactionReceipt, TransactionError> {
+        let failure = self.expect_failed_apply(transaction)?;
+        match failure {
+            FailedApply::Rejected(receipt) if failure_error(&receipt) == Some(expected) => {
+                Ok(*receipt)
+            }
+            other => Err(TransactionError::UnexpectedFailure(Box::new(other))),
+        }
+    }
+
     /// Runs `body` and then reverts the fork to its state before, for
     /// example to try an alternative without affecting later steps. The
     /// revert clears the receipt history of [`Self::invoke`].
@@ -929,6 +1037,24 @@ impl PreparedTransaction {
 }
 
 impl DetachedEvent {
+    /// Topic `index` converted in the [`conversion_env`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversionError`] for a missing topic or another shape.
+    pub fn topic_as<T: TryFromVal<Env, Val>>(&self, index: usize) -> Result<T, ConversionError> {
+        from_sc_val(self.topics().get(index).ok_or(ConversionError)?)
+    }
+
+    /// The data converted in the [`conversion_env`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConversionError`] for another shape.
+    pub fn data_as<T: TryFromVal<Env, Val>>(&self) -> Result<T, ConversionError> {
+        from_sc_val(self.data())
+    }
+
     /// The event's topics.
     #[must_use]
     pub fn topics(&self) -> &[ScVal] {
@@ -964,6 +1090,121 @@ impl TransactionReceipt {
             .filter(|event| event.is_from(contract, topic))
             .collect()
     }
+
+    /// The one event of [`Self::events_from`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransactionError::EventCount`] unless exactly one event
+    /// matches.
+    pub fn single_event(
+        &self,
+        contract: &ScAddress,
+        topic: &str,
+    ) -> Result<&DetachedEvent, TransactionError> {
+        match self.events_from(contract, topic).as_slice() {
+            [event] => Ok(event),
+            events => Err(TransactionError::EventCount {
+                found: events.len(),
+            }),
+        }
+    }
+}
+
+impl super::ResourceReport {
+    /// Checks the measured resources against `limits`, for example the
+    /// network limits or [`super::TransactionLimits::scaled`] to require
+    /// headroom.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first resource above its limit.
+    pub fn check_within(
+        &self,
+        limits: &super::TransactionLimits,
+    ) -> Result<(), super::ResourceExcess> {
+        use super::TransactionResource as Resource;
+        for (resource, limit, used) in [
+            (
+                Resource::Instructions,
+                limits.instructions,
+                self.instructions,
+            ),
+            (
+                Resource::MemoryBytes,
+                limits.memory_bytes,
+                self.memory_bytes,
+            ),
+            (
+                Resource::FootprintEntries,
+                u64::from(limits.footprint_entries),
+                u64::from(self.footprint_entries),
+            ),
+            (
+                Resource::DiskReadEntries,
+                u64::from(limits.disk_read_entries),
+                u64::from(self.disk_read_entries),
+            ),
+            (
+                Resource::DiskReadBytes,
+                u64::from(limits.disk_read_bytes),
+                u64::from(self.disk_read_bytes),
+            ),
+            (
+                Resource::WriteEntries,
+                u64::from(limits.write_entries),
+                u64::from(self.write_entries),
+            ),
+            (
+                Resource::WriteBytes,
+                u64::from(limits.write_bytes),
+                u64::from(self.write_bytes),
+            ),
+            (
+                Resource::ContractEventsSizeBytes,
+                u64::from(limits.contract_events_size_bytes),
+                u64::from(self.contract_events_size_bytes),
+            ),
+            (
+                Resource::TransactionSizeBytes,
+                u64::from(limits.transaction_size_bytes),
+                u64::from(self.transaction_size_bytes),
+            ),
+        ] {
+            if used > limit {
+                return Err(super::ResourceExcess {
+                    resource,
+                    limit,
+                    used,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl super::TransactionLimits {
+    /// These limits scaled to `percent`, rounded down; for example
+    /// `limits.scaled(80)` to require 20% headroom.
+    #[must_use]
+    pub fn scaled(&self, percent: u32) -> Self {
+        let scale64 = |value: u64| value.saturating_mul(u64::from(percent)) / 100;
+        let scale32 = |value: u32| u32::try_from(scale64(u64::from(value))).unwrap_or(u32::MAX);
+        Self {
+            instructions: scale64(self.instructions),
+            memory_bytes: scale64(self.memory_bytes),
+            footprint_entries: scale32(self.footprint_entries),
+            disk_read_entries: scale32(self.disk_read_entries),
+            disk_read_bytes: scale32(self.disk_read_bytes),
+            write_entries: scale32(self.write_entries),
+            write_bytes: scale32(self.write_bytes),
+            contract_events_size_bytes: scale32(self.contract_events_size_bytes),
+            transaction_size_bytes: scale32(self.transaction_size_bytes),
+            ledger_key_size_bytes: scale32(self.ledger_key_size_bytes),
+            ledger_entry_size_bytes: scale32(self.ledger_entry_size_bytes),
+            contract_code_size_bytes: scale32(self.contract_code_size_bytes),
+        }
+    }
 }
 
 impl fmt::Display for TransactionReceipt {
@@ -989,15 +1230,19 @@ impl fmt::Display for TransactionReceipt {
     }
 }
 
+fn failure_error(receipt: &TransactionReceipt) -> Option<&ScError> {
+    match &receipt.outcome {
+        InvokeOutcome::Failure { error, .. } => error.as_ref(),
+        InvokeOutcome::Success(_) => None,
+    }
+}
+
 impl FailedApply {
     /// The Host error of a rejected transaction, if the Host reported one.
     #[must_use]
     pub fn host_error(&self) -> Option<&ScError> {
         match self {
-            Self::Rejected(receipt) => match &receipt.outcome {
-                InvokeOutcome::Failure { error, .. } => error.as_ref(),
-                InvokeOutcome::Success(_) => None,
-            },
+            Self::Rejected(receipt) => failure_error(receipt),
             Self::Invalid(_) => None,
         }
     }
