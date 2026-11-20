@@ -2731,11 +2731,15 @@ mod tests {
         ));
         // The fake network has no other setting; each is confirmed absent.
         assert_eq!(captured.report().present_entries(), 1);
-        assert_eq!(captured.report().absent_entries(), 12);
+        assert_eq!(
+            captured.report().absent_entries(),
+            crate::NetworkConfig::REQUIRED_SETTINGS.len() - 1
+        );
         assert!(!captured.has_network_config().unwrap());
         assert!(matches!(
             captured.fork().network_config(),
-            Err(crate::TransactionError::MissingNetworkConfig { missing }) if missing.len() == 12
+            Err(crate::TransactionError::MissingNetworkConfig { missing })
+                if missing.len() == crate::NetworkConfig::REQUIRED_SETTINGS.len() - 1
         ));
 
         let path = test_bundle_path("network-config");
