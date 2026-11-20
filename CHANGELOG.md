@@ -23,8 +23,9 @@ All notable changes to Kanatoko are documented in this file.
   resource fee plus the inclusion fee capped at the base fee, advance its
   sequence number, execute with the enforcing footprint and a module cache,
   fail with Core's result code on archived entries, read, write, event, entry
-  size, or refundable-fee limits (`TransactionError::Rejected`), and refund
-  the unused refundable fee. Receipts carry the result code, the exceeded
+  size, or refundable-fee limits (`TransactionError::Rejected`), restore
+  only marked entries that are still archived, and refund the unused
+  refundable fee. Receipts carry the result code, the exceeded
   resource, the fee charged, the ledger, and measured resources and fees.
 - Sign authorization with `Ed25519Signer` (`from_seed`, `from_label`):
   `sign_authorization` and `authorize` produce the SDKs'

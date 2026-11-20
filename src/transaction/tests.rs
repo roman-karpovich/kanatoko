@@ -222,6 +222,12 @@ fn value_key(contract: &ScAddress) -> LedgerKey {
 
 /// A fork with the stateful candidate whose `value` entry is archived.
 fn archived_fork() -> (StrictFork, Ed25519Signer, ScAddress) {
+    expiring_fork(1)
+}
+
+/// A fork with the stateful candidate whose `value` entry lives until
+/// `ledgers_ago` ledgers before the last closed ledger.
+fn expiring_fork(ledgers_ago: u32) -> (StrictFork, Ed25519Signer, ScAddress) {
     let mut fork = fork();
     let user = Ed25519Signer::from_label("user");
     fork.create_local_account(&user, TEN_XLM).unwrap();
@@ -242,7 +248,7 @@ fn archived_fork() -> (StrictFork, Ed25519Signer, ScAddress) {
         .unwrap();
     let key = value_key(&candidate);
     let entry = fork.ledger_entry(&key).unwrap().unwrap();
-    let archived_at = fork.ledger_sequence() - 1;
+    let archived_at = fork.ledger_sequence() - ledgers_ago;
     fork.override_entry(key, Some((entry.entry, Some(archived_at))))
         .unwrap();
     (fork, user, candidate)
@@ -351,4 +357,73 @@ fn simulation_runs_at_the_last_closed_ledger_and_apply_in_the_next() {
         )
         .unwrap();
     assert_eq!(get.outcome, InvokeOutcome::Success(ScVal::I64(46)));
+}
+
+#[test]
+fn an_entry_expiring_at_the_simulated_ledger_is_archived_when_applied() {
+    // RPC simulates against the last closed ledger N, where an entry living
+    // until N is live, so no restore is declared; Core applies in N + 1,
+    // where it is archived.
+    let (mut fork, user, candidate) = expiring_fork(0);
+    let prepared = increment(&fork, &user, &candidate);
+    assert!(restored_indices(prepared.transaction_data()).is_empty());
+    let Err(TransactionError::Rejected(receipt)) = fork.apply_transaction(&prepared) else {
+        panic!("the entry is archived in the applying ledger");
+    };
+    assert_eq!(receipt.result, InvokeHostFunctionResultCode::EntryArchived);
+
+    // Simulated again at N + 1, the restore is declared and the call works.
+    let prepared = increment(&fork, &user, &candidate);
+    assert_eq!(restored_indices(prepared.transaction_data()).len(), 1);
+    let receipt = fork.apply_transaction(&prepared).unwrap();
+    assert_eq!(receipt.outcome, InvokeOutcome::Success(ScVal::I64(46)));
+}
+
+#[test]
+fn a_marked_entry_that_is_already_live_is_not_restored_again() {
+    let (mut fork, user, candidate) = archived_fork();
+    let first = increment(&fork, &user, &candidate);
+    let second = first.clone();
+    assert_eq!(restored_indices(second.transaction_data()).len(), 1);
+    let restored = fork.apply_transaction(&first).unwrap();
+    assert!(restored.resources.fee.rent > 0);
+    // Both were prepared at the same ledger; the second finds the entry
+    // live and pays no new-entry rent.
+    let again = fork.apply_transaction(&second).unwrap();
+    assert_eq!(again.outcome, InvokeOutcome::Success(ScVal::I64(51)));
+    assert_eq!(again.resources.fee.rent, 0);
+    assert!(again.fee_charged < restored.fee_charged);
+}
+
+#[test]
+fn restored_entries_are_size_checked() {
+    let (mut fork, user, candidate) = archived_fork();
+    let prepared = increment(&fork, &user, &candidate);
+    let value = fork.ledger_entry(&value_key(&candidate)).unwrap().unwrap();
+    let size = u32::try_from(value.entry.to_xdr(Limits::none()).unwrap().len()).unwrap();
+    let limit = LedgerEntry {
+        last_modified_ledger_seq: fork.ledger_sequence(),
+        data: LedgerEntryData::ConfigSetting(ConfigSettingEntry::ContractDataEntrySizeBytes(
+            size - 1,
+        )),
+        ext: LedgerEntryExt::V0,
+    };
+    fork.override_entry(
+        LedgerKey::ConfigSetting(LedgerKeyConfigSetting {
+            config_setting_id: ConfigSettingId::ContractDataEntrySizeBytes,
+        }),
+        Some((limit, None)),
+    )
+    .unwrap();
+    let FailedApply::Rejected(receipt) = fork.expect_failed_apply(&prepared).unwrap() else {
+        panic!("an oversized restored entry fails the operation");
+    };
+    assert_eq!(
+        receipt.result,
+        InvokeHostFunctionResultCode::ResourceLimitExceeded
+    );
+    assert_eq!(
+        receipt.exceeded.unwrap().resource,
+        TransactionResource::LedgerEntrySizeBytes
+    );
 }
