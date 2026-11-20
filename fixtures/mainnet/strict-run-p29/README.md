@@ -1,7 +1,7 @@
 # Protocol 29 Mainnet strict-run fixture
 
 `auto-capture.json` is the frozen fixture of the `full` flow in
-`tests/strict_run.rs`, captured read-only with `AutoRunner::run_strict` in 3
+`tests/strict_run.rs`, captured read-only with `AutoRunner::run_strict` in 2
 discovery rounds. It holds the 15 Soroban `ConfigSetting` entries and the
 native XLM Stellar Asset Contract instance (16 present entries), and the
 confirmed absence of the two test signers' accounts, the stateful WASM's
@@ -11,12 +11,12 @@ balance are explicit local state, not network observations.
 
 - network passphrase: `Public Global Stellar Network ; September 2015`
 - protocol: 29
-- ledger: `65585041`
-- ledger hash: `cd2eab05b953b4c1e622a56c6af87a8e55e8d133b7883ee6acff0144a1677fba`
-- ledger digest: `fe22b7623d6f40f1fb60d227acdb8c77950356439a533b15672ef1995fa3fd10`
-- inventory digest: `025f8ef07b29db76f948f94fb2a0a7c1e9a17f0f2aca10d64967ab781238b98c`
-- canonical bundle digest: `61fc510d24dcc6de141dfb7359a9e4cafe9ee7018bd6243c88fec121c338802e`
-- SHA-256: `ab99de42030a4e46f1f5615c455ffada7d3c8571118d22d018a8b826f11baea0`
+- ledger: `65585238`
+- ledger hash: `b9a9f2027dcfcd3497957701c255de9efea8298391908a60ad59a3f0a6a964db`
+- ledger digest: `854dc240cc6f4f6aa0ca2b17b73601b2b587994181478aaa9c4d1c8958d77d03`
+- inventory digest: `944b752f8d574c0726192f0afa0638a02b36fa7eb33091ffceb45b9c260b0141`
+- canonical bundle digest: `01dccce3d6943c8dc663986a97c76ac0069647921434cdd5865478eac35500fe`
+- SHA-256: `af685802ea783f507f325c68ead75452306beb01fdddefa40abe607d81eb4e51`
 
 The other tests replay parts of the flow offline against it. Refresh with:
 

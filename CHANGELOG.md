@@ -53,12 +53,12 @@ All notable changes to Kanatoko are documented in this file.
   settings. Such bundles also carry the `StateArchival` entry, checked
   against the ledger TTL bounds; releases before 29.2.0 reject them.
 - Add `AutoRunner::run_strict`, which runs a scenario on a discovering
-  `StrictFork` that records every uncaptured key and treats it as absent for
-  the rest of the pass, refetches the recorded keys at a new coherent ledger
-  and reruns until a pass records none, then replays the frozen bundle
-  strictly; offline it only replays. A round only adds keys that depend on
-  values fetched in the round before, and bundles may record up to 64
-  rounds. Network settings, signer
+  `StrictFork`: every uncaptured key is recorded and read from the network
+  at the round's anchor ledger, or treated as absent if the anchor moved, so
+  one pass follows dependency chains. The recorded keys are rematerialized
+  at a new coherent ledger and the pass reruns until it records none, then
+  the frozen bundle replays strictly; offline it only replays. Bundles may
+  record up to 64 rounds. Network settings, signer
   account absence, uploaded code, deployment addresses, and failure-path
   keys are discovered without `capture_*` calls; keys missing from a
   declared footprint still fail in the Host. The bundle reaches the cache
@@ -73,7 +73,13 @@ All notable changes to Kanatoko are documented in this file.
   a counter; `set_token_balance` mirrors the contract's and Core's flags,
   reserves, and liabilities and refuses unreachable balances; `PreparedTransaction::resigned_by`, `with_function`, and
   `with_args`; `TransactionReceipt::events_from` and `Display`;
-  `DetachedEvent::topics`, `data`, and `is_from`; `FailedApply::host_error`.
+  `DetachedEvent::topics`, `data`, `is_from`, `topic_as`, and `data_as`;
+  `TransactionReceipt::single_event`; `ResourceReport::check_within` and
+  `TransactionLimits::scaled`; `StrictFork::expect_rejected_with`;
+  `FailedApply::host_error`. `conversion_env`, `to_sc_val`, `from_sc_val`,
+  and `sdk` convert SDK values such as contract types to and from XDR in a
+  per-thread environment, which `view`, `contract_data`, and
+  `update_contract_data` also decode in.
   `set_contract_data` takes any `IntoScVal` key.
 - Add the Protocol 29 Mainnet `strict-run-p29` capture of one `run_strict`
   flow, replayed in parts offline.

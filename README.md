@@ -427,10 +427,12 @@ ledger key the fixture lacks, and executes host functions as Stellar
 transactions: simulated by the preflight library of RPC
 `simulateTransaction`, signed, then validated, charged, and applied as
 Stellar Core does in the next ledger. The scenario is written once: online,
-a discovery pass records every key the fixture lacks, treats it as absent,
-and runs on; the recorded keys are fetched and the pass reruns until it
-records none, usually after two or three rounds. The frozen fixture then
-replays strictly offline.
+a discovery pass reads every key the fixture lacks from the network at the
+round's ledger and runs on, so it reaches the keys behind it (a contract's
+code, its storage, the contracts it calls). The recorded keys are then
+rematerialized at one coherent ledger and the pass reruns until it records
+none, usually after two rounds. The frozen fixture then replays strictly
+offline.
 
 ```rust,ignore
 use kanatoko::{mainnet, Ed25519Signer, TransactionCall};
@@ -485,7 +487,10 @@ The typed helpers sit on the explicit transaction API below them:
 | `fork.contract_instance(&contract)` | Executable and instance storage. |
 | `fork.create_local_accounts(&signers, stroops)` / `fork.scoped(\|fork\| …)` | Several accounts; a block reverted afterwards. |
 | `prepared.resigned_by(&fork, i, &signer)`, `.with_function(f)`, `.with_args(args)` | Negative variants of a prepared transaction. |
-| `receipt.events_from(&contract, "topic")`, `event.topics()`, `event.data()`, `failure.host_error()` | Inspecting results; receipts print a one-line summary. |
+| `receipt.events_from(&contract, "topic")`, `receipt.single_event(&contract, "topic")` | Matching events; `event.topic_as::<T>(i)` and `event.data_as::<T>()` decode them. |
+| `fork.expect_rejected_with(&prepared, &error)`, `failure.host_error()` | An included failure with exactly this Host error and only the fee and sequence charged. |
+| `receipt.resources.check_within(&limits.scaled(80))` | Asserts measured resources against the limits, here with 20% headroom; receipts print a one-line summary. |
+| `conversion_env()`, `sdk(value)`, `to_sc_val(&value)`, `from_sc_val::<T>(&val)` | `#[contracttype]` structs, enums, vectors, and maps without an `Env` of your own; only XDR crosses into the fork. |
 
 The explicit flow is available underneath. From a fixture captured with
 `.capture_network_config()`:
