@@ -391,6 +391,7 @@ mutable state and can be mixed freely.
 | `.refresh()` | Discards cached key inventory and performs a cold coherent capture. |
 | `.allow_newer_protocol()` | Accepts a network exactly one protocol ahead and executes it on the Host's own protocol; see above. |
 | `.capture_network_config()` | Also captures the network's Soroban `ConfigSetting` entries for [signed transactions](#signed-transactions-on-a-strict-fork). |
+| `.run_strict(\|fork\| …)` | Runs a transaction-faithful scenario on a discovering `StrictFork`; see [signed transactions](#signed-transactions-on-a-strict-fork). |
 | `fork.contract("C...")` | Parses a network contract address. |
 | `fork.account("G...")` | Parses a network account; Host access discovers its real account and trustlines. |
 | `fork.muxed_account("M...")` | Parses a muxed address; ledger state belongs to its underlying G-address. |
@@ -460,12 +461,70 @@ Limits to keep in mind:
 
 ## Signed transactions on a strict fork
 
-`run.fixture().fork()` returns a `StrictFork`: an offline copy of the captured
-state that fails closed on any uncaptured key. Besides SDK-style `invoke`, it
-runs a host function as a Stellar transaction: simulated by the same preflight
-library as RPC `simulateTransaction`, signed, then validated, charged, and
-applied as Stellar Core does in the next ledger. The scenario captures the
-network settings and confirms that the test signers' accounts do not exist:
+`run_strict` runs a scenario on a `StrictFork`, which fails closed on every
+ledger key the fixture lacks, and executes host functions as Stellar
+transactions: simulated by the preflight library of RPC
+`simulateTransaction`, signed, then validated, charged, and applied as
+Stellar Core does in the next ledger. The scenario is written once: online,
+every key a pass fails on is fetched and the pass reruns, until the flow
+needs nothing more; the frozen fixture then replays strictly offline.
+
+```rust,ignore
+use kanatoko::{mainnet, Ed25519Signer, TransactionCall};
+use kanatoko::soroban_env_host::xdr::ScAddress;
+
+const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
+
+#[test]
+fn signed_deploy_and_call() {
+    let owner = Ed25519Signer::from_label("owner");
+    let run = mainnet().run_strict(|fork| -> Result<(), Box<dyn std::error::Error>> {
+        fork.create_local_account(&owner, 1_000 * 10_000_000)?;
+        let app = fork.deploy(&owner, MY_WASM, [1; 32], (41_i64,))?.address;
+
+        let call = TransactionCall::invoke_fn(&owner, &app, "authorized_increment", (&owner, 5_i64))?;
+        let receipt = fork.apply_signed(&call, &[&owner])?;
+        println!("{receipt}");
+        assert_eq!(fork.view::<i64>(&app, "get", ())?, 46);
+
+        let xlm: ScAddress = XLM.parse()?;
+        fork.set_token_balance(&xlm, &app, 25)?;
+        assert_eq!(fork.token_balance(&xlm, &app)?, 25);
+        Ok(())
+    });
+    run.unwrap().into_value().unwrap();
+}
+```
+
+`create_local_account`, `deploy`, and every other call discover their own
+keys: the signer's account must be absent on the network, and the uploaded
+code and the deployment address are captured like any other key. Negative
+paths run inside the scenario, so the keys only they read are captured too.
+Discovery never softens strictness: a pass fails exactly where a plain
+strict fork fails, and a key missing from a transaction's declared footprint
+fails in the Host as in Core and is never fetched. The scenario must be
+deterministic; each test freezes its own cache, or several tests replay
+parts of one flow offline against a fixture that one refresh test captured
+(see `tests/strict_run.rs`).
+
+The typed helpers sit on the explicit transaction API below them:
+
+| API | Meaning |
+| --- | --- |
+| `TransactionCall::invoke_fn(&source, &contract, "fn", args)` | A contract call with tuple arguments of `IntoScVal` values. |
+| `fork.sign(&call, &signers)` / `fork.apply_signed(&call, &signers)` | Simulate, authorize with unique nonces and a 100-ledger expiry, prepare, and apply; only a commit is `Ok`. |
+| `fork.deploy(&deployer, wasm, salt, args)` | Upload and `CreateContractV2` with the constructor, both signed by the deployer. |
+| `fork.view::<R>(&contract, "fn", args)` | A read-only call against the last closed ledger, converted with `TryFromVal`. |
+| `fork.token_balance(&token, &holder)` / `fork.account_balance(&account)` | Token and native balances. |
+| `fork.set_token_balance(&token, &holder, amount)` | Explicit override of a Stellar Asset Contract balance: contract `Balance`, account, or trustline. |
+| `fork.contract_data::<V>(…)` / `fork.update_contract_data(…, \|v: &mut V\| …)` | Typed contract data; `Map<Symbol, Val>` works for foreign types. |
+| `fork.contract_instance(&contract)` | Executable and instance storage. |
+| `fork.create_local_accounts(&signers, stroops)` / `fork.scoped(\|fork\| …)` | Several accounts; a block reverted afterwards. |
+| `prepared.resigned_by(&fork, i, &signer)`, `.with_function(f)`, `.with_args(args)` | Negative variants of a prepared transaction. |
+| `receipt.events_from(&contract, "topic")`, `event.topics()`, `event.data()`, `failure.host_error()` | Inspecting results; receipts print a one-line summary. |
+
+The explicit flow is available underneath. From a fixture captured with
+`.capture_network_config()`:
 
 ```rust,ignore
 use kanatoko::{mainnet, Ed25519Signer, InvokeRequest, ReceiptDisposition, TransactionCall};
@@ -507,7 +566,6 @@ fn signed_transfer() -> Result<(), Box<dyn std::error::Error>> {
 
     let receipt = fork.apply_transaction(&transaction)?;
     assert_eq!(receipt.disposition, ReceiptDisposition::Committed);
-    println!("fee charged: {} stroops", receipt.fee_charged);
 
     // Replaying it reuses the nonce: included, charged, and failed.
     let replay = fork.expect_failed_apply(&transaction)?;

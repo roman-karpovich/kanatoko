@@ -52,6 +52,25 @@ All notable changes to Kanatoko are documented in this file.
   transactions read. An online runner recaptures a cache without network
   settings. Such bundles also carry the `StateArchival` entry, checked
   against the ledger TTL bounds; releases before 29.2.0 reject them.
+- Add `AutoRunner::run_strict`, which runs a scenario on a `StrictFork`
+  that records every uncaptured key it fails on, refetches them at a new
+  coherent ledger and reruns until no pass fails on one, then replays the
+  frozen bundle strictly; offline it only replays. Network settings, signer
+  account absence, uploaded code, deployment addresses, and failure-path
+  keys are discovered without `capture_*` calls; keys missing from a
+  declared footprint still fail in the Host. `StrictRun` holds the value and
+  the fixture.
+- Add a typed layer: `IntoScVal` and `IntoArgs` for `Env`-free arguments,
+  `symbol`, `vec_val`, `TransactionCall::invoke_fn`, and on `StrictFork`
+  `sign`, `apply_signed`, `deploy` (`Deployment`), `create_local_accounts`,
+  `view`, `token_balance`, `account_balance`, `set_token_balance`,
+  `contract_data`, `update_contract_data`, `contract_instance`, and
+  `scoped`; `PreparedTransaction::resigned_by`, `with_function`, and
+  `with_args`; `TransactionReceipt::events_from` and `Display`;
+  `DetachedEvent::topics`, `data`, and `is_from`; `FailedApply::host_error`.
+  `set_contract_data` takes any `IntoScVal` key.
+- Add the Protocol 29 Mainnet `strict-run-p29` capture of one `run_strict`
+  flow, replayed in parts offline.
 - Add the Protocol 29 Mainnet `network-config-p29` capture and the fees of
   four real Mainnet Soroban transactions, which the recomputed fees match.
 - New errors use the non-exhaustive `TransactionError` and
