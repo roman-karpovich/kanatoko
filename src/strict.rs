@@ -11,8 +11,8 @@ use std::{
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     AccountId, ContractDataDurability, ContractEvent, ContractEventType, LedgerEntry, LedgerKey,
-    LedgerKeyContractData, Limits, ScAddress, ScError, ScSymbol, ScVal, SorobanAuthorizationEntry,
-    SorobanAuthorizedInvocation, WriteXdr,
+    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScError, ScSymbol, ScVal,
+    SorobanAuthorizationEntry, SorobanAuthorizedInvocation, WriteXdr,
 };
 use soroban_ledger_snapshot::LedgerSnapshot;
 use soroban_sdk::{
@@ -200,36 +200,47 @@ pub struct StrictFork {
     pub(crate) local_contracts: BTreeSet<ScAddress>,
     pub(crate) local_code_hashes: BTreeSet<[u8; 32]>,
     receipts: Vec<Receipt>,
-    /// Keys a discovering run fetches before its next pass; `None` for a
-    /// plain strict fork.
-    discovery: Option<Rc<RefCell<BTreeSet<KeyId>>>>,
+    /// Key discovery of a [`crate::AutoRunner::run_strict`] pass; `None`
+    /// for a plain strict fork.
+    pub(crate) discovery: Option<Rc<Discovery>>,
     /// Next authorization nonce of [`StrictFork::sign`].
     pub(crate) next_nonce: std::cell::Cell<i64>,
 }
 
 impl StrictFork {
-    /// A discovering fork: every uncaptured key is recorded in `discovery`
-    /// and treated as absent for the rest of the pass. Keys left out of a
+    /// A discovering fork: every uncaptured key it meets is recorded and
+    /// resolved by `discovery`, so the pass runs on. Keys left out of a
     /// transaction's declared footprint never reach a lookup, so they still
     /// fail in the Host and are never recorded.
     pub(crate) fn discovering(
         snapshot: &LedgerSnapshot,
         coverage: BTreeMap<KeyId, LookupState>,
-        discovery: Rc<RefCell<BTreeSet<KeyId>>>,
+        discovery: Rc<Discovery>,
     ) -> Self {
         let mut fork = Self::from_captured(snapshot, coverage);
         fork.discovery = Some(discovery);
+        let (env, _) = strict_env(
+            snapshot,
+            &fork.coverage,
+            &fork.local_contracts,
+            &fork.local_code_hashes,
+            false,
+            fork.discovery.clone(),
+        );
+        fork.env = env;
         fork
     }
 
     /// Handles uncaptured `keys`. A strict fork fails closed. A discovering
-    /// fork records them and continues as if they were absent, so one pass
-    /// learns every key the flow reaches; its results are discarded, and only
-    /// the final strict pass on the frozen fixture counts.
-    pub(crate) fn unknown_or_absent(&self, keys: Vec<KeyId>) -> Result<(), StrictForkError> {
+    /// fork records them and returns their states as [`Discovery`] resolves
+    /// them, so the pass continues; its results are discarded, and only the
+    /// final strict pass on the frozen fixture counts.
+    pub(crate) fn resolve_unknown(
+        &self,
+        keys: Vec<KeyId>,
+    ) -> Result<BTreeMap<KeyId, LookupState>, StrictForkError> {
         if let Some(discovery) = &self.discovery {
-            discovery.borrow_mut().extend(keys);
-            return Ok(());
+            return Ok(discovery.resolve(keys));
         }
         Err(StrictForkError::UnknownLedgerKeys {
             count: keys.len(),
@@ -249,6 +260,7 @@ impl StrictFork {
             &BTreeSet::new(),
             &BTreeSet::new(),
             false,
+            None,
         );
         Self {
             id,
@@ -340,6 +352,7 @@ impl StrictFork {
             &checkpoint.local_contracts,
             &checkpoint.local_code_hashes,
             false,
+            self.discovery.clone(),
         );
         self.env = env;
         self.coverage = checkpoint.coverage;
@@ -401,6 +414,7 @@ impl StrictFork {
             &local_contracts,
             &local_code_hashes,
             false,
+            self.discovery.clone(),
         );
         let address_value = AddressValue::from_xdr(&child, &address)?;
         let args = constructor_args
@@ -423,7 +437,7 @@ impl StrictFork {
             false,
         )?;
         if !unknown.is_empty() {
-            self.unknown_or_absent(unknown.into_iter().collect())?;
+            self.resolve_unknown(unknown.into_iter().collect())?;
         }
         let installed = installed.map_err(|_| StrictForkError::CandidateRegistrationFailed)?;
         let installed: ScAddress = (&installed).into();
@@ -485,6 +499,7 @@ impl StrictFork {
             &self.local_contracts,
             &self.local_code_hashes,
             allow_mock_nonces,
+            self.discovery.clone(),
         );
 
         let (contract, function, args) = invocation_values(&child, &request)?;
@@ -521,7 +536,7 @@ impl StrictFork {
             allow_mock_nonces,
         )?;
         if !unknown.is_empty() {
-            self.unknown_or_absent(unknown.into_iter().collect())?;
+            self.resolve_unknown(unknown.into_iter().collect())?;
         }
 
         let (authorization, events) = detached_snapshot_evidence(&child);
@@ -569,6 +584,7 @@ impl StrictFork {
                 &self.local_contracts,
                 &self.local_code_hashes,
                 false,
+                self.discovery.clone(),
             );
             self.coverage = coverage;
             self.env = promoted;
@@ -698,6 +714,71 @@ impl AddressValue {
     }
 }
 
+/// Reads uncaptured keys during an online discovery pass at the round's
+/// coherent anchor ledger; `None` when the network moved past it.
+pub(crate) type Fetch = Box<dyn Fn(&[LedgerKey]) -> Option<Vec<(KeyId, LookupState)>>>;
+
+/// Key discovery of one [`crate::AutoRunner::run_strict`] pass.
+///
+/// Every uncaptured key is recorded as pending for the next round. Online,
+/// it is also read at the round's anchor ledger right away, so the pass
+/// continues with the real value and reaches the keys behind it (an
+/// instance's code, its storage, the contracts it calls). When the anchor
+/// moved or no network is attached, the key is treated as absent for the
+/// rest of the pass. Nothing resolved here is frozen: the next round
+/// rematerializes every key at one coherent ledger.
+pub(crate) struct Discovery {
+    pending: RefCell<BTreeSet<KeyId>>,
+    resolved: RefCell<BTreeMap<KeyId, LookupState>>,
+    fetch: Option<Fetch>,
+}
+
+impl Discovery {
+    pub(crate) fn new(fetch: Option<Fetch>) -> Self {
+        Self {
+            pending: RefCell::new(BTreeSet::new()),
+            resolved: RefCell::new(BTreeMap::new()),
+            fetch,
+        }
+    }
+
+    /// Every key the pass recorded.
+    pub(crate) fn pending(&self) -> BTreeSet<KeyId> {
+        self.pending.borrow().clone()
+    }
+
+    pub(crate) fn resolve(&self, ids: Vec<KeyId>) -> BTreeMap<KeyId, LookupState> {
+        let mut states = BTreeMap::new();
+        let mut unresolved = Vec::new();
+        for id in ids {
+            self.pending.borrow_mut().insert(id.clone());
+            match self.resolved.borrow().get(&id) {
+                Some(state) => {
+                    states.insert(id, state.clone());
+                }
+                None => unresolved.push(id),
+            }
+        }
+        if unresolved.is_empty() {
+            return states;
+        }
+        let keys = unresolved
+            .iter()
+            .map(|id| LedgerKey::from_xdr(id, Limits::none()))
+            .collect::<Result<Vec<_>, _>>();
+        let fetched: BTreeMap<KeyId, LookupState> = match (&self.fetch, keys) {
+            (Some(fetch), Ok(keys)) => fetch(&keys).unwrap_or_default().into_iter().collect(),
+            _ => BTreeMap::new(),
+        };
+        for id in unresolved {
+            let state = fetched.get(&id).cloned().unwrap_or(LookupState::Absent);
+            self.resolved.borrow_mut().insert(id.clone(), state.clone());
+            states.insert(id, state);
+        }
+        states
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StrictSource {
     coverage: BTreeMap<KeyId, LookupState>,
@@ -705,6 +786,7 @@ pub(crate) struct StrictSource {
     local_code_hashes: BTreeSet<[u8; 32]>,
     allow_mock_nonces: bool,
     pub(crate) unknown: Rc<RefCell<BTreeSet<KeyId>>>,
+    discovery: Option<Rc<Discovery>>,
 }
 
 impl StrictSource {
@@ -713,6 +795,7 @@ impl StrictSource {
         local_contracts: &BTreeSet<ScAddress>,
         local_code_hashes: &BTreeSet<[u8; 32]>,
         allow_mock_nonces: bool,
+        discovery: Option<Rc<Discovery>>,
     ) -> Self {
         Self {
             coverage: coverage.clone(),
@@ -720,6 +803,7 @@ impl StrictSource {
             local_code_hashes: local_code_hashes.clone(),
             allow_mock_nonces,
             unknown: Rc::new(RefCell::new(BTreeSet::new())),
+            discovery,
         }
     }
 }
@@ -744,7 +828,14 @@ impl SnapshotSource for StrictSource {
         ) {
             return Ok(None);
         }
-        self.unknown.borrow_mut().insert(id);
+        self.unknown.borrow_mut().insert(id.clone());
+        if let Some(discovery) = &self.discovery {
+            let state = discovery.resolve(vec![id.clone()]).remove(&id);
+            return Ok(match state {
+                Some(LookupState::Present(entry, live_until)) => Some((entry, live_until)),
+                _ => None,
+            });
+        }
         // The isolated child may continue down an "absent" branch so that we
         // can collect complete diagnostics, but it is never promoted: the
         // post-invocation unknown-key gate below fails closed atomically.
@@ -758,12 +849,14 @@ pub(crate) fn strict_env(
     local_contracts: &BTreeSet<ScAddress>,
     local_code_hashes: &BTreeSet<[u8; 32]>,
     allow_mock_nonces: bool,
+    discovery: Option<Rc<Discovery>>,
 ) -> (Env, Rc<StrictSource>) {
     let source = Rc::new(StrictSource::new(
         coverage,
         local_contracts,
         local_code_hashes,
         allow_mock_nonces,
+        discovery,
     ));
     let env = fork_env(ForkEnvSeed::Ledger(SnapshotSourceInput {
         source: source.clone(),
@@ -1005,6 +1098,7 @@ mod tests {
             local_code_hashes: BTreeSet::new(),
             allow_mock_nonces,
             unknown: Rc::new(RefCell::new(BTreeSet::new())),
+            discovery: None,
         }
     }
 }
