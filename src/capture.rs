@@ -2343,14 +2343,14 @@ mod tests {
 
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_soroswap_wrapper.wasm",
-            sha256 = "1e7bca07c5aa5c2f31544857027799285dff97266ed7895cf21d0e6736dcb3a8",
+            sha256 = "5540c23481528b3b37004124d3548d669ea1b7ce4121ed7f909c4cb164cf6588",
         );
     }
 
     mod local_stateful {
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-            sha256 = "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea",
+            sha256 = "76a511a1e7a1fff4a5fecb77f6d6a4018c9f090ff40a8a52b7233c44d71aa18e",
         );
     }
 

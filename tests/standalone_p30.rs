@@ -22,6 +22,9 @@ const LOCAL_RPC: &str = "http://localhost:8000/rpc";
 const XLM: &str = "CDMLFMKMMD7MWZP3FKUBZPVHTUEDLSX4BYGYKH4GCESXYHS3IHQ4EIG4";
 const DEPLOYER: &str = "GDG2BXH36BVGBOF62IXSAIZXKJ62CAIWHEFQOAA5ZGIEOMXQDYSPZ7VT";
 const STATEFUL: &str = "CCNHIRURTVMTX65DOASMBGJSQZLZMFGRO7QBHMBDSFPGEQ7AWH6VMTH5";
+/// The stateful fixture uploaded to the standalone network: the `soroban-sdk`
+/// 28 build committed before 30.0.0. The ABI below comes from the current
+/// artifact, built from the same source with `soroban-sdk` 30.
 const STATEFUL_WASM_SHA256: &str =
     "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea";
 const MUXED_ID: u64 = 30;
@@ -35,7 +38,7 @@ const INVENTORY_DIGEST: &str = "2ae27c8eae93cdce78b0f689ff1cbe25836827a80ca48cfa
 mod stateful {
     soroban_sdk::contractimport!(
         file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-        sha256 = "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea",
+        sha256 = "76a511a1e7a1fff4a5fecb77f6d6a4018c9f090ff40a8a52b7233c44d71aa18e",
     );
 }
 
@@ -67,7 +70,7 @@ fn frozen_protocol_30_standalone_replays_offline() {
         ContractExecutable::StellarAsset
     ));
     // The stateful fixture was uploaded and deployed by real Protocol 30
-    // transactions; its captured code is the committed artifact.
+    // transactions; its captured code is the earlier `soroban-sdk` 28 build.
     let ContractExecutable::Wasm(Hash(code)) = instance_executable(&captured, STATEFUL) else {
         panic!("captured stateful instance must reference WASM");
     };

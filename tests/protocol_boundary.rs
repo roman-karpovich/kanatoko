@@ -56,15 +56,30 @@ fn committed_bundles_rewrite_byte_identically() {
     ]);
 }
 
-/// Re-writing the committed Protocol 30 bundle reproduces it byte for byte,
-/// whether it was loaded with or without the newer-protocol opt-in.
+/// Re-writing the committed Protocol 30 bundles reproduces them byte for byte,
+/// whether they were loaded with or without the newer-protocol opt-in.
 #[cfg(kanatoko_protocol_30_fixtures)]
 #[test]
 fn committed_bundles_rewrite_byte_identically() {
-    assert_bundles_rewrite_byte_identically(&[(
-        "fixtures/standalone/native-xlm-stateful-p30/capture.json",
-        "Standalone Network ; February 2017",
-    )]);
+    const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    assert_bundles_rewrite_byte_identically(&[
+        (
+            "fixtures/mainnet/soroswap-xlm-usdc/capture.json",
+            MAINNET_PASSPHRASE,
+        ),
+        (
+            "fixtures/mainnet/soroswap-xlm-usdc/auto-capture.json",
+            MAINNET_PASSPHRASE,
+        ),
+        (
+            "fixtures/testnet/native-xlm-p30/auto-capture.json",
+            TESTNET_PASSPHRASE,
+        ),
+        (
+            "fixtures/standalone/native-xlm-stateful-p30/capture.json",
+            "Standalone Network ; February 2017",
+        ),
+    ]);
 }
 
 #[cfg(any(kanatoko_protocol_29_fixtures, kanatoko_protocol_30_fixtures))]
@@ -181,8 +196,8 @@ mod protocol_29 {
     };
 
     const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
-    const MAINNET_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
-    const MAINNET_AUTO_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/auto-capture.json";
+    const MAINNET_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture-p29.json";
+    const MAINNET_AUTO_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/auto-capture-p29.json";
     const TESTNET_CAPTURE: &str = "fixtures/testnet/native-xlm-p29/auto-capture.json";
     const CAPTURES: [(&str, &str); 3] = [
         (MAINNET_CAPTURE, MAINNET_PASSPHRASE),
@@ -239,12 +254,17 @@ mod protocol_29 {
         }
     }
 
-    /// The CLI's default fixture is the Protocol 29 Soroswap capture.
     #[test]
-    fn cli_rejects_the_default_protocol_29_fixture_with_and_without_the_opt_in() {
+    fn cli_rejects_the_protocol_29_fixture_with_and_without_the_opt_in() {
         for args in [
-            &["run", "soroswap-xlm-usdc"][..],
-            &["run", "soroswap-xlm-usdc", "--allow-newer-protocol"][..],
+            &["run", "soroswap-xlm-usdc", "--fixture", MAINNET_CAPTURE][..],
+            &[
+                "run",
+                "soroswap-xlm-usdc",
+                "--allow-newer-protocol",
+                "--fixture",
+                MAINNET_CAPTURE,
+            ][..],
         ] {
             let output = Command::new(env!("CARGO_BIN_EXE_kanatoko"))
                 .args(args)

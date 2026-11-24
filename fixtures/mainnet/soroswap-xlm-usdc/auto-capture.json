@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "ledger_snapshot": {
-    "protocol_version": 29,
-    "sequence_number": 65389638,
-    "timestamp": 1794234232,
+    "protocol_version": 30,
+    "sequence_number": 65645613,
+    "timestamp": 1795514117,
     "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
     "base_reserve": 5000000,
     "min_persistent_entry_ttl": 2073600,
@@ -12,12 +12,12 @@
     "ledger_entries": [
       {
         "entry": {
-          "last_modified_ledger_seq": 65386579,
+          "last_modified_ledger_seq": 65643582,
           "data": {
             "account": {
               "account_id": "GAI2BF5I2G77J653SVF5ONB77SURJSD225MLZZOBWWBR3WU3YEPVIEO2",
-              "balance": "1060236332",
-              "seq_num": "169446780633613569",
+              "balance": "1064229992",
+              "seq_num": "169446780633613582",
               "num_sub_entries": 6,
               "inflation_dest": null,
               "flags": 0,
@@ -38,8 +38,8 @@
                       "ext": {
                         "v3": {
                           "ext": "v0",
-                          "seq_ledger": 65386579,
-                          "seq_time": "1794218937"
+                          "seq_ledger": 65643582,
+                          "seq_time": "1795503961"
                         }
                       }
                     }
@@ -54,11 +54,11 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65287496,
+          "last_modified_ledger_seq": 65578556,
           "data": {
             "account": {
               "account_id": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-              "balance": "321099354850",
+              "balance": "321182208225",
               "seq_num": "144373126631784461",
               "num_sub_entries": 6,
               "inflation_dest": null,
@@ -118,7 +118,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65386579,
+          "last_modified_ledger_seq": 65643582,
           "data": {
             "trustline": {
               "account_id": "GAI2BF5I2G77J653SVF5ONB77SURJSD225MLZZOBWWBR3WU3YEPVIEO2",
@@ -128,7 +128,7 @@
                   "issuer": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
                 }
               },
-              "balance": "1028732821",
+              "balance": "1043334396",
               "limit": "9223372036854775807",
               "flags": 1,
               "ext": {
@@ -184,7 +184,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -218,7 +218,7 @@
                         "u32": 2
                       },
                       "val": {
-                        "i128": "3686114393277"
+                        "i128": "90288096161"
                       }
                     },
                     {
@@ -226,7 +226,7 @@
                         "u32": 3
                       },
                       "val": {
-                        "i128": "541468000465"
+                        "i128": "11587020546"
                       }
                     },
                     {
@@ -279,7 +279,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "1216339746083"
+                        "i128": "27779685437"
                       }
                     }
                   ]
@@ -289,11 +289,11 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -316,7 +316,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "3686114393277"
+                      "i128": "90288096161"
                     }
                   },
                   {
@@ -341,7 +341,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
@@ -412,7 +412,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 67627770
+        "live_until": 68745049
       },
       {
         "entry": {
@@ -547,7 +547,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -570,7 +570,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "541468000465"
+                      "i128": "11587020546"
                     }
                   },
                   {
@@ -595,7 +595,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
@@ -698,7 +698,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 67326585
+        "live_until": 68213789
       },
       {
         "entry": {
@@ -810,11 +810,11 @@
   "provenance": {
     "rpc_origin": "https://mainnet.sorobanrpc.com",
     "network_passphrase": "Public Global Stellar Network ; September 2015",
-    "ledger_sequence": 65389638,
-    "ledger_hash": "d0dbb60688faa14ce629178805db2229e3549428faee5cdeedbb1819c1d34df8",
-    "protocol_version": 29
+    "ledger_sequence": 65645613,
+    "ledger_hash": "9eb717680b9b9c61f7c146b54385a55cc77a6977e48a4817278d36e2e6d94f03",
+    "protocol_version": 30
   },
-  "ledger_digest": "3afb9bbae36e470dc932732b59e59cc2a1593fa08d03ca1ff2286a5376745d58",
-  "inventory_digest": "1ea365cb97074b8a86cfa0c8a67cb5325fb02c1614dafbbbed471ee5cfd2e4de",
-  "canonical_digest": "b9299ccaa4930f753c3982a5c9a8ac2836158ab67714719419b0cf26930ba1f4"
+  "ledger_digest": "1917f89bd000978aaa8d5785bc226dc44ce1b3743fc97b6b5ef599c35e53df41",
+  "inventory_digest": "d0c748f912be5161f8a6a0fa7e356544bda57fa3604bd1202e752e75a06e1ae6",
+  "canonical_digest": "a1d06e00505852ffd1c142a302e015ff47954df14643c2ad82d8cb4a78c36b44"
 }

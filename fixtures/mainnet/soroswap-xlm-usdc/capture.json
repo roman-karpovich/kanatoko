@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
   "ledger_snapshot": {
-    "protocol_version": 29,
-    "sequence_number": 65389557,
-    "timestamp": 1794233827,
+    "protocol_version": 30,
+    "sequence_number": 65645608,
+    "timestamp": 1795514092,
     "network_id": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
     "base_reserve": 5000000,
     "min_persistent_entry_ttl": 2073600,
@@ -12,11 +12,11 @@
     "ledger_entries": [
       {
         "entry": {
-          "last_modified_ledger_seq": 65287496,
+          "last_modified_ledger_seq": 65578556,
           "data": {
             "account": {
               "account_id": "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-              "balance": "321099354850",
+              "balance": "321182208225",
               "seq_num": "144373126631784461",
               "num_sub_entries": 6,
               "inflation_dest": null,
@@ -112,7 +112,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -146,7 +146,7 @@
                         "u32": 2
                       },
                       "val": {
-                        "i128": "3686114393277"
+                        "i128": "90288096161"
                       }
                     },
                     {
@@ -154,7 +154,7 @@
                         "u32": 3
                       },
                       "val": {
-                        "i128": "541468000465"
+                        "i128": "11587020546"
                       }
                     },
                     {
@@ -207,7 +207,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "1216339746083"
+                        "i128": "27779685437"
                       }
                     }
                   ]
@@ -217,11 +217,11 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -244,7 +244,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "3686114393277"
+                      "i128": "90288096161"
                     }
                   },
                   {
@@ -269,7 +269,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
@@ -340,7 +340,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 67627770
+        "live_until": 68745049
       },
       {
         "entry": {
@@ -475,7 +475,7 @@
       },
       {
         "entry": {
-          "last_modified_ledger_seq": 65389170,
+          "last_modified_ledger_seq": 65645074,
           "data": {
             "contract_data": {
               "ext": "v0",
@@ -498,7 +498,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "541468000465"
+                      "i128": "11587020546"
                     }
                   },
                   {
@@ -523,7 +523,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 65891567
+        "live_until": 66154558
       },
       {
         "entry": {
@@ -626,7 +626,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 67326585
+        "live_until": 68213789
       },
       {
         "entry": {
@@ -740,11 +740,11 @@
   "provenance": {
     "rpc_origin": "https://mainnet.sorobanrpc.com",
     "network_passphrase": "Public Global Stellar Network ; September 2015",
-    "ledger_sequence": 65389557,
-    "ledger_hash": "197036f155f650596c45c80cc0d3257d69131f7d12e5d91240827f977ec26a4d",
-    "protocol_version": 29
+    "ledger_sequence": 65645608,
+    "ledger_hash": "e8e37e847f4e4195e7bf956435a14ade62282d249c74a3a33ffde578effe99c8",
+    "protocol_version": 30
   },
-  "ledger_digest": "54b45ed4b3d3037e0882c004629ff7574c822d915f4f51e664f2e5f15b0f3ab5",
-  "inventory_digest": "091d3f650714f6162f7ce62b299a234356eb0a60bd143ab10f37331b542aaf0b",
-  "canonical_digest": "ce70e7568c10cafa703abe9690de949c7b4fcf873068729e0a6ec3c15c632620"
+  "ledger_digest": "a52290fd2c79b9d35e453a5547b688a3d0b1041c64e6b56c5a97e948facd971f",
+  "inventory_digest": "c29d9890dce1fef57ca2d7a12477d310cac6e72d2254c30ea2ddd2058a8a48b9",
+  "canonical_digest": "a7aa75b73c824327e0968601f8230e0e830d245abc10de138726634d3cc8fa3e"
 }

@@ -27,8 +27,9 @@ is loaded on this line only by the cross-protocol rejection test.
 
 On the Kanatoko 30 line this bundle is historical: `tests/protocol_boundary.rs`
 loads it only to prove that a Protocol 29 capture fails closed on the Protocol
-30 Host, with and without the newer-protocol opt-in. The commands below apply
-to the Kanatoko 29 line.
+30 Host, with and without the newer-protocol opt-in. Its Protocol 30 successor
+is `../native-xlm-p30/`. Testnet now runs Protocol 30, so the refresh command
+below no longer applies; the offline check applies to the Kanatoko 29 line.
 
 Refresh is an explicit read-only operation requiring a network still on
 Protocol 29. It never builds, signs, or submits a transaction; it also runs the

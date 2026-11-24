@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_30_fixtures))]
 
 use kanatoko::{
     AuthMode, AuthorizationTree, CandidateInstallMode, CapturedFixture, ExecutionMode,
@@ -22,24 +22,24 @@ const DEADLINE: u64 = u64::MAX;
 const SWAP: &str = "swap_exact_tokens_for_tokens";
 const WRAPPER_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_soroswap_wrapper.wasm");
 const WRAPPER_SHA256: [u8; 32] = [
-    0x1e, 0x7b, 0xca, 0x07, 0xc5, 0xaa, 0x5c, 0x2f, 0x31, 0x54, 0x48, 0x57, 0x02, 0x77, 0x99, 0x28,
-    0x5d, 0xff, 0x97, 0x26, 0x6e, 0xd7, 0x89, 0x5c, 0xf2, 0x1d, 0x0e, 0x67, 0x36, 0xdc, 0xb3, 0xa8,
+    0x55, 0x40, 0xc2, 0x34, 0x81, 0x52, 0x8b, 0x3b, 0x37, 0x00, 0x41, 0x24, 0xd3, 0x54, 0x8d, 0x66,
+    0x9e, 0xa1, 0xb7, 0xce, 0x41, 0x21, 0xed, 0x7f, 0x90, 0x9c, 0x4c, 0xb1, 0x64, 0xcf, 0x65, 0x88,
 ];
-/// Quotes of the committed Protocol 29 capture on the Protocol 29 Host.
-const PROTOCOL_29_QUOTES: Quotes = Quotes {
-    before: 67_870_832,
-    after: 56_106_992,
-    restored: 67_870_832,
+/// Quotes of the committed Protocol 30 capture on the Protocol 30 Host.
+const PROTOCOL_30_QUOTES: Quotes = Quotes {
+    before: 77_621_199,
+    after: 64_172_267,
+    restored: 77_621_199,
 };
 
 #[test]
 fn candidate_calls_captured_soroswap_graph_statefully_with_receipts_and_revert() {
     let captured = CapturedFixture::from_file(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 65_389_557);
-    assert_eq!(captured.provenance().protocol_version(), 29);
+    assert_eq!(captured.provenance().ledger_sequence(), 65_645_608);
+    assert_eq!(captured.provenance().protocol_version(), 30);
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
 
-    assert_eq!(candidate_scenario(&captured), PROTOCOL_29_QUOTES);
+    assert_eq!(candidate_scenario(&captured), PROTOCOL_30_QUOTES);
 }
 
 /// On a capture at the Host's own protocol the newer-protocol opt-in changes
@@ -48,7 +48,7 @@ fn candidate_calls_captured_soroswap_graph_statefully_with_receipts_and_revert()
 fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
     let captured =
         CapturedFixture::from_file_allowing_newer_protocol(CAPTURE, MAINNET_PASSPHRASE).unwrap();
-    assert_eq!(captured.provenance().ledger_sequence(), 65_389_557);
+    assert_eq!(captured.provenance().ledger_sequence(), 65_645_608);
     assert_eq!(
         captured.provenance().protocol_version(),
         SUPPORTED_PROTOCOL_VERSION
@@ -59,11 +59,11 @@ fn newer_protocol_opt_in_runs_a_current_protocol_capture_unchanged() {
     );
     assert_eq!(
         hex(captured.frozen_fixture().ledger_digest()),
-        "54b45ed4b3d3037e0882c004629ff7574c822d915f4f51e664f2e5f15b0f3ab5"
+        "a52290fd2c79b9d35e453a5547b688a3d0b1041c64e6b56c5a97e948facd971f"
     );
     assert_eq!(captured.report().final_replay_rpc_reads(), 0);
 
-    assert_eq!(candidate_scenario(&captured), PROTOCOL_29_QUOTES);
+    assert_eq!(candidate_scenario(&captured), PROTOCOL_30_QUOTES);
 }
 
 #[derive(Debug, Eq, PartialEq)]

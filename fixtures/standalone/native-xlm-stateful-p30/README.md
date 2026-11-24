@@ -29,10 +29,12 @@ The five present entries are:
 - the stateful fixture contract
   `CCNHIRURTVMTX65DOASMBGJSQZLZMFGRO7QBHMBDSFPGEQ7AWH6VMTH5`: its instance,
   its persistent `value` entry (42), and its ContractCode entry, which is the
-  committed `fixtures/wasm/kanatoko_stateful_fixture.wasm` (SHA-256
+  `fixtures/wasm/kanatoko_stateful_fixture.wasm` committed at the time (SHA-256
   `0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea`, built
   with `soroban-sdk` 28) together with the Protocol 30 cost inputs recorded at
-  upload.
+  upload. Kanatoko 30.0.0 rebuilt that artifact from the same source with
+  `soroban-sdk` 30; the capture keeps the uploaded SDK 28 code, which the
+  tests execute, and uses the current artifact only for its client ABI.
 
 The two confirmed-absent entries are the native XLM balance of the stateful
 contract, which the scenario credits locally, and the deployer's temporary
@@ -54,7 +56,8 @@ the contract calls and the muxed transfer on a strict fork, checking the
 The deployer key and the contract salt are derived from fixed labels, so the
 addresses above are the same on every fresh standalone network. A refresh
 captures a different ledger, so the ledger, hash, and digest constants in
-`tests/standalone_p30.rs` and this file must then be updated.
+`tests/standalone_p30.rs` and this file must then be updated. It also uploads
+the current `soroban-sdk` 30 artifact, so `STATEFUL_WASM_SHA256` changes too.
 
 1. Start the network:
 
@@ -91,5 +94,8 @@ ALL_PROXY=http://127.0.0.1:9 \
 cargo test --locked --all-features --test standalone_p30
 ```
 
-Replace this fixture with a public-network capture once testnet or Mainnet
-moves to Protocol 30.
+Since 30.0.0, Mainnet and testnet run Protocol 30 and have their own
+captures: `../../mainnet/soroswap-xlm-usdc/` and `../../testnet/native-xlm-p30/`.
+This fixture stays as the only capture whose contract was uploaded, created and
+invoked by real Protocol 30 transactions under the repository's control, and
+as the CAP-84 muxed contract address evidence.

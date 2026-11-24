@@ -1179,7 +1179,7 @@ mod tests {
     mod stateful {
         soroban_sdk::contractimport!(
             file = "fixtures/wasm/kanatoko_stateful_fixture.wasm",
-            sha256 = "0156a9a840e4147732fcf0479846220840ae4b4281c58354aa31cf70daf6b2ea",
+            sha256 = "76a511a1e7a1fff4a5fecb77f6d6a4018c9f090ff40a8a52b7233c44d71aa18e",
         );
     }
 

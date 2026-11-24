@@ -1,47 +1,50 @@
-//! Replays the committed standalone Protocol 30 capture and reads a contract.
+//! Replays the committed Soroswap XLM/USDC Mainnet capture and prints a quote.
 //!
-//! This line's committed Protocol 30 evidence is a capture of a local
-//! standalone network, made before testnet upgraded. The capture is loaded
-//! from disk into a strict fork, which holds no RPC transport. Run it with:
+//! The capture is loaded from disk and replayed with `.offline()`, which never
+//! contacts an RPC endpoint. Run it with:
 //!
 //! ```sh
 //! cargo run --locked --features capture --example offline_replay
 //! ```
 
-use kanatoko::soroban_env_host::xdr::{ScAddress, ScVal};
-use kanatoko::{AuthMode, CapturedFixture, ExecutionMode, InvokeOutcome, InvokeRequest};
+use kanatoko::soroban_sdk::{vec, Vec};
+use kanatoko::{mainnet, CacheStatus, PreviewAuth};
 
 const BUNDLE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/fixtures/standalone/native-xlm-stateful-p30/capture.json"
+    "/fixtures/mainnet/soroswap-xlm-usdc/capture.json"
 );
-const STANDALONE_PASSPHRASE: &str = "Standalone Network ; February 2017";
-const STATEFUL: &str = "CCNHIRURTVMTX65DOASMBGJSQZLZMFGRO7QBHMBDSFPGEQ7AWH6VMTH5";
+const ROUTER: &str = "CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH";
+const USDC: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
+const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
+const ONE_USDC: i128 = 10_000_000;
 
 fn main() {
-    let captured = CapturedFixture::from_file(BUNDLE, STANDALONE_PASSPHRASE)
-        .expect("the committed capture must load");
-    let mut fork = captured.fork();
+    let run = mainnet()
+        .cache(BUNDLE)
+        .offline()
+        .run(|fork| {
+            let router = fork.contract(ROUTER);
+            let path = vec![fork.env(), fork.contract(USDC), fork.contract(XLM)];
+            let report = fork
+                .preview(
+                    &router,
+                    "router_get_amounts_out",
+                    (ONE_USDC, path),
+                    PreviewAuth::Record,
+                )
+                .expect("the quote must replay from the capture");
+            let amounts: Vec<i128> = report
+                .result(fork.env())
+                .expect("the router must return amounts");
 
-    let contract: ScAddress = STATEFUL.parse().expect("a valid contract address");
-    let function = "get".try_into().expect("a valid function name");
-    let receipt = fork
-        .invoke(
-            InvokeRequest {
-                contract,
-                function,
-                args: vec![],
-            },
-            ExecutionMode::Preview,
-            AuthMode::Enforce(vec![]),
-        )
-        .expect("the call must replay from the capture");
+            let upstream_reads = report.receipt().upstream_reads;
+            assert_eq!(upstream_reads, 0, "offline replay must not use RPC");
+            println!("quote: 1 USDC -> {} XLM stroops", amounts.get_unchecked(1));
+            println!("upstream RPC reads: {upstream_reads}");
+        })
+        .expect("offline replay must succeed");
 
-    let InvokeOutcome::Success(ScVal::I64(value)) = receipt.outcome else {
-        panic!("unexpected outcome: {:?}", receipt.outcome);
-    };
-    assert_eq!(receipt.upstream_reads, 0, "offline replay must not use RPC");
-    println!("stateful contract value: {value}");
-    println!("upstream RPC reads: {}", receipt.upstream_reads);
-    println!("ledger: {}", captured.provenance().ledger_sequence());
+    assert_eq!(run.cache_status(), CacheStatus::Hit);
+    println!("ledger: {}", run.fixture().provenance().ledger_sequence());
 }

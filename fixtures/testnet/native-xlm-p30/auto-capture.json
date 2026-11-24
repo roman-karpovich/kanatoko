@@ -1,0 +1,108 @@
+{
+  "schema_version": 2,
+  "ledger_snapshot": {
+    "protocol_version": 30,
+    "sequence_number": 5898217,
+    "timestamp": 1795514727,
+    "network_id": "cee0302d59844d32bdca915c8203dd44b33fbb7edc19051ea37abedf28ecd472",
+    "base_reserve": 5000000,
+    "min_persistent_entry_ttl": 120960,
+    "min_temp_entry_ttl": 720,
+    "max_entry_ttl": 3110400,
+    "ledger_entries": [
+      {
+        "entry": {
+          "last_modified_ledger_seq": 4609662,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": "stellar_asset",
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "METADATA"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "decimal"
+                            },
+                            "val": {
+                              "u32": 7
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "name"
+                            },
+                            "val": {
+                              "string": "native"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "symbol"
+                            },
+                            "val": {
+                              "string": "native"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "AssetInfo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Native"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 8837665
+      }
+    ]
+  },
+  "known_absent": [
+    "AAAAAAAAAAAYFF206+QK5a8QGV2aMz0IPKxtXv6E7p0lmeJrP/Nn4Q==",
+    "AAAAAAAAAAAiNmC3ymzbVBy0oQ8QwVd8ZwealfBCL1hdLx0YPl5iLQ==",
+    "AAAABgAAAAEas8U6bCx0tA0X7AY4S3BZ+UFMUEKzNTceUJlDG8TmgQAAABQAAAAB",
+    "AAAABgAAAAHgsSW8Z7K94s73U1Ns5tlZsRqGkSiVEF7txEBhHxNpOAAAABQAAAAB"
+  ],
+  "report": {
+    "discovery_rounds": 2,
+    "present_entries": 1,
+    "absent_entries": 4,
+    "final_replay_rpc_reads": 0
+  },
+  "provenance": {
+    "rpc_origin": "https://soroban-testnet.stellar.org",
+    "network_passphrase": "Test SDF Network ; September 2015",
+    "ledger_sequence": 5898217,
+    "ledger_hash": "ed13d42c509e427da7954bb23a1f316d95b00d0a2c62b061c301e3552a3188c1",
+    "protocol_version": 30
+  },
+  "ledger_digest": "4f4868dd74bd4ef4a337b7ab99fa202a1dcaa809ec91f44503f9bd3ef6720d38",
+  "inventory_digest": "38845692ef455275b7e97469fe7615a21acfc7bf6bf57918646b2ba57ec89e97",
+  "canonical_digest": "9da88a052a529315aff102242ea3e2d45ef9a06da47ce8a54488fdc9a1e7fcf9"
+}

@@ -32,9 +32,9 @@ stellar contract build \
 
 Artifact: `fixtures/wasm/kanatoko_soroswap_wrapper.wasm`
 
-SHA-256: `1e7bca07c5aa5c2f31544857027799285dff97266ed7895cf21d0e6736dcb3a8`
+SHA-256: `5540c23481528b3b37004124d3548d669ea1b7ce4121ed7f909c4cb164cf6588`
 
-The committed artifact is 5,211 bytes and was built from `soroban-sdk 28.0.0`
-(`48d506712f964094d14176e2f0b02afcd1054567`) with Stellar CLI 27.0.0
-(`5a7c5fe76530bf4248477ac812fc757146b98cc4`) and rustc 1.92.0 for
+The committed artifact is 5,113 bytes and was built from `soroban-sdk 30.0.0`
+(`414dd7dd95e6798db7d23899f94187017e41077d`) with Stellar CLI 30.0.1
+(`f2a7b74175c34585f3b30a1abf42a2d41cbcc390`) and rustc 1.92.0 for
 `wasm32v1-none`, with `RUSTC_WRAPPER=sccache`.

@@ -54,7 +54,7 @@ reproduce the failure rather than certify the example for production.
 
 ```toml
 [dev-dependencies]
-kanatoko = { version = "=30.0.0-rc.2", features = ["capture"] }
+kanatoko = { version = "30", features = ["capture"] }
 ```
 
 Choose the Kanatoko major that matches the ledger protocol being captured.
@@ -66,33 +66,24 @@ an older one:
 | 27 | `kanatoko = "27"` | Protocol 27 or older |
 | 28 | `kanatoko = "28"` | Protocol 28 or older |
 | 29 | `kanatoko = "29"` | Protocol 29 or older |
-| 30 | `kanatoko = "=30.0.0-rc.2"` | Protocol 30 or older |
+| 30 | `kanatoko = "30"` | Protocol 30 or older |
 
-Protocol 30 support is a prerelease because the upstream Rust SDK is currently
-`30.0.0-rc.1`. Its SDK and ledger-snapshot dependencies (`30.0.0-rc.1`) and the
-Host they require (`soroban-env-host` 30.0.0) are pinned exactly, so this RC
-cannot silently float to a later breaking prerelease or the stable line. Use
-the Protocol 29 Kanatoko release for a network still running 29; the runner
-fails closed rather than replaying state under a different Host. Until a matching line exists, a network exactly one
-protocol ahead can be captured and replayed through an explicit opt-in; see
-[A network one protocol ahead](#a-network-one-protocol-ahead).
+The 30 line uses the stable Soroban Rust SDK and ledger snapshot 30 with the
+compatible Host 30 runtime. Use the Kanatoko major matching the network
+protocol being captured; the runner fails closed rather than replaying state
+under a different Host. Mainnet and testnet both run Protocol 30, so capture
+from them with this line. Kanatoko 29 cannot capture from either network any
+more, but still replays committed Protocol 29 bundles offline; keep it pinned
+for those, or refresh them on this line. Until a matching line exists, a
+network exactly one protocol ahead can be captured and replayed through an
+explicit opt-in; see [A network one protocol ahead](#a-network-one-protocol-ahead).
 
 ## Your contract against mainnet
 
-Testnet runs Protocol 30, so use this line for testnet. Mainnet still runs
-Protocol 29: run the mainnet examples in this section with the stable 29 line
-until Mainnet upgrades:
-
-```toml
-[dev-dependencies]
-kanatoko = { version = "29", features = ["capture"] }
-```
-
-Kanatoko 30 captures and replays Protocol 30 state. Its committed Protocol 30
-evidence is a capture of a local standalone network, made before testnet
-upgraded. The committed CLI fixture is still the Protocol 29 Mainnet capture;
-this line loads it, like the historical Protocol 27 and 28 captures, only to
-test fail-closed cross-protocol loading.
+Kanatoko 30 captures and replays Protocol 30 Mainnet state. The committed CLI
+fixture is a Protocol 30 capture; its Protocol 29 predecessor and older
+captures are retained separately only to test fail-closed cross-protocol
+loading.
 
 Suppose `my_vault.wasm` accepts a token address in its constructor and
 `asset_decimals()` calls that token contract:
@@ -182,9 +173,8 @@ as an explicitly pinned snapshot with zero transport calls.
 
 ## Offline example
 
-`examples/offline_replay.rs` replays the committed standalone Protocol 30
-capture and prints the value held by its stateful contract, using only that
-bundle and no RPC:
+`examples/offline_replay.rs` replays the committed Soroswap XLM/USDC Mainnet
+capture and prints a 1 USDC to XLM quote, using only that bundle and no RPC:
 
 ```sh
 cargo run --locked --features capture --example offline_replay
@@ -282,7 +272,8 @@ mainnet()
 This works only while Protocol N+1 keeps the ledger XDR that the Protocol N
 line decodes. Protocol 30 changed the ledger header format, so the 29 line
 cannot capture from Protocol 30 networks, also with the opt-in; use this line
-for them.
+for them. Since Mainnet and testnet both run Protocol 30, the opt-in has no
+public network to apply to on this line until a network moves to Protocol 31.
 
 The same opt-in exists on every API that checks the protocol:
 `CaptureBuilder::allow_newer_protocol()`,

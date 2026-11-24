@@ -1,7 +1,9 @@
 # Soroswap XLM/USDC fixture
 
-This directory contains the Protocol 29 `capture.json` and `auto-capture.json`
-execution-driven capture bundles of the Soroswap XLM/USDC pair on Mainnet.
+This directory contains the Protocol 30 `capture.json` and `auto-capture.json`
+execution-driven capture bundles of the Soroswap XLM/USDC pair on Mainnet. The
+Protocol 29 bundles they replace are kept as `capture-p29.json` and
+`auto-capture-p29.json` for cross-protocol rejection only.
 Local WASM artifacts generate client ABIs only; the normal test suite never
 contacts a network.
 
@@ -45,17 +47,19 @@ mint -> swap -> requote without RPC access.
 ABI of the pair and router methods used by the scenarios; executable network
 WASM comes from captured `ContractCode` entries.
 
-The committed `capture.json` is a rootless schema-v2 Protocol 29 bundle. It was
+The committed `capture.json` is a rootless schema-v2 Protocol 30 bundle. It was
 captured read-only from `https://mainnet.sorobanrpc.com` at Mainnet ledger
-`65389557` (hash
-`197036f155f650596c45c80cc0d3257d69131f7d12e5d91240827f977ec26a4d`).
-It reached a fixed point in two rounds with 11 present and six RPC-confirmed
-absent entries, and recorded zero RPC reads during final replay.
+`65645608` (hash
+`e8e37e847f4e4195e7bf956435a14ade62282d249c74a3a33ffde578effe99c8`, closed
+2026-11-24T09:54:52Z). It reached a fixed point in two rounds with 11 present
+and six RPC-confirmed absent entries, and recorded zero RPC reads during final
+replay. The pair, router and USDC admin WASM are unchanged from the Protocol 29
+capture.
 
-- Canonical ledger digest: `54b45ed4b3d3037e0882c004629ff7574c822d915f4f51e664f2e5f15b0f3ab5`
-- Inventory digest: `091d3f650714f6162f7ce62b299a234356eb0a60bd143ab10f37331b542aaf0b`
-- Canonical bundle digest: `ce70e7568c10cafa703abe9690de949c7b4fcf873068729e0a6ec3c15c632620`
-- `capture.json` SHA-256: `2fcf68e01a6a95b808ef7b761a8ba2a2610c67c56c61d1faedac3a4015dc7030`
+- Canonical ledger digest: `a52290fd2c79b9d35e453a5547b688a3d0b1041c64e6b56c5a97e948facd971f`
+- Inventory digest: `c29d9890dce1fef57ca2d7a12477d310cac6e72d2254c30ea2ddd2058a8a48b9`
+- Canonical bundle digest: `a7aa75b73c824327e0968601f8230e0e830d245abc10de138726634d3cc8fa3e`
+- `capture.json` SHA-256: `9725501a795ef376cb0f452589123b08e0618dcddb47262e1e8188a7674e2a77`
 
 Capture from `https://mainnet.sorobanrpc.com` with:
 
@@ -88,26 +92,27 @@ The committed `auto-capture.json` was created by the runner itself on the
 first online execution; no separate capture scenario or manifest was written.
 
 - Bundle schema: `2` (no root address)
-- Mainnet ledger: `65389638`
+- Mainnet ledger: `65645613`
 - Ledger hash:
-  `d0dbb60688faa14ce629178805db2229e3549428faee5cdeedbb1819c1d34df8`
-- Protocol: `29`
+  `9eb717680b9b9c61f7c146b54385a55cc77a6977e48a4817278d36e2e6d94f03`
+- Ledger close time: `2026-11-24T09:55:17Z`
+- Protocol: `30`
 - Discovery: 2 rounds, 13 present, 4 confirmed absent
 - Final replay RPC reads: `0`
 - Canonical ledger digest:
-  `3afb9bbae36e470dc932732b59e59cc2a1593fa08d03ca1ff2286a5376745d58`
+  `1917f89bd000978aaa8d5785bc226dc44ce1b3743fc97b6b5ef599c35e53df41`
 - Inventory digest:
-  `1ea365cb97074b8a86cfa0c8a67cb5325fb02c1614dafbbbed471ee5cfd2e4de`
+  `d0c748f912be5161f8a6a0fa7e356544bda57fa3604bd1202e752e75a06e1ae6`
 - Canonical bundle digest:
-  `b9299ccaa4930f753c3982a5c9a8ac2836158ab67714719419b0cf26930ba1f4`
+  `a1d06e00505852ffd1c142a302e015ff47954df14643c2ad82d8cb4a78c36b44`
 - `auto-capture.json` SHA-256:
-  `b3ef94bc07f9d2b8224325faf7c7e9ed16a6265ceeadaf460c424e7c987403cc`
+  `967cc34318223f3ec4b0b87f4caa1213cb359f55fd7c2d9a0af7380d5a560161`
 
 Refresh it with the ignored read-only test:
 
 ```sh
 cargo test --locked --all-features --test auto_runner \
-  refresh_protocol_29_mainnet_fixture -- --exact --ignored
+  refresh_protocol_30_mainnet_fixture -- --exact --ignored
 ```
 
 The typed clients are deliberately generated from the different
@@ -120,14 +125,14 @@ with all HTTP proxies pointed at `127.0.0.1:9`.
 
 ## Strict mutable candidate workflow
 
-The strict fork loads the schema-v2 Protocol 29 capture without collapsing
+The strict fork loads the schema-v2 Protocol 30 capture without collapsing
 Unknown into confirmed Absent. It locally injects the committed hash-pinned
 Soroswap wrapper candidate, whose production WASM calls the captured router and
 pair WASM. The acceptance estimates 1 USDC -> XLM, mints a synthetic user 10% of
 the captured USDC reserve, previews and exact-gates a wrapper swap, then proves
-the quote decreased from `67870832` to `56106992` in the mutated session.
+the quote decreased from `77621199` to `64172267` in the mutated session.
 
-Checkpoint/revert restores the first quote (`67870832`), an uncaptured contract
+Checkpoint/revert restores the first quote (`77621199`), an uncaptured contract
 key fails closed after the mutations and after revert, and every receipt plus
 the fork reports zero upstream reads. JSON output exposes detached XDR for
 results, exact auth trees, events, diagnostics, and ledger diffs.
@@ -151,21 +156,30 @@ read-only commands.
 
 ## Older-protocol rejection evidence
 
-Older-protocol rejection uses
-`fixtures/testnet/native-xlm-p28/auto-capture.json` and the synthetic bundles in
-`fixtures/synthetic/`. No Protocol 27 or 28 Mainnet state is committed.
+`capture-p29.json` and `auto-capture-p29.json` are the Protocol 29 bundles of
+the same scenarios, byte for byte as the 29 line commits them as `capture.json`
+and `auto-capture.json`:
 
-## On the Kanatoko 30 line
+- `capture-p29.json`: Mainnet ledger `65389557` (hash
+  `197036f155f650596c45c80cc0d3257d69131f7d12e5d91240827f977ec26a4d`), 11
+  present and six confirmed-absent entries, SHA-256
+  `2fcf68e01a6a95b808ef7b761a8ba2a2610c67c56c61d1faedac3a4015dc7030`.
+- `auto-capture-p29.json`: Mainnet ledger `65389638` (hash
+  `d0dbb60688faa14ce629178805db2229e3549428faee5cdeedbb1819c1d34df8`), 13
+  present and four confirmed-absent entries, SHA-256
+  `b3ef94bc07f9d2b8224325faf7c7e9ed16a6265ceeadaf460c424e7c987403cc`.
 
-Mainnet still runs Protocol 29, so `capture.json` and `auto-capture.json` cannot
-be recaptured on Protocol 30 yet. On the 30 line they are kept byte for byte as
-cross-protocol rejection evidence: `tests/protocol_boundary.rs` proves that
-both, through the loaders, the offline runners and the CLI's default fixture,
-fail closed on the Protocol 30 Host with and without the newer-protocol opt-in.
-The Soroswap scenario tests (`tests/soroswap_candidate.rs`,
-`tests/auto_runner.rs`, `tests/cli.rs` and the Soroswap workflow in
-`tests/strict_fork.rs`) run only on the 29 line until a Protocol 30 Mainnet
-capture exists. The generic strict-fork tests run on the 30 line against
-`fixtures/standalone/native-xlm-stateful-p30/capture.json`. The newer-protocol
-mode on this line accepts exactly Protocol 31 and executes it on the Protocol
-30 Host.
+`tests/protocol_boundary.rs` proves that both, through the loaders, the offline
+runners and the CLI, fail closed on the Protocol 30 Host with
+`UnsupportedProtocol { found: 29, supported: 30 }`, with and without the
+newer-protocol opt-in. Older-protocol rejection also uses
+`fixtures/testnet/native-xlm-p28/auto-capture.json`,
+`fixtures/testnet/native-xlm-p29/auto-capture.json` and the synthetic bundles
+in `fixtures/synthetic/`. No Protocol 27 or 28 Mainnet state is committed.
+
+## Newer-protocol mode on this line
+
+On this line the newer-protocol mode accepts exactly Protocol 31 and executes
+it on the Protocol 30 Host. No Protocol 31 network exists yet, so no Protocol
+31 capture is committed; the mode is tested with synthetic in-memory Protocol
+31 snapshots.

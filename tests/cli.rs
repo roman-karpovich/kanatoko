@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_30_fixtures))]
 
 use std::process::{Command, Output};
 
@@ -13,10 +13,10 @@ fn cli_runs_the_strict_soroswap_workflow_offline() {
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("strict Soroswap run: ok"));
-    assert!(stdout.contains("ledger: 65389557"));
-    assert!(stdout.contains("quote before: 67870832"));
-    assert!(stdout.contains("quote after: 56106992"));
-    assert!(stdout.contains("revert restored quote: 67870832"));
+    assert!(stdout.contains("ledger: 65645608"));
+    assert!(stdout.contains("quote before: 77621199"));
+    assert!(stdout.contains("quote after: 64172267"));
+    assert!(stdout.contains("revert restored quote: 77621199"));
     assert!(stdout.contains("unknown key fail-closed: true"));
     assert!(stdout.contains("upstream reads: 0"));
     assert!(stdout.contains("not transaction-faithful deploy"));
@@ -48,7 +48,7 @@ fn cli_rejects_a_protocol_28_fixture_with_and_without_the_opt_in() {
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(
-            stderr.contains("UnsupportedProtocol { found: 28, supported: 29 }"),
+            stderr.contains("UnsupportedProtocol { found: 28, supported: 30 }"),
             "{stderr}"
         );
     }
@@ -70,19 +70,19 @@ fn cli_opt_in_on_a_current_protocol_fixture_reports_both_protocols_without_a_war
     assert!(output.stderr.is_empty());
 
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["ledger"], 65_389_557);
-    assert_eq!(report["networkProtocol"], 29);
-    assert_eq!(report["executedProtocol"], 29);
-    assert_eq!(report["quoteBefore"], "67870832");
-    assert_eq!(report["quoteAfter"], "56106992");
-    assert_eq!(report["restoredQuote"], "67870832");
+    assert_eq!(report["ledger"], 65_645_608);
+    assert_eq!(report["networkProtocol"], 30);
+    assert_eq!(report["executedProtocol"], 30);
+    assert_eq!(report["quoteBefore"], "77621199");
+    assert_eq!(report["quoteAfter"], "64172267");
+    assert_eq!(report["restoredQuote"], "77621199");
     assert_eq!(report["unknownFailClosed"], true);
     assert_eq!(report["upstreamReads"], 0);
     let receipts = report["receipts"].as_array().unwrap();
     assert_eq!(receipts.len(), 9);
     for receipt in receipts {
-        assert_eq!(receipt["networkProtocol"], 29);
-        assert_eq!(receipt["executedProtocol"], 29);
+        assert_eq!(receipt["networkProtocol"], 30);
+        assert_eq!(receipt["executedProtocol"], 30);
         assert_eq!(receipt["upstreamReads"], 0);
     }
 }

@@ -2,6 +2,55 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 30.0.0 - 2026-11-24
+
+- Move the Protocol 30 line to stable `soroban-sdk` and
+  `soroban-ledger-snapshot` 30.0.0 with the compatible Host 30.0.1 runtime.
+  The 30 line is published on crates.io as `kanatoko = "30"`, with the same
+  broad same-major ranges as the other stable lines. Cargo resolves one Host,
+  30.0.1, and `stellar-xdr` 30.0.0.
+- No Kanatoko API changes. Between 30.0.0-rc.1 and 30.0.0 the SDK added a
+  migration page of minor breaking changes for contracts and tools
+  (`#[contracttype]` enums with `panic_with_error!`, fields or generics on
+  `#[contract]` types, hand-written `Event` impls, unprocessed names from
+  `spec_xdr` functions, `MuxedAddress::try_from_val` on non-address values),
+  re-exported the cost estimate types from `testutils`, and moved to the
+  30.0.1 Host. None of them required a source change here.
+- Host 30.0.1 uses the recalibrated pubnet values for ten default CPU cost
+  parameters and meters more recording-mode work on the shadow budget.
+  Preview resource estimates can differ from 30.0.0-rc.2; no committed test
+  value changed, because the tests pin no budget or resource figures.
+- Carry over 29.1.2: local `ScenarioFork::deploy` IDs come from a
+  network-specific hash namespace, so a candidate no longer inherits balances
+  held at an SDK counter address. Local candidate IDs change as described in
+  the 29.1.2 entry.
+- Mainnet and testnet now run Protocol 30. Refresh the Soroswap XLM/USDC
+  `capture.json` and `auto-capture.json` on Protocol 30 at Mainnet ledgers
+  65645608 and 65645613, and re-enable the Soroswap scenario tests in
+  `tests/soroswap_candidate.rs`, `tests/auto_runner.rs`, `tests/cli.rs` and
+  `tests/strict_fork.rs`. The strict candidate quotes move from
+  `67870832 -> 56106992 -> 67870832` to `77621199 -> 64172267 -> 77621199`
+  with the pool reserves; they are the same with and without the opt-in.
+- Keep the Protocol 29 Mainnet bundles byte for byte as `capture-p29.json` and
+  `auto-capture-p29.json`, next to the `native-xlm-p29` testnet capture, as
+  cross-protocol rejection evidence: they fail closed on the Protocol 30 Host
+  through the loaders, the offline runners and the CLI, with and without the
+  opt-in.
+- Add a frozen Protocol 30 testnet capture, `native-xlm-p30`, of the native
+  XLM Stellar Asset Contract, replayed offline with the stateful and
+  quote-forwarder candidates deployed locally.
+- The generic strict-fork tests and `examples/offline_replay.rs` run on the
+  Mainnet capture again, as on the 29 line. Keep the standalone Protocol 30
+  capture: it is the only one whose contract was deployed by real Protocol 30
+  transactions, and it carries the CAP-84 muxed contract address test.
+- Rebuild the stateful, quote-forwarder and Soroswap wrapper candidate
+  fixtures with `soroban-sdk` 30.0.0 and Stellar CLI 30.0.1 and update every
+  pinned artifact hash. The SDK 25 compatibility fixture is unchanged. The
+  standalone capture keeps the uploaded `soroban-sdk` 28 build of the stateful
+  contract.
+- Point the README to this line for Mainnet and testnet, install it as
+  `kanatoko = "30"`, and add the runnable offline demo section from `master`.
+
 ## 30.0.0-rc.2 - 2026-11-10
 
 - Replace the Mainnet pool fixture and CLI scenario with a Soroswap XLM/USDC
