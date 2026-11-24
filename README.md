@@ -11,6 +11,47 @@ test locally with no RPC fallback.
 You can also install the contract you are developing into that fork. Your local
 WASM and captured network contracts then call each other normally.
 
+## Run the offline demo
+
+Start with the complete [integrator demo](https://github.com/roman-karpovich/kanatoko-integrator-demo).
+It runs a small DCA contract against the real Soroswap router and pool from a
+committed mainnet capture.
+
+With Git and Rust installed through rustup:
+
+```sh
+git clone https://github.com/roman-karpovich/kanatoko-integrator-demo.git
+cd kanatoko-integrator-demo
+cargo test --locked
+```
+
+The repository pins Rust 1.91.0 and includes the contract WASM and ledger
+capture. The first build downloads the toolchain and Cargo dependencies as
+needed; the tests themselves make no RPC calls. No Stellar CLI, wallet, faucet
+or public-network deployment is needed.
+
+The two tests check that:
+
+- a locally installed contract swaps through the captured Soroswap contracts;
+- an immediate retry fails with `TooEarly`, then advancing time by one day
+  allows another swap;
+- another account's swap moves the pool price below the DCA limit, producing
+  `BelowLimit`;
+- a read outside the captured state fails with `UnknownLedgerKeys`.
+
+After the first build, `cargo test --locked --offline` reruns the tests without
+downloading dependencies. The demo pins Kanatoko 29 and a Protocol 29 capture;
+replaying it does not depend on the current mainnet protocol. Time changes,
+funding and mocked authorization are explicit local test conditions.
+
+For a concrete mock-versus-real discrepancy, see the independent
+[SoroCron reproduction](https://github.com/roman-karpovich/kanatoko-sorocron-repro):
+the example's mock accepts `deadline == now`, while the captured Soroswap router
+rejects it. The linked repository pins the tested upstream revision; its tests
+reproduce the failure rather than certify the example for production.
+
+## Add Kanatoko to your tests
+
 ```toml
 [dev-dependencies]
 kanatoko = { version = "=30.0.0-rc.2", features = ["capture"] }
