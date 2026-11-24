@@ -5389,7 +5389,7 @@ mod tests {
             let mut fake = Rc::try_unwrap(Self::from_soroswap_snapshot())
                 .unwrap_or_else(|_| unreachable!("the fake was just created"));
             let bundle: CaptureBundleV2 = serde_json::from_slice(
-                &fs::read("fixtures/mainnet/network-config-p29/auto-capture.json").unwrap(),
+                &fs::read("fixtures/mainnet/network-config-p30/auto-capture.json").unwrap(),
             )
             .unwrap();
             let snapshot = captured_snapshot();

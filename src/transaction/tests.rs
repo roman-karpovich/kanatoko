@@ -18,8 +18,8 @@ use soroban_env_host::{
 use super::*;
 use crate::{strict::contract_instance_key, CapturedFixture, ExecutionMode};
 
-const CAPTURE: &str = "fixtures/mainnet/network-config-p29/auto-capture.json";
-const GOLDEN: &str = "fixtures/mainnet/network-config-p29/fee-golden.json";
+const CAPTURE: &str = "fixtures/mainnet/network-config-p30/auto-capture.json";
+const GOLDEN: &str = "fixtures/mainnet/network-config-p30/fee-golden.json";
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 const STATEFUL_WASM: &[u8] = include_bytes!("../../fixtures/wasm/kanatoko_stateful_fixture.wasm");
 const TEN_XLM: i64 = 100_000_000;
@@ -46,7 +46,8 @@ fn fork() -> StrictFork {
 
 /// Rent changes of one Mainnet transaction, rebuilt from its metadata.
 /// `None` when an entry changed size without a TTL change, whose live-until
-/// ledger the metadata does not carry.
+/// ledger the metadata does not carry, or when only a TTL was updated and
+/// the metadata omits the size of its contract entry.
 fn meta_rent_changes(changes: &[MetaChange]) -> Option<Vec<LedgerEntryRentChange>> {
     let budget = Budget::default();
     let size = |entry: &LedgerEntry| {
@@ -94,9 +95,9 @@ fn meta_rent_changes(changes: &[MetaChange]) -> Option<Vec<LedgerEntryRentChange
     for (encoded, (key, old_size, new_size)) in entries {
         let hash: [u8; 32] = Sha256::digest(&encoded).into();
         let Some(new_size) = new_size else { continue };
-        let (old_live, new_live) = match (ttl_before.get(&hash), ttl_after.get(&hash)) {
-            (Some(old), Some(new)) => (*old, *new),
-            (None, Some(new)) => (0, *new),
+        let (old_live, new_live) = match (ttl_before.get(&hash), ttl_after.remove(&hash)) {
+            (Some(old), Some(new)) => (*old, new),
+            (None, Some(new)) => (0, new),
             _ if old_size.is_some_and(|old| old >= new_size) => continue,
             _ => return None,
         };
@@ -109,7 +110,7 @@ fn meta_rent_changes(changes: &[MetaChange]) -> Option<Vec<LedgerEntryRentChange
             new_live_until_ledger: new_live,
         });
     }
-    Some(rent)
+    ttl_after.is_empty().then_some(rent)
 }
 
 /// Fee components of real Mainnet Soroban transactions, recomputed from
@@ -156,7 +157,7 @@ fn computed_fees_equal_mainnet_charges() {
         let TransactionMeta::V4(meta) =
             TransactionMeta::from_xdr_base64(&transaction.result_meta_xdr, Limits::none()).unwrap()
         else {
-            panic!("Protocol 29 metadata is V4");
+            panic!("Protocol 30 metadata is V4");
         };
         let soroban = meta.soroban_meta.as_ref().unwrap();
         let SorobanTransactionMetaExt::V1(charged) = &soroban.ext else {

@@ -461,6 +461,8 @@ Limits to keep in mind:
 
 ## Signed transactions on a strict fork
 
+The signed transaction API is available in this unreleased Protocol 30 branch. Pin its Git revision when using the examples below. The P30 captures and fee comparisons are documented in [network-config-p30](fixtures/mainnet/network-config-p30/README.md) and [strict-run-p30](fixtures/mainnet/strict-run-p30/README.md).
+
 `run_strict` runs a scenario on a `StrictFork`, which fails closed on every
 ledger key the fixture lacks, and executes host functions as Stellar
 transactions: simulated by the preflight library of RPC

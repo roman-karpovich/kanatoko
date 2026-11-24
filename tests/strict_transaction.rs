@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_30_fixtures))]
 
 //! Transaction-faithful execution on a strict fork: signed authorization,
 //! enforced footprints, network limits, fees, and upload/create.
@@ -23,7 +23,7 @@ use soroban_env_host::xdr::{
     TimeBounds, TimePoint,
 };
 
-const CAPTURE: &str = "fixtures/mainnet/network-config-p29/auto-capture.json";
+const CAPTURE: &str = "fixtures/mainnet/network-config-p30/auto-capture.json";
 const SOROSWAP_CAPTURE: &str = "fixtures/mainnet/soroswap-xlm-usdc/capture.json";
 const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
 const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
@@ -78,7 +78,7 @@ fn refresh_mainnet_network_config_fixture() {
         run.cache_status(),
         CacheStatus::Created | CacheStatus::Refreshed
     ));
-    assert_eq!(run.fixture().provenance().protocol_version(), 29);
+    assert_eq!(run.fixture().provenance().protocol_version(), 30);
     run.fixture().fork().network_config().unwrap();
 }
 
@@ -229,7 +229,7 @@ const AUTH_INVALID_INPUT: ScError = ScError::Auth(ScErrorCode::InvalidInput);
 #[test]
 fn network_config_and_signer_absence_are_captured() {
     let fixture = fixture();
-    assert_eq!(fixture.provenance().protocol_version(), 29);
+    assert_eq!(fixture.provenance().protocol_version(), 30);
     let fork = fixture.fork();
     let config = fork.network_config().unwrap();
     let limits = config.limits();

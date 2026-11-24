@@ -2,7 +2,7 @@
 
 All notable changes to Kanatoko are documented in this file.
 
-## 29.2.0 - Unreleased
+## 30.1.0 - Unreleased
 
 - Add transaction-faithful execution on `StrictFork`. `TransactionCall`
   describes one `InvokeHostFunctionOp` transaction (contract call, WASM
@@ -14,7 +14,7 @@ All notable changes to Kanatoko are documented in this file.
   Stellar RPC `simulateTransaction`, against the fork's last closed ledger
   and with RPC's default resource and fee adjustments
   (`simulate_transaction`, `prepare_transaction`, `sign_transaction`).
-- Apply as Stellar Core does at Protocol 29 (`apply_transaction`): refuse
+- Apply as Stellar Core does at Protocol 30 (`apply_transaction`): refuse
   invalid transactions with `TransactionError::Invalid(InvalidTransaction)`
   and no change (per-transaction limits, footprint key types, duplicates and
   archived-entry indices, memo or muxed source, resource and inclusion fees,
@@ -51,7 +51,7 @@ All notable changes to Kanatoko are documented in this file.
   `capture_deployed_contract`, and `capture_ledger_key` for keys only later
   transactions read. An online runner recaptures a cache without network
   settings. Such bundles also carry the `StateArchival` entry, checked
-  against the ledger TTL bounds; releases before 29.2.0 reject them.
+  against the ledger TTL bounds; releases before 30.1.0 reject them.
 - Add `AutoRunner::run_strict`, which runs a scenario on a discovering
   `StrictFork`: every uncaptured key is recorded and read from the network
   at the round's anchor ledger, or treated as absent once the network has
@@ -85,13 +85,13 @@ All notable changes to Kanatoko are documented in this file.
   value holding an SDK object of any other environment is refused with
   `ConversionError` rather than converted by its handle.
   `set_contract_data` takes any `IntoScVal` key.
-- Add the Protocol 29 Mainnet `strict-run-p29` capture of one `run_strict`
+- Add the Protocol 30 Mainnet `strict-run-p30` capture of one `run_strict`
   flow, replayed in parts offline.
-- Add the Protocol 29 Mainnet `network-config-p29` capture and the fees of
+- Add the Protocol 30 Mainnet `network-config-p30` capture and the fees of
   four real Mainnet Soroban transactions, which the recomputed fees match.
 - New errors use the non-exhaustive `TransactionError` and
   `InvalidTransaction`. Existing public types and their variants are
-  unchanged. Depend on `soroban-simulation` 29 and `ed25519-dalek` under the
+  unchanged. Depend on `soroban-simulation` 30 and `ed25519-dalek` under the
   `capture` feature.
 
 ## 30.0.0 - 2026-11-24

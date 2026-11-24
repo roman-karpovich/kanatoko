@@ -1,4 +1,4 @@
-#![cfg(all(feature = "capture", kanatoko_protocol_29_fixtures))]
+#![cfg(all(feature = "capture", kanatoko_protocol_30_fixtures))]
 
 //! The typed transaction layer on a discovering strict run.
 //!
@@ -14,10 +14,10 @@ use kanatoko::{
 use sha2::{Digest, Sha256};
 use soroban_env_host::xdr::{
     ContractDataDurability, ContractExecutable, Hash, HostFunction, InvokeHostFunctionResultCode,
-    ScAddress, ScError, ScErrorCode, ScSymbol, ScVal,
+    MuxedContract, ScAddress, ScError, ScErrorCode, ScSymbol, ScVal,
 };
 
-const CAPTURE: &str = "fixtures/mainnet/strict-run-p29/auto-capture.json";
+const CAPTURE: &str = "fixtures/mainnet/strict-run-p30/auto-capture.json";
 const XLM: &str = "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA";
 const APP_WASM: &[u8] = include_bytes!("../fixtures/wasm/kanatoko_stateful_fixture.wasm");
 const FUNDING: i64 = 1_000 * 10_000_000;
@@ -162,9 +162,40 @@ fn readme(fork: &mut StrictFork) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Protocol 30 carries a muxed contract address through signed SAC transfer.
+fn transfer_to_muxed_contract(fork: &mut StrictFork) -> Outcome<()> {
+    let owner = signer("strict owner");
+    let app = setup(fork)?;
+    let ScAddress::Contract(contract_id) = app.clone() else {
+        unreachable!("setup deployed a contract")
+    };
+    let recipient = ScAddress::MuxedContract(MuxedContract {
+        id: 17,
+        contract_id,
+    });
+    let before = fork.token_balance(&xlm(), &app)?;
+    let call =
+        TransactionCall::invoke_fn(&owner, &xlm(), "transfer", (&owner, recipient, 25_i128))?;
+    let receipt = fork.apply_signed(&call, &[&owner])?;
+    assert_eq!(receipt.disposition, ReceiptDisposition::Committed);
+    assert_eq!(fork.token_balance(&xlm(), &app)?, before + 25);
+    Ok(())
+}
+
+#[test]
+fn signed_sac_transfer_credits_the_base_contract_of_a_muxed_recipient() {
+    runner()
+        .offline()
+        .run_strict(transfer_to_muxed_contract)
+        .unwrap()
+        .into_value()
+        .unwrap();
+}
+
 /// The whole flow the shared fixture holds.
 fn full(fork: &mut StrictFork) -> Outcome<()> {
     fork.scoped(signed_call)?;
+    fork.scoped(transfer_to_muxed_contract)?;
     fork.scoped(negatives)?;
     fork.scoped(state)?;
     fork.scoped(readme).expect("the README sample passes");

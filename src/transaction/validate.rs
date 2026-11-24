@@ -1,5 +1,5 @@
 //! Transaction validity and resource checks, mirroring Stellar Core at
-//! Protocol 29 (`TransactionFrame::checkSorobanResources`,
+//! Protocol 30 (`TransactionFrame::checkSorobanResources`,
 //! `commonValidPreSeqNum`, and `InvokeHostFunctionOpFrame` apply).
 
 use std::collections::BTreeSet;

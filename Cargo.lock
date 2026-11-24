@@ -1846,9 +1846,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-simulation"
-version = "29.0.1"
+version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fc430d8405a8215197cabcc8ceb6e798f5b80d70dabdd896f1de067dd2c083e"
+checksum = "ff15803efacee8d6c06bfd58c66bbc3a3e487d65846634c3cb09cc85dbbfc323"
 dependencies = [
  "anyhow",
  "rand",

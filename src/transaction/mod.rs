@@ -8,7 +8,7 @@
 //!   `simulateTransaction` (`soroban-simulation`) against the fork's current
 //!   ledger, with its default resource and fee adjustments;
 //! - apply validates, charges, and executes the transaction as Stellar Core
-//!   does at Protocol 29 in the next ledger, through the Host's enforcing
+//!   does at Protocol 30 in the next ledger, through the Host's enforcing
 //!   entry point.
 
 mod config;
