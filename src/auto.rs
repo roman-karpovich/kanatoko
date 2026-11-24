@@ -13,9 +13,9 @@ use std::{
 use sha2::{Digest, Sha256};
 use soroban_env_host::{
     xdr::{
-        AccountEntry, AccountEntryExt, AccountId, ContractExecutable, Hash, LedgerEntry,
-        LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey, ScAddress,
-        ScSymbol, ScVal, SequenceNumber, String32, Thresholds, Uint256, VecM,
+        AccountEntry, AccountEntryExt, AccountId, ContractExecutable, ContractId, Hash,
+        LedgerEntry, LedgerEntryData, LedgerEntryExt, LedgerKey, LedgerKeyAccount, PublicKey,
+        ScAddress, ScSymbol, ScVal, SequenceNumber, String32, Thresholds, Uint256, VecM,
     },
     InvocationResources,
 };
@@ -43,6 +43,7 @@ use crate::{
 const DEFAULT_MAINNET_RPC_URL: &str = "https://mainnet.sorobanrpc.com";
 const DEFAULT_TESTNET_RPC_URL: &str = "https://soroban-testnet.stellar.org";
 const LOCAL_ACCOUNT_DOMAIN: &[u8] = b"kanatoko.local-account.v2";
+const LOCAL_CONTRACT_DOMAIN: &[u8] = b"kanatoko.local-contract.v1";
 const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v2";
 const DEFAULT_CACHE_NAME_MAX: usize = 80;
 const DEFAULT_CACHE_HASH_HEX: usize = 12;
@@ -793,10 +794,13 @@ impl<'a> ScenarioFork<'a> {
     ///
     /// The returned contract shares this scenario's mutable environment, so it
     /// can call captured network contracts and mutate their forked state.
-    /// Installation is deterministic when the scenario is deterministic. Its
+    /// Installation is deterministic when the scenario is deterministic.
+    /// Contract IDs are hashed in a network-specific local namespace instead
+    /// of using the SDK's small counter addresses, which may already hold
+    /// token balances on the captured network. Its
     /// code and contract-owned storage remain local rather than becoming
     /// network-cache dependencies; the generated contract address is still
-    /// checked against captured network state before installation.
+    /// checked for an existing contract instance before installation.
     ///
     /// This uses the SDK test registration path. It does not emulate Soroban
     /// upload/create transactions, deployment authorization, fees, signatures,
@@ -812,12 +816,23 @@ impl<'a> ScenarioFork<'a> {
     where
         A: ConstructorArgs,
     {
-        let address = Address::generate(self.env);
-        let address_xdr = ScAddress::from(&address);
-        assert!(
-            matches!(address_xdr, ScAddress::Contract(_)),
-            "generated candidate address must be a contract"
-        );
+        let ScAddress::Contract(ContractId(Hash(seed))) =
+            ScAddress::from(&Address::generate(self.env))
+        else {
+            unreachable!("generated candidate address must be a contract");
+        };
+        let network_id = self
+            .env
+            .host()
+            .with_ledger_info(|ledger| Ok(ledger.network_id))
+            .expect("the scenario environment must have ledger metadata");
+        let mut digest = Sha256::new();
+        digest.update(LOCAL_CONTRACT_DOMAIN);
+        digest.update(network_id);
+        digest.update(seed);
+        let address_xdr = ScAddress::Contract(ContractId(Hash(digest.finalize().into())));
+        let address = Address::try_from_val(self.env, &address_xdr)
+            .expect("a generated contract ID must be a valid Soroban address");
         let key = Rc::new(contract_instance_key(address_xdr.clone()));
         if self
             .env
@@ -1254,7 +1269,10 @@ mod tests {
         mirror.set_config(EnvTestConfig {
             capture_snapshot_at_drop: false,
         });
-        let occupied_xdr = ScAddress::from(&Address::generate(&mirror));
+        let occupied_xdr = ScAddress::from(
+            &ScenarioFork::new(&mirror, Rc::new(LocalLedger::default()), None)
+                .deploy(stateful::WASM, (0_i64,)),
+        );
         let occupied = Address::try_from_val(&env, &occupied_xdr).unwrap();
         env.register_at(&occupied, stateful::WASM, (41_i64,));
         let existing = stateful::Client::new(&env, &occupied);
@@ -1266,6 +1284,62 @@ mod tests {
         }))
         .is_err());
         assert_eq!(existing.get(), 41);
+    }
+
+    #[test]
+    fn deploy_does_not_inherit_native_balance_at_sdk_generated_address() {
+        let mut env = Env::default();
+        env.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let mut mirror = Env::default();
+        mirror.set_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let occupied =
+            Address::try_from_val(&env, &ScAddress::from(&Address::generate(&mirror))).unwrap();
+        let native = env
+            .host()
+            .invoke_function(soroban_env_host::xdr::HostFunction::CreateContract(
+                soroban_env_host::xdr::CreateContractArgs {
+                    contract_id_preimage: soroban_env_host::xdr::ContractIdPreimage::Asset(
+                        soroban_env_host::xdr::Asset::Native,
+                    ),
+                    executable: ContractExecutable::StellarAsset,
+                },
+            ))
+            .unwrap();
+        let native = Address::try_from_val(&env, &native).unwrap();
+        let token = soroban_sdk::token::TokenClient::new(&env, &native);
+        let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+        fork.mock_all_auths();
+        let donor = fork.local_account("donor");
+        fork.fund_local_account(&donor, 200_000_000_000);
+        token.transfer(&donor, &occupied, &100_000_000_000);
+
+        let candidate = fork.deploy(stateful::WASM, (99_i64,));
+        assert_eq!(token.balance(&candidate), 0);
+        assert_eq!(token.balance(&occupied), 100_000_000_000);
+    }
+
+    #[test]
+    fn deploy_addresses_are_repeatable_unique_and_network_scoped() {
+        fn addresses(network: [u8; 32]) -> [ScAddress; 2] {
+            let mut env = Env::default();
+            env.set_config(EnvTestConfig {
+                capture_snapshot_at_drop: false,
+            });
+            env.ledger().set_network_id(network);
+            let fork = ScenarioFork::new(&env, Rc::new(LocalLedger::default()), None);
+            [
+                ScAddress::from(&fork.deploy(stateful::WASM, (1_i64,))),
+                ScAddress::from(&fork.deploy(stateful::WASM, (2_i64,))),
+            ]
+        }
+        let first = addresses([1; 32]);
+        assert_eq!(first, addresses([1; 32]));
+        assert_ne!(first[0], first[1]);
+        assert_ne!(first[0], addresses([2; 32])[0]);
     }
 
     #[test]

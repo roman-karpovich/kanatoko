@@ -15,10 +15,12 @@ XLM Stellar Asset Contract on public testnet:
 - SHA-256: `b7213fd1a3e48ac9013a7531146429d39d63d529984148ff4971e11343e250c5`
 
 The normal test is strictly offline and proves that the committed bundle
-replays with zero RPC reads. It also deploys and executes the committed
-stateful and quote-forwarder fixtures (built with `soroban-sdk` 28) only
-inside Kanatoko's local Protocol 29 Host; no contract is uploaded or deployed
-to testnet.
+replays native XLM transfers with zero RPC reads. Its old candidate-address
+absence records are preserved unchanged. After local deployment IDs moved to
+a network-specific hash namespace, a separate test proves that deploying into
+this historical capture fails closed on the new, uncaptured address.
+Fresh capture/replay of local WASM calling captured contracts is covered by
+`auto_runner_deploys_local_wasm_that_calls_captured_contract_offline`.
 
 The preceding Protocol 28 capture in `../native-xlm-p28/` is kept unchanged and
 is loaded on this line only by the cross-protocol rejection test.
@@ -28,8 +30,9 @@ loads it only to prove that a Protocol 29 capture fails closed on the Protocol
 30 Host, with and without the newer-protocol opt-in. The commands below apply
 to the Kanatoko 29 line.
 
-Refresh is an explicit read-only operation. It never builds, signs, or submits
-a transaction:
+Refresh is an explicit read-only operation requiring a network still on
+Protocol 29. It never builds, signs, or submits a transaction; it also runs the
+local stateful and quote-forwarder candidates to capture their current IDs:
 
 ```sh
 RUSTC_WRAPPER=sccache cargo test --locked --all-features \
