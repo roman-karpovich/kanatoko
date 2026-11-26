@@ -80,7 +80,7 @@ impl LocalLedger {
         self.code_hashes.borrow_mut().insert(Hash(hash));
     }
 
-    fn owns(&self, key: &LedgerKey) -> bool {
+    pub(crate) fn owns(&self, key: &LedgerKey) -> bool {
         match key {
             LedgerKey::ContractCode(code) => self.code_hashes.borrow().contains(&code.hash),
             LedgerKey::ContractData(data) => self.addresses.borrow().contains(&data.contract),
@@ -673,26 +673,40 @@ impl CapturedFixture {
             coverage: self.coverage.clone(),
         };
         let local = Rc::new(LocalLedger::default());
-        let source = Rc::new(TrackingSource::strict_with_local(
-            self.coverage.clone(),
-            local.clone(),
-            materialized.ledger_info.protocol_version,
-        ));
+        let source = self.replay_source(local.clone());
         let env = env_from_materialized(&materialized, source.clone());
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             scenario(&env, local.clone(), source.clone())
         }));
 
-        let mut unknown = source.unknown_keys();
-        for (key, _) in env
+        let stored = env
             .host()
             .get_stored_entries()
-            .map_err(|_| CaptureError::HostInspection)?
-        {
-            if local.owns(&key) {
+            .map_err(|_| CaptureError::HostInspection)?;
+        self.verify_replay_keys(&source, &local, stored.iter().map(|(key, _)| key.as_ref()))?;
+        outcome.map_err(|_| CaptureError::ScenarioPanicked)
+    }
+
+    pub(crate) fn replay_source(&self, local: Rc<LocalLedger>) -> Rc<TrackingSource> {
+        Rc::new(TrackingSource::strict_with_local(
+            self.coverage.clone(),
+            local,
+            self.provenance.protocol_version,
+        ))
+    }
+
+    pub(crate) fn verify_replay_keys<'a>(
+        &self,
+        source: &TrackingSource,
+        local: &LocalLedger,
+        keys: impl Iterator<Item = &'a LedgerKey>,
+    ) -> Result<(), CaptureError> {
+        let mut unknown = source.unknown_keys();
+        for key in keys {
+            if local.owns(key) {
                 continue;
             }
-            let id = key_id(&key)?;
+            let id = key_id(key)?;
             if !self.coverage.contains_key(&id) {
                 unknown.insert(id);
             }
@@ -702,7 +716,7 @@ impl CapturedFixture {
                 count: unknown.len(),
             });
         }
-        outcome.map_err(|_| CaptureError::ScenarioPanicked)
+        Ok(())
     }
 
     fn inventory_keys(&self) -> Result<BTreeMap<KeyId, LedgerKey>, CaptureError> {

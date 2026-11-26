@@ -1,1 +1,0 @@
-../../../src/strict.rs

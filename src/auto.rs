@@ -48,6 +48,72 @@ const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v2";
 const DEFAULT_CACHE_NAME_MAX: usize = 80;
 const DEFAULT_CACHE_HASH_HEX: usize = 12;
 
+pub(crate) fn local_public_key(network_id: [u8; 32], label: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(LOCAL_ACCOUNT_DOMAIN);
+    digest.update(network_id);
+    digest.update((label.len() as u64).to_be_bytes());
+    digest.update(label.as_bytes());
+    digest.finalize().into()
+}
+
+pub(crate) fn funded_account_entry(
+    account_id: AccountId,
+    amount: i64,
+    base_reserve: u32,
+    ledger_sequence: u32,
+    existing: Option<(Rc<LedgerEntry>, Option<u32>)>,
+) -> LedgerEntry {
+    assert!(amount > 0, "local account funding must be positive");
+    if let Some((entry, live_until)) = existing {
+        assert!(
+            live_until.is_none(),
+            "local AccountEntry must not have a live-until ledger"
+        );
+        let mut entry = (*entry).clone();
+        let LedgerEntryData::Account(local) = &mut entry.data else {
+            panic!("local account key must contain an AccountEntry");
+        };
+        assert_eq!(
+            local.account_id, account_id,
+            "local AccountEntry must match its ledger key"
+        );
+        local.balance = local
+            .balance
+            .checked_add(amount)
+            .expect("local account balance overflow");
+        entry.last_modified_ledger_seq = ledger_sequence;
+        entry
+    } else {
+        let minimum = i64::from(base_reserve)
+            .checked_mul(2)
+            .expect("local account minimum balance overflow");
+        assert!(
+            amount >= minimum,
+            "first local account funding must cover two base reserves"
+        );
+        let sequence = i64::from(ledger_sequence)
+            .checked_mul(1_i64 << 32)
+            .expect("the ledger sequence must fit a Stellar account sequence number");
+        LedgerEntry {
+            last_modified_ledger_seq: ledger_sequence,
+            data: LedgerEntryData::Account(AccountEntry {
+                account_id,
+                balance: amount,
+                seq_num: SequenceNumber(sequence),
+                num_sub_entries: 0,
+                inflation_dest: None,
+                flags: 0,
+                home_domain: String32::default(),
+                thresholds: Thresholds([1, 0, 0, 0]),
+                signers: VecM::default(),
+                ext: AccountEntryExt::V0,
+            }),
+            ext: LedgerEntryExt::V0,
+        }
+    }
+}
+
 /// Creates an automatic mainnet runner using
 /// `https://mainnet.sorobanrpc.com` by default.
 ///
@@ -673,12 +739,7 @@ impl<'a> ScenarioFork<'a> {
             .host()
             .with_ledger_info(|ledger| Ok(ledger.network_id))
             .expect("the scenario environment must have ledger metadata");
-        let mut digest = Sha256::new();
-        digest.update(LOCAL_ACCOUNT_DOMAIN);
-        digest.update(network_id);
-        digest.update((label.len() as u64).to_be_bytes());
-        digest.update(label.as_bytes());
-        let public_key: [u8; 32] = digest.finalize().into();
+        let public_key = local_public_key(network_id, label);
         let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(public_key)));
         let address_xdr = ScAddress::Account(account_id.clone());
         let address = Address::try_from_val(self.env, &address_xdr)
@@ -744,53 +805,8 @@ impl<'a> ScenarioFork<'a> {
             .host()
             .with_ledger_info(|ledger| Ok((ledger.base_reserve, ledger.sequence_number)))
             .expect("the scenario environment must have ledger metadata");
-        let entry = if let Some((entry, live_until)) = existing {
-            assert!(
-                live_until.is_none(),
-                "local AccountEntry must not have a live-until ledger"
-            );
-            let mut entry = (*entry).clone();
-            let LedgerEntryData::Account(local) = &mut entry.data else {
-                panic!("local account key must contain an AccountEntry");
-            };
-            assert_eq!(
-                local.account_id, account_id,
-                "local AccountEntry must match its ledger key"
-            );
-            local.balance = local
-                .balance
-                .checked_add(amount)
-                .expect("local account balance overflow");
-            entry.last_modified_ledger_seq = ledger_sequence;
-            entry
-        } else {
-            let minimum = i64::from(base_reserve)
-                .checked_mul(2)
-                .expect("local account minimum balance overflow");
-            assert!(
-                amount >= minimum,
-                "first local account funding must cover two base reserves"
-            );
-            let sequence = i64::from(ledger_sequence)
-                .checked_mul(1_i64 << 32)
-                .expect("the ledger sequence must fit a Stellar account sequence number");
-            LedgerEntry {
-                last_modified_ledger_seq: ledger_sequence,
-                data: LedgerEntryData::Account(AccountEntry {
-                    account_id,
-                    balance: amount,
-                    seq_num: SequenceNumber(sequence),
-                    num_sub_entries: 0,
-                    inflation_dest: None,
-                    flags: 0,
-                    home_domain: String32::default(),
-                    thresholds: Thresholds([1, 0, 0, 0]),
-                    signers: VecM::default(),
-                    ext: AccountEntryExt::V0,
-                }),
-                ext: LedgerEntryExt::V0,
-            }
-        };
+        let entry =
+            funded_account_entry(account_id, amount, base_reserve, ledger_sequence, existing);
         self.env
             .host()
             .add_ledger_entry(&key, &Rc::new(entry), None)

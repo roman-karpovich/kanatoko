@@ -1,5 +1,12 @@
 //! In-process offline replay on the snapshot protocol. Contract calls cross the SDK boundary as XDR.
+use crate::soroban_ledger_snapshot::LedgerSnapshot;
+use crate::soroban_sdk::xdr;
+use crate::{fixture::ProtocolPolicy, CapturedFixture};
+use sha2::{Digest, Sha256};
 use std::path::Path;
+
+mod current;
+mod historical;
 
 /// A single mutable, offline fork. XDR arguments encode one Soroban vector.
 pub trait Session {
@@ -32,32 +39,77 @@ pub fn replay<T>(
     contracts: &[(&str, Option<&str>)],
     scenario: impl Fn(&dyn Session) -> T,
 ) -> T {
-    let file = std::fs::File::open(path)
-        .unwrap_or_else(|error| panic!("cannot open {}: {error}", path.display()));
-    let header: Header = serde_json::from_reader(std::io::BufReader::new(file))
-        .unwrap_or_else(|error| panic!("invalid capture {}: {error}", path.display()));
-    match header.provenance.protocol_version {
-        29 => p29::run(path, contracts, scenario),
-        30 => p30::run(path, contracts, scenario),
-        version => panic!("unsupported snapshot protocol {version:?}"),
+    let capture = CapturedFixture::from_file_with_policy(
+        path,
+        crate::capture::MAINNET_PASSPHRASE,
+        ProtocolPolicy::ReplayHosts,
+    )
+    .unwrap_or_else(|error| panic!("invalid mainnet capture {}: {error}", path.display()));
+    check_pins(capture.frozen_fixture().ledger_snapshot(), contracts);
+    if capture.provenance().protocol_version() == host29::VERSION.interface.protocol {
+        historical::run(&capture, scenario)
+    } else {
+        capture
+            .replay_scenario(|fork| scenario(fork))
+            .expect("offline scenario replay failed")
     }
 }
 
-#[derive(serde::Deserialize)]
-struct Header {
-    provenance: Provenance,
+fn check_pins(snapshot: &LedgerSnapshot, pins: &[(&str, Option<&str>)]) {
+    for &(id, pinned) in pins {
+        let address = id
+            .parse::<xdr::ScAddress>()
+            .expect("invalid contract address");
+        let hash = snapshot
+            .ledger_entries
+            .iter()
+            .find_map(|(_, (entry, _))| {
+                let xdr::LedgerEntryData::ContractData(data) = &entry.data else {
+                    return None;
+                };
+                if data.contract != address || data.key != xdr::ScVal::LedgerKeyContractInstance {
+                    return None;
+                }
+                let xdr::ScVal::ContractInstance(instance) = &data.val else {
+                    return None;
+                };
+                let xdr::ContractExecutable::Wasm(hash) = &instance.executable else {
+                    return None;
+                };
+                Some(hash)
+            })
+            .expect("missing contract instance");
+        let code = snapshot
+            .ledger_entries
+            .iter()
+            .find_map(|(_, (entry, _))| {
+                let xdr::LedgerEntryData::ContractCode(code) = &entry.data else {
+                    return None;
+                };
+                (code.hash == *hash).then_some(code)
+            })
+            .expect("missing contract code");
+        let digest = Sha256::digest(code.code.as_slice());
+        assert_eq!(<[u8; 32]>::from(digest), hash.0);
+        if let Some(expected) = pinned {
+            assert_eq!(format!("{digest:x}"), expected);
+        }
+    }
 }
 
-#[derive(serde::Deserialize)]
-struct Provenance {
-    protocol_version: u32,
-}
-
-mod p29 {
-    use engine29 as engine;
-    include!("backend.rs");
-}
-mod p30 {
-    use crate as engine;
-    include!("backend.rs");
+fn storage_digest(mut snapshot: LedgerSnapshot, address: &xdr::ScAddress) -> [u8; 32] {
+    snapshot
+        .ledger_entries
+        .retain(|(key, _)| !matches!(key.as_ref(), xdr::LedgerKey::ContractCode(_)));
+    for (_, (entry, _)) in &mut snapshot.ledger_entries {
+        if let xdr::LedgerEntryData::ContractData(data) = &mut entry.data {
+            if &data.contract == address && data.key == xdr::ScVal::LedgerKeyContractInstance {
+                let xdr::ScVal::ContractInstance(instance) = &mut data.val else {
+                    unreachable!()
+                };
+                instance.executable = xdr::ContractExecutable::Wasm(xdr::Hash([0; 32]));
+            }
+        }
+    }
+    crate::canonical_ledger_digest(&snapshot).unwrap()
 }

@@ -25,3 +25,16 @@ fn reads_the_same_soroswap_pair_on_both_protocols() {
         assert_eq!(token, Address::from_str(&codec, USDC));
     }
 }
+
+#[test]
+#[should_panic(expected = "uncaptured ledger keys")]
+fn historical_host_rejects_an_uncaptured_read_even_if_the_caller_handles_the_error() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/mainnet/soroswap-xlm-usdc/auto-capture-p29.json");
+    let codec = Env::default();
+    let args: std::vec::Vec<_> = Vec::<Val>::new(&codec).to_xdr(&codec).iter().collect();
+    let absent_from_inventory = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+    replay(&fixture, &[], |fork| {
+        assert!(fork.call(absent_from_inventory, "probe", &args).is_err());
+    });
+}
