@@ -26,7 +26,7 @@ pub(crate) enum ProtocolPolicy {
     Exact,
     /// [`SUPPORTED_PROTOCOL_VERSION`] or exactly one protocol above it.
     AllowNewer,
-    #[cfg(feature = "multihost")]
+    #[cfg(feature = "host-30")]
     ReplayHosts,
 }
 
@@ -39,9 +39,13 @@ impl ProtocolPolicy {
             Self::AllowNewer => {
                 found == SUPPORTED_PROTOCOL_VERSION || found == NEWER_PROTOCOL_VERSION
             }
-            #[cfg(feature = "multihost")]
+            #[cfg(feature = "host-30")]
             Self::ReplayHosts => {
-                found == SUPPORTED_PROTOCOL_VERSION || found == host29::VERSION.interface.protocol
+                #[cfg(feature = "host-29")]
+                if found == host29::VERSION.interface.protocol {
+                    return Ok(());
+                }
+                found == SUPPORTED_PROTOCOL_VERSION
             }
         };
         if accepted {

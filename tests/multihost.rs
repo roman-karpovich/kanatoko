@@ -1,5 +1,3 @@
-#![cfg(feature = "multihost")]
-
 use std::path::Path;
 
 use kanatoko::multihost::replay;

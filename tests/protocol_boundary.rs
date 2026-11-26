@@ -297,3 +297,11 @@ mod protocol_29 {
         ));
     }
 }
+
+#[cfg(all(feature = "host-30", not(feature = "host-29")))]
+#[test]
+#[should_panic(expected = "enable Kanatoko's host-29 feature")]
+fn p30_only_replay_rejects_p29_before_running_the_scenario() {
+    let capture = std::path::Path::new("fixtures/mainnet/soroswap-xlm-usdc/auto-capture-p29.json");
+    kanatoko::multihost::replay(capture, &[], |_| unreachable!());
+}

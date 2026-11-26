@@ -148,7 +148,8 @@ jobs:
             exit 1
           fi
 
-          locked_metadata="$(cargo metadata --locked --format-version 1)"
+          # Verify the primary SDK line in isolation; default replay also links Host 29.
+          locked_metadata="$(cargo metadata --locked --no-default-features --format-version 1)"
           for dependency in \
             soroban-env-host \
             soroban-ledger-snapshot \
@@ -227,6 +228,7 @@ jobs:
             cargo metadata \
               --manifest-path "${fresh_source}/Cargo.toml" \
               --locked \
+              --no-default-features \
               --format-version 1
           )"
           for dependency in \

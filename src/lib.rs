@@ -1,15 +1,17 @@
 //! Kanatoko local Soroban fork runtime.
 //!
-//! The default build exposes deterministic fixture loading, production WASM
-//! registration, stateful execution, and checkpoint/revert. The optional
-//! `capture` feature adds one-scenario mainnet and testnet runners: generated
-//! clients and dynamic calls drive automatic execution-based capture, then the
-//! same body replays strictly offline. Imported client WASM supplies ABI
-//! bindings only; captured network instances and WASM always execute.
+//! Load a saved fixture, run production contract WASM, and checkpoint or revert
+//! the local ledger. By default, `multihost::replay` selects Host 29 or 30 from
+//! the capture. Select `host-30` with default features disabled to build only
+//! the current Host.
+//!
+//! The `capture` feature provides mainnet and testnet runners that record ledger
+//! reads during execution and replay the same scenario offline. Imported client
+//! WASM supplies ABI bindings. Captured contract instances and WASM execute.
 //!
 //! Kanatoko does not emulate transactions or claim network-faithful execution.
 //!
-//! Loaders and capture accept exactly [`SUPPORTED_PROTOCOL_VERSION`] by
+//! Single-Host loaders and capture accept exactly [`SUPPORTED_PROTOCOL_VERSION`] by
 //! default. An explicit newer-protocol opt-in (for example
 //! `AutoRunner::allow_newer_protocol` with the `capture` feature, or
 //! [`FrozenFixture::from_snapshot_allowing_newer_protocol`]) also accepts a
@@ -20,7 +22,7 @@
 //! as opaque errors. Strict replay still uses Rust's standard panic hook, so
 //! scenario panic messages must never contain credentials or other secrets.
 
-#[cfg(feature = "multihost")]
+#[cfg(feature = "host-30")]
 pub mod multihost;
 
 mod fixture;

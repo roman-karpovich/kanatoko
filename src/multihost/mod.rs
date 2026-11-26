@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 mod current;
+#[cfg(feature = "host-29")]
 mod historical;
 
 /// A single mutable, offline fork. XDR arguments encode one Soroban vector.
@@ -44,15 +45,28 @@ pub fn replay<T>(
         crate::capture::MAINNET_PASSPHRASE,
         ProtocolPolicy::ReplayHosts,
     )
-    .unwrap_or_else(|error| panic!("invalid mainnet capture {}: {error}", path.display()));
+    .unwrap_or_else(|error| {
+        #[cfg(not(feature = "host-29"))]
+        if let crate::CaptureError::Fixture(crate::FixtureError::UnsupportedProtocol {
+            found: 29,
+            ..
+        }) = error
+        {
+            panic!(
+                "enable Kanatoko's host-29 feature to replay {}",
+                path.display()
+            );
+        }
+        panic!("invalid mainnet capture {}: {error}", path.display())
+    });
     check_pins(capture.frozen_fixture().ledger_snapshot(), contracts);
+    #[cfg(feature = "host-29")]
     if capture.provenance().protocol_version() == host29::VERSION.interface.protocol {
-        historical::run(&capture, scenario)
-    } else {
-        capture
-            .replay_scenario(|fork| scenario(fork))
-            .expect("offline scenario replay failed")
+        return historical::run(&capture, scenario);
     }
+    capture
+        .replay_scenario(|fork| scenario(fork))
+        .expect("offline scenario replay failed")
 }
 
 fn check_pins(snapshot: &LedgerSnapshot, pins: &[(&str, Option<&str>)]) {

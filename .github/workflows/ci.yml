@@ -40,10 +40,38 @@ jobs:
       - name: Run default-feature tests
         run: cargo test --locked
 
-      - name: Run all-feature tests
-        run: cargo test --locked --all-features
+      - name: Test with the current Host only
+        run: cargo test --locked --no-default-features --features host-30
+
+      - name: Test the base library without replay or capture
+        run: cargo test --locked --no-default-features
 
       - name: Build documentation
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --locked --all-features --no-deps
+
+  consumer-sdk:
+    name: Replay with consumer SDK ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ["25.3.2", "26.1.1", "27.0.6", "28.0.0", "29.0.1", "30.0.0"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test both captures with the consumer's SDK
+        env:
+          SDK_VERSION: ${{ matrix.sdk }}
+        run: |
+          consumer="$RUNNER_TEMP/consumer"
+          cargo new --lib "$consumer" --vcs none --edition 2021
+          cd "$consumer"
+          cargo add --dev "soroban-sdk@=$SDK_VERSION" --features testutils
+          cargo add --dev --path "$GITHUB_WORKSPACE"
+          mkdir tests
+          cp "$GITHUB_WORKSPACE/tests/multihost.rs" tests/
+          ln -s "$GITHUB_WORKSPACE/fixtures" fixtures
+          cargo test --test multihost
