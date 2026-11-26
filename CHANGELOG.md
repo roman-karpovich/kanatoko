@@ -2,6 +2,14 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 30.1.0 - Unreleased
+
+- Enable `multihost` to replay Protocol 29 and 30 captures in one Rust
+  test binary. A project using SDK 27 can encode calls as XDR and keep
+  its existing SDK dependency. The replay selects the exact ledger protocol.
+- Add `CapturedFixture::replay_scenario` to run an offline scenario
+  against the already validated fixture.
+
 ## 30.0.0 - 2026-11-24
 
 - Move the Protocol 30 line to stable `soroban-sdk` and

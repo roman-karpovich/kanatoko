@@ -318,7 +318,7 @@ impl AutoRunner {
                         &self.network_passphrase,
                         self.protocol_policy,
                     )?;
-                    replay(&cached, &scenario)?;
+                    cached.replay_scenario(&scenario)?;
                     return Ok(AutoRun {
                         fixture: cached,
                         cache_status: CacheStatus::Hit,
@@ -361,7 +361,7 @@ impl AutoRunner {
                     self.protocol_policy,
                 )?;
                 if builder.cached_anchor_is_current(&cached)? {
-                    match replay(&cached, scenario) {
+                    match cached.replay_scenario(scenario) {
                         Ok(()) => {
                             return Ok(AutoRun {
                                 fixture: cached,
@@ -385,7 +385,7 @@ impl AutoRunner {
                 scenario(&ScenarioFork::new(env, local, Some(source)));
             })?
         };
-        replay(&captured, scenario)?;
+        captured.replay_scenario(scenario)?;
 
         let cache_status = match self.cache.as_deref() {
             Some(path) => {
@@ -414,13 +414,20 @@ impl AutoRunner {
     }
 }
 
-fn replay<F>(fixture: &CapturedFixture, scenario: &F) -> Result<(), CaptureError>
-where
-    F: for<'a> Fn(&ScenarioFork<'a>),
-{
-    fixture.replay_with_local(|env, local, source| {
-        scenario(&ScenarioFork::new(env, local, Some(source)));
-    })
+impl CapturedFixture {
+    /// Runs a scenario once against this validated capture, with strict coverage and no RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capture error for uncovered ledger reads or a panicking scenario.
+    pub fn replay_scenario<T>(
+        &self,
+        scenario: impl FnOnce(&ScenarioFork<'_>) -> T,
+    ) -> Result<T, CaptureError> {
+        self.replay_with_local(|env, local, source| {
+            scenario(&ScenarioFork::new(env, local, Some(source)))
+        })
+    }
 }
 
 /// Authorization policy for an isolated [`ScenarioFork::preview`].

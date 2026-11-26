@@ -20,6 +20,9 @@
 //! as opaque errors. Strict replay still uses Rust's standard panic hook, so
 //! scenario panic messages must never contain credentials or other secrets.
 
+#[cfg(feature = "multihost")]
+pub mod multihost;
+
 mod fixture;
 mod runtime;
 

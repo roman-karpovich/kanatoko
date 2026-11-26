@@ -1,0 +1,31 @@
+[package]
+name = "kanatoko-host29"
+version = "0.1.0"
+edition = "2021"
+description = "Protocol 29 replay engine for Kanatoko"
+repository = "https://github.com/roman-karpovich/kanatoko"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[features]
+default = []
+capture = ["dep:base64", "dep:serde", "dep:serde_json", "dep:ureq"]
+
+[dependencies]
+base64 = { version = "=0.22.1", optional = true }
+serde = { version = "=1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "=1.0.151", optional = true }
+sha2 = "=0.10.9"
+soroban-env-host = "=29.0.2"
+soroban-ledger-snapshot = { package = "kanatoko-ledger-snapshot29", version = "=29.0.1", path = "../vendor/soroban-ledger-snapshot" }
+soroban-sdk = { package = "kanatoko-sdk29", version = "=29.0.1", path = "../vendor/soroban-sdk", features = ["testutils"] }
+thiserror = "2"
+ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls"], optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("multihost"))'] }

@@ -1,6 +1,6 @@
 [package]
 name = "kanatoko"
-version = "30.0.0"
+version = "30.1.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Test Soroban contracts against captured Stellar network state"
@@ -14,9 +14,11 @@ categories = ["development-tools::testing"]
 
 [features]
 default = []
+multihost = ["capture", "dep:engine29"]
 capture = ["dep:base64", "dep:serde", "dep:serde_json", "dep:ureq"]
 
 [dependencies]
+engine29 = { package = "kanatoko-host29", version = "=0.1.0", path = "multihost/host29", features = ["capture"], optional = true }
 base64 = { version = "=0.22.1", optional = true }
 serde = { version = "=1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "=1.0.151", optional = true }
@@ -48,3 +50,13 @@ pedantic = "warn"
 
 [package.metadata.docs.rs]
 all-features = true
+
+[workspace]
+resolver = "2"
+members = [
+    "multihost/host29",
+    "multihost/vendor/soroban-sdk",
+    "multihost/vendor/soroban-sdk-macros",
+    "multihost/vendor/soroban-ledger-snapshot",
+]
+default-members = ["."]
