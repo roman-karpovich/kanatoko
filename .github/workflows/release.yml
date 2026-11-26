@@ -111,7 +111,7 @@ jobs:
                 .packages[]
                 | select(.name == "kanatoko")
                 | .dependencies[]
-                | select(.name == $dependency)
+                | select((.rename // .name) == $dependency)
                 | .req
               ' <<<"${package_metadata}"
             )
