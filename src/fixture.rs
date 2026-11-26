@@ -26,14 +26,28 @@ pub(crate) enum ProtocolPolicy {
     Exact,
     /// [`SUPPORTED_PROTOCOL_VERSION`] or exactly one protocol above it.
     AllowNewer,
+    #[cfg(feature = "host-30")]
+    ReplayHosts,
 }
 
 impl ProtocolPolicy {
     /// Fails closed with the existing `UnsupportedProtocol` shape when `found`
-    /// is outside the policy. Older protocols are always rejected.
+    /// is outside the policy. Historical replay has its own exact Host check.
     pub(crate) const fn check(self, found: u32) -> Result<(), UnsupportedProtocol> {
-        let accepted = found == SUPPORTED_PROTOCOL_VERSION
-            || (matches!(self, Self::AllowNewer) && found == NEWER_PROTOCOL_VERSION);
+        let accepted = match self {
+            Self::Exact => found == SUPPORTED_PROTOCOL_VERSION,
+            Self::AllowNewer => {
+                found == SUPPORTED_PROTOCOL_VERSION || found == NEWER_PROTOCOL_VERSION
+            }
+            #[cfg(feature = "host-30")]
+            Self::ReplayHosts => {
+                #[cfg(feature = "host-29")]
+                if found == host29::VERSION.interface.protocol {
+                    return Ok(());
+                }
+                found == SUPPORTED_PROTOCOL_VERSION
+            }
+        };
         if accepted {
             Ok(())
         } else {

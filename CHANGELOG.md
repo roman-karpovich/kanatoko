@@ -2,6 +2,16 @@
 
 All notable changes to Kanatoko are documented in this file.
 
+## 30.1.0 - Unreleased
+
+- Replay Protocol 29 and 30 captures in one Rust test binary by default.
+  Projects using Soroban SDK 25 through 30 can keep their SDK and exchange
+  arguments and results with the matching Host as XDR. To build only Host 30,
+  set `default-features = false, features = ["host-30"]`. Host 30 also supplies
+  the native SDK API and is always present on this release line.
+- Add `CapturedFixture::replay_scenario` to run an offline scenario
+  against the already validated fixture.
+
 ## 30.0.0 - 2026-11-24
 
 - Move the Protocol 30 line to stable `soroban-sdk` and

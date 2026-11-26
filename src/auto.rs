@@ -48,6 +48,72 @@ const DEFAULT_CACHE_DOMAIN: &[u8] = b"kanatoko.default-cache.v2";
 const DEFAULT_CACHE_NAME_MAX: usize = 80;
 const DEFAULT_CACHE_HASH_HEX: usize = 12;
 
+pub(crate) fn local_public_key(network_id: [u8; 32], label: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(LOCAL_ACCOUNT_DOMAIN);
+    digest.update(network_id);
+    digest.update((label.len() as u64).to_be_bytes());
+    digest.update(label.as_bytes());
+    digest.finalize().into()
+}
+
+pub(crate) fn funded_account_entry(
+    account_id: AccountId,
+    amount: i64,
+    base_reserve: u32,
+    ledger_sequence: u32,
+    existing: Option<(Rc<LedgerEntry>, Option<u32>)>,
+) -> LedgerEntry {
+    assert!(amount > 0, "local account funding must be positive");
+    if let Some((entry, live_until)) = existing {
+        assert!(
+            live_until.is_none(),
+            "local AccountEntry must not have a live-until ledger"
+        );
+        let mut entry = (*entry).clone();
+        let LedgerEntryData::Account(local) = &mut entry.data else {
+            panic!("local account key must contain an AccountEntry");
+        };
+        assert_eq!(
+            local.account_id, account_id,
+            "local AccountEntry must match its ledger key"
+        );
+        local.balance = local
+            .balance
+            .checked_add(amount)
+            .expect("local account balance overflow");
+        entry.last_modified_ledger_seq = ledger_sequence;
+        entry
+    } else {
+        let minimum = i64::from(base_reserve)
+            .checked_mul(2)
+            .expect("local account minimum balance overflow");
+        assert!(
+            amount >= minimum,
+            "first local account funding must cover two base reserves"
+        );
+        let sequence = i64::from(ledger_sequence)
+            .checked_mul(1_i64 << 32)
+            .expect("the ledger sequence must fit a Stellar account sequence number");
+        LedgerEntry {
+            last_modified_ledger_seq: ledger_sequence,
+            data: LedgerEntryData::Account(AccountEntry {
+                account_id,
+                balance: amount,
+                seq_num: SequenceNumber(sequence),
+                num_sub_entries: 0,
+                inflation_dest: None,
+                flags: 0,
+                home_domain: String32::default(),
+                thresholds: Thresholds([1, 0, 0, 0]),
+                signers: VecM::default(),
+                ext: AccountEntryExt::V0,
+            }),
+            ext: LedgerEntryExt::V0,
+        }
+    }
+}
+
 /// Creates an automatic mainnet runner using
 /// `https://mainnet.sorobanrpc.com` by default.
 ///
@@ -318,7 +384,7 @@ impl AutoRunner {
                         &self.network_passphrase,
                         self.protocol_policy,
                     )?;
-                    replay(&cached, &scenario)?;
+                    cached.replay_scenario(&scenario)?;
                     return Ok(AutoRun {
                         fixture: cached,
                         cache_status: CacheStatus::Hit,
@@ -361,7 +427,7 @@ impl AutoRunner {
                     self.protocol_policy,
                 )?;
                 if builder.cached_anchor_is_current(&cached)? {
-                    match replay(&cached, scenario) {
+                    match cached.replay_scenario(scenario) {
                         Ok(()) => {
                             return Ok(AutoRun {
                                 fixture: cached,
@@ -385,7 +451,7 @@ impl AutoRunner {
                 scenario(&ScenarioFork::new(env, local, Some(source)));
             })?
         };
-        replay(&captured, scenario)?;
+        captured.replay_scenario(scenario)?;
 
         let cache_status = match self.cache.as_deref() {
             Some(path) => {
@@ -414,13 +480,20 @@ impl AutoRunner {
     }
 }
 
-fn replay<F>(fixture: &CapturedFixture, scenario: &F) -> Result<(), CaptureError>
-where
-    F: for<'a> Fn(&ScenarioFork<'a>),
-{
-    fixture.replay_with_local(|env, local, source| {
-        scenario(&ScenarioFork::new(env, local, Some(source)));
-    })
+impl CapturedFixture {
+    /// Runs a scenario once against this validated capture, with strict coverage and no RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capture error for uncovered ledger reads or a panicking scenario.
+    pub fn replay_scenario<T>(
+        &self,
+        scenario: impl FnOnce(&ScenarioFork<'_>) -> T,
+    ) -> Result<T, CaptureError> {
+        self.replay_with_local(|env, local, source| {
+            scenario(&ScenarioFork::new(env, local, Some(source)))
+        })
+    }
 }
 
 /// Authorization policy for an isolated [`ScenarioFork::preview`].
@@ -666,12 +739,7 @@ impl<'a> ScenarioFork<'a> {
             .host()
             .with_ledger_info(|ledger| Ok(ledger.network_id))
             .expect("the scenario environment must have ledger metadata");
-        let mut digest = Sha256::new();
-        digest.update(LOCAL_ACCOUNT_DOMAIN);
-        digest.update(network_id);
-        digest.update((label.len() as u64).to_be_bytes());
-        digest.update(label.as_bytes());
-        let public_key: [u8; 32] = digest.finalize().into();
+        let public_key = local_public_key(network_id, label);
         let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(public_key)));
         let address_xdr = ScAddress::Account(account_id.clone());
         let address = Address::try_from_val(self.env, &address_xdr)
@@ -737,53 +805,8 @@ impl<'a> ScenarioFork<'a> {
             .host()
             .with_ledger_info(|ledger| Ok((ledger.base_reserve, ledger.sequence_number)))
             .expect("the scenario environment must have ledger metadata");
-        let entry = if let Some((entry, live_until)) = existing {
-            assert!(
-                live_until.is_none(),
-                "local AccountEntry must not have a live-until ledger"
-            );
-            let mut entry = (*entry).clone();
-            let LedgerEntryData::Account(local) = &mut entry.data else {
-                panic!("local account key must contain an AccountEntry");
-            };
-            assert_eq!(
-                local.account_id, account_id,
-                "local AccountEntry must match its ledger key"
-            );
-            local.balance = local
-                .balance
-                .checked_add(amount)
-                .expect("local account balance overflow");
-            entry.last_modified_ledger_seq = ledger_sequence;
-            entry
-        } else {
-            let minimum = i64::from(base_reserve)
-                .checked_mul(2)
-                .expect("local account minimum balance overflow");
-            assert!(
-                amount >= minimum,
-                "first local account funding must cover two base reserves"
-            );
-            let sequence = i64::from(ledger_sequence)
-                .checked_mul(1_i64 << 32)
-                .expect("the ledger sequence must fit a Stellar account sequence number");
-            LedgerEntry {
-                last_modified_ledger_seq: ledger_sequence,
-                data: LedgerEntryData::Account(AccountEntry {
-                    account_id,
-                    balance: amount,
-                    seq_num: SequenceNumber(sequence),
-                    num_sub_entries: 0,
-                    inflation_dest: None,
-                    flags: 0,
-                    home_domain: String32::default(),
-                    thresholds: Thresholds([1, 0, 0, 0]),
-                    signers: VecM::default(),
-                    ext: AccountEntryExt::V0,
-                }),
-                ext: LedgerEntryExt::V0,
-            }
-        };
+        let entry =
+            funded_account_entry(account_id, amount, base_reserve, ledger_sequence, existing);
         self.env
             .host()
             .add_ledger_entry(&key, &Rc::new(entry), None)

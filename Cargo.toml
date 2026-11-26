@@ -1,6 +1,6 @@
 [package]
 name = "kanatoko"
-version = "30.0.0"
+version = "30.1.0"
 edition = "2021"
 rust-version = "1.91"
 description = "Test Soroban contracts against captured Stellar network state"
@@ -13,10 +13,15 @@ keywords = ["stellar", "soroban", "testing", "fork", "smart-contracts"]
 categories = ["development-tools::testing"]
 
 [features]
-default = []
+default = ["multihost"]
+host-30 = ["capture"]
+host-29 = ["host-30", "dep:host29"]
+multihost = ["host-29", "host-30"]
 capture = ["dep:base64", "dep:serde", "dep:serde_json", "dep:ureq"]
 
 [dependencies]
+# SDK 29.0.1 pins Host 29.0.1. Older SDKs can coexist with Host 29.0.2.
+host29 = { package = "soroban-env-host", version = "29.0.1", features = ["testutils"], optional = true }
 base64 = { version = "=0.22.1", optional = true }
 serde = { version = "=1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "=1.0.151", optional = true }
@@ -33,6 +38,10 @@ ureq = { version = "=2.12.1", default-features = false, features = ["json", "tls
 name = "kanatoko"
 path = "tools/kanatoko.rs"
 required-features = ["capture"]
+
+[[test]]
+name = "multihost"
+required-features = ["host-29"]
 
 [[example]]
 name = "offline_replay"
