@@ -1,0 +1,296 @@
+use crate::{
+    attribute::{is_attr_cfg, pass_through_attr_to_gen_code},
+    map_type::map_type,
+    syn_ext::{self, fn_arg_type_validate_no_mut, ty_to_safe_ident_str},
+};
+use itertools::MultiUnzip;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::{format_ident, quote};
+use sha2::{Digest, Sha256};
+use syn::{
+    ext::IdentExt as _,
+    punctuated::Punctuated,
+    spanned::Spanned,
+    token::{Colon, Comma},
+    Attribute, Error, FnArg, Ident, Pat, PatIdent, PatType, Path, Type, TypePath, TypeReference,
+};
+
+pub fn derive_pub_fns<'a>(
+    crate_path: &Path,
+    impl_ty: &Type,
+    fns: impl IntoIterator<Item = &'a syn_ext::Fn>,
+    trait_ident: Option<&Path>,
+    client_ident: &str,
+) -> Result<TokenStream2, TokenStream2> {
+    fns.into_iter()
+        .map(|f| {
+            derive_pub_fn(
+                crate_path,
+                impl_ty,
+                &f.ident,
+                &f.attrs,
+                &f.inputs,
+                trait_ident,
+                client_ident,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn derive_pub_fn(
+    crate_path: &Path,
+    impl_ty: &Type,
+    ident: &Ident,
+    attrs: &[Attribute],
+    inputs: &Punctuated<FnArg, Comma>,
+    trait_ident: Option<&Path>,
+    client_ident: &str,
+) -> Result<TokenStream2, TokenStream2> {
+    // Collect errors as they are encountered and emit them at the end.
+    let mut errors = Vec::<Error>::new();
+
+    let call = if let Some(t) = trait_ident {
+        quote! { <#impl_ty as #t>::#ident }
+    } else {
+        quote! { <#impl_ty>::#ident }
+    };
+
+    // Prepare the env input.
+    let env_input = inputs.first().and_then(|a| match a {
+        FnArg::Typed(pat_type) => {
+            let mut is_ref = false;
+            let mut ty = &*pat_type.ty;
+            if let Type::Reference(TypeReference { elem, .. }) = ty {
+                is_ref = true;
+                ty = elem;
+            }
+            if let Type::Path(TypePath {
+                path: syn::Path { segments, .. },
+                ..
+            }) = ty
+            {
+                if segments.last().map_or(false, |s| s.ident == "Env") {
+                    Some(is_ref)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        FnArg::Receiver(_) => None,
+    });
+
+    // Prepare the argument inputs.
+    let (wrap_args, passthrough_calls, wrap_calls): (Vec<_>, Vec<_>, Vec<_>) = inputs
+        .iter()
+        .skip(if env_input.is_some() { 1 } else { 0 })
+        .enumerate()
+        .map(|(i, a)| match a {
+            FnArg::Typed(pat_ty) => {
+                // If fn is a __check_auth implementation, allow the first argument,
+                // signature_payload of type Bytes (32 size), to be a Hash. Compare on
+                // the Soroban-facing name so a raw-identifier spelling like
+                // `r#__check_auth` can't bypass this special-case and then still export
+                // as `__check_auth`.
+                let allow_hash = ident.unraw().to_string() == "__check_auth" && i == 0;
+
+                // Error if the type of the fn arg is mutable.
+                if let Err(e) = fn_arg_type_validate_no_mut(&pat_ty.ty) {
+                    errors.push(e);
+                }
+
+                // Error if the type of the fn is not mappable.
+                if let Err(e) = map_type(&pat_ty.ty, true, allow_hash) {
+                    errors.push(e);
+                }
+
+                let ident = format_ident!("arg_{}", i);
+                let arg = FnArg::Typed(PatType {
+                    attrs: vec![],
+                    pat: Box::new(Pat::Ident(PatIdent {
+                        ident: ident.clone(),
+                        attrs: vec![],
+                        by_ref: None,
+                        mutability: None,
+                        subpat: None,
+                    })),
+                    colon_token: Colon::default(),
+                    ty: Box::new(Type::Verbatim(quote! { #crate_path::Val })),
+                });
+                let passthrough_call = quote! { #ident };
+
+                let call_prefix = match *pat_ty.ty {
+                    Type::Reference(TypeReference { .. }) => quote!(&),
+                    _ => quote!(),
+                };
+                let call = quote! {
+                    #call_prefix
+                    <_ as #crate_path::unwrap::UnwrapOptimized>::unwrap_optimized(
+                        <_ as #crate_path::TryFromValForContractFn<#crate_path::Env, #crate_path::Val>>::try_from_val_for_contract_fn(
+                            &env,
+                            &#ident
+                        )
+                    )
+                };
+                (arg, passthrough_call, call)
+            }
+            FnArg::Receiver(_) => {
+                errors.push(Error::new(a.span(), "self argument not supported"));
+                (a.clone(), quote! {}, quote! {})
+            }
+        })
+        .multiunzip();
+
+    // Generated code parameters.
+    let impl_ty_safe_str = ty_to_safe_ident_str(impl_ty);
+    let fn_name = ident.unraw().to_string();
+    let wrap_export_name = &fn_name;
+    let invoke_fn_prefix = format_ident!("__{}__{}", impl_ty_safe_str, fn_name);
+    let invoke_raw = format_ident!("{}__invoke_raw", invoke_fn_prefix);
+    let invoke_raw_slice = format_ident!("{}__invoke_raw_slice", invoke_fn_prefix);
+    let invoke_raw_extern = format_ident!("{}__invoke_raw_extern", invoke_fn_prefix);
+    let deprecated_note = format!(
+        "use `{}::new(&env, &contract_id).{}` instead",
+        client_ident, &fn_name
+    );
+    let env_call = if let Some(is_ref) = env_input {
+        if is_ref {
+            quote! { &env, }
+        } else {
+            quote! { env.clone(), }
+        }
+    } else {
+        quote! {}
+    };
+    let slice_args: Vec<TokenStream2> = (0..wrap_args.len()).map(|n| quote! { args[#n] }).collect();
+    let arg_count = slice_args.len();
+
+    // If errors have occurred, render them instead.
+    if !errors.is_empty() {
+        let compile_errors = errors.iter().map(Error::to_compile_error);
+        return Err(quote! { #(#compile_errors)* });
+    }
+
+    let attrs: Vec<_> = attrs
+        .iter()
+        .filter(|attr| pass_through_attr_to_gen_code(attr))
+        .collect();
+
+    let testutils_only_code = if cfg!(feature = "testutils") {
+        Some(quote! {
+            #[doc(hidden)]
+            #(#attrs)*
+            #[allow(non_snake_case)]
+            #[deprecated(note = #deprecated_note)]
+            pub fn #invoke_raw_slice(
+                env: #crate_path::Env,
+                args: &[#crate_path::Val],
+            ) -> #crate_path::Val {
+                if args.len() != #arg_count {
+                    panic!("invalid number of input arguments: {} expected, got {}", #arg_count, args.len());
+                }
+                #[allow(deprecated)]
+                #invoke_raw(env, #(#slice_args),*)
+            }
+        })
+    } else {
+        None
+    };
+
+    // Generated code.
+    Ok(quote! {
+        #[doc(hidden)]
+        #(#attrs)*
+        #[allow(non_snake_case)]
+        #[deprecated(note = #deprecated_note)]
+        #[allow(deprecated)]
+        pub fn #invoke_raw(env: #crate_path::Env, #(#wrap_args),*) -> #crate_path::Val {
+            #crate_path::IntoValForContractFn::into_val_for_contract_fn(
+                #call(
+                    #env_call
+                    #(#wrap_calls),*
+                ),
+                &env
+            )
+        }
+
+        #testutils_only_code
+
+        #[doc(hidden)]
+        #(#attrs)*
+        #[allow(non_snake_case)]
+        #[deprecated(note = #deprecated_note)]
+        #[cfg_attr(target_family = "wasm", export_name = #wrap_export_name)]
+        pub extern "C" fn #invoke_raw_extern(#(#wrap_args),*) -> #crate_path::Val {
+            #[allow(deprecated)]
+            #invoke_raw(
+                #crate_path::Env::default(),
+                #(#passthrough_calls),*
+            )
+        }
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn derive_contract_function_registration_ctor(
+    crate_path: &Path,
+    ty: &Type,
+    trait_ident: Option<&Path>,
+    fns: &[syn_ext::Fn],
+) -> TokenStream2 {
+    if cfg!(not(feature = "testutils")) {
+        return quote!();
+    }
+
+    let ty_str = ty_to_safe_ident_str(ty);
+    let (idents, wrap_idents, attrs, hash_parts): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = fns
+        .iter()
+        .map(|f| {
+            let attrs = f
+                .attrs
+                .iter()
+                .filter(|attr| is_attr_cfg(attr))
+                .collect::<Vec<_>>();
+            let ident_str = f.ident.unraw().to_string();
+            let wrap_ident = format_ident!("__{}__{}__invoke_raw_slice", ty_str, ident_str);
+            // Prefix the cfg attrs so cfg-gated registrations and their inverse-cfg
+            // defaults do not collide on the same internal ctor symbol. The ident
+            // is concatenated as a bare string (not interpolated through `quote!`,
+            // which would render it as a quoted string literal) so methods without
+            // cfg attrs are unchanged.
+            let cfg_prefix = quote!(#(#attrs)*).to_string();
+            let hash_part = format!("{cfg_prefix}{ident_str}");
+            (ident_str, wrap_ident, attrs, hash_part)
+        })
+        .multiunzip();
+
+    let trait_str = trait_ident
+        .map(|p| {
+            p.segments
+                .iter()
+                .map(|s| s.ident.unraw().to_string())
+                .collect::<Vec<_>>()
+                .join("_")
+        })
+        .unwrap_or_else(|| "".to_string());
+    let methods_hash = format!("{:x}", Sha256::digest(hash_parts.join(",").as_bytes()));
+    let ctor_ident = format_ident!("__{ty_str}__{trait_str}__{methods_hash}_ctor");
+
+    quote! {
+        #[doc(hidden)]
+        #[#crate_path::reexports_for_macros::ctor::ctor(crate_path=#crate_path::reexports_for_macros::ctor)]
+        #[allow(non_snake_case)]
+        fn #ctor_ident() {
+            #(
+                #(#attrs)*
+                <#ty as #crate_path::testutils::ContractFunctionRegister>::register(
+                    #idents,
+                    #[allow(deprecated)]
+                    &#wrap_idents,
+                );
+            )*
+        }
+    }
+}
